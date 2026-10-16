@@ -66,8 +66,10 @@ struct ConnectionRecoveryTests {
             #expect(c.recoveries == 0, "one failure is not enough")
             c.deviceReachable = false
             for _ in 0..<10 { c.deviceReachable = false }
-            await settle()
-            #expect(c.recoveries == 1 && !c.recovery.isReconnecting && c.steps.contains("appsChanged"))
+            // Wait for the recovery, not a fixed settle: under batch load the
+            // MainActor task needs longer than 30ms to run.
+            await eventually("recovered once") { c.recoveries == 1 }
+            #expect(!c.recovery.isReconnecting && c.steps.contains("appsChanged"))
             c.deviceReachable = true
             #expect(c.recovery.issue == nil, "a service answering clears the issue")
 

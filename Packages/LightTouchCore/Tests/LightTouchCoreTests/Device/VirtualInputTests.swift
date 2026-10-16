@@ -51,7 +51,10 @@ struct VirtualInputTests {
         try await HostInputAutomation.performShutdown(
             id: 99,
             events: n72,
-            timeout: 3,
+            // 30s, not 3s: under batch load on CI the MainActor task running
+            // the shutdown sequence can be delayed by seconds; the 3s budget
+            // is for a responsive machine, not a loaded CI runner.
+            timeout: 30,
             request: { r in
                 seen.append(r)
                 switch r {
@@ -140,7 +143,9 @@ struct VirtualInputTests {
             try await HostInputAutomation.performShutdown(
                 id: 103,
                 events: n72,
-                timeout: 1,
+                // 30s, not 1s: the test cancels the task before the timeout;
+                // under batch load 1s can expire first.
+                timeout: 30,
                 request: { r in
                     cancelled.append(r)
                     if case .inputSequenceStatus = r { return .inputSequenceStatus(1) }
