@@ -7,87 +7,112 @@ import HostServiceWire
 
 /// One watcher per boot: on the boot's endpoint (which carries the boot's id), replaced as soon as Restart or Power On
 /// renews the boot, stopped while the device has no services. Only the current boot's events reach `onChange`.
-public final class AppChangeWatch {
+///
+/// Thread-safe and synchronous (not @MainActor): the boot-change notification calls it
+/// off the main thread, and @MainActor hops never execute on Linux without a pumped main
+/// queue. Mutable state is guarded by `lock`.
+///
+/// BootSessionScope is not @Observable (nonisolated for background-thread use), so boot
+/// renewals and retirements arrive via `bootSessionScopeDidChange`, not observation tracking.
+public final class AppChangeWatch: @unchecked Sendable {
     private let apps: DeviceApps
     private let attachAllowed: @Sendable () async -> Bool
-    private let onChange: () -> Void
+    private let onChange: @Sendable () -> Void
     /// The watcher's attach and observe; nil is NotificationProxy's own (the services worker).
-    var observe: NotificationProxy.Observer?
-    public private(set) var endpoint: HostServiceEndpoint?
-    private var watcher: NotificationProxy?
-    private var boots: ObservationLoop?
-    private var bootObserver: NSObjectProtocol?
+    nonisolated(unsafe) var observe: NotificationProxy.Observer?
 
-    public init(apps: DeviceApps, attachAllowed: @escaping @Sendable () async -> Bool, onChange: @escaping () -> Void) {
+    private let lock = NSLock()
+    nonisolated(unsafe) private var _endpoint: HostServiceEndpoint?
+    nonisolated(unsafe) private var _watcher: NotificationProxy?
+    nonisolated(unsafe) private var _bootObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var _started = false
+
+    public nonisolated var endpoint: HostServiceEndpoint? {
+        lock.withLock { _endpoint }
+    }
+
+    public init(
+        apps: DeviceApps,
+        attachAllowed: @escaping @Sendable () async -> Bool,
+        onChange: @escaping @Sendable () -> Void
+    ) {
         self.apps = apps
         self.attachAllowed = attachAllowed
         self.onChange = onChange
     }
 
     /// Watches the current boot from now on, following each new one.
-    ///
-    /// BootSessionScope is not @Observable (nonisolated for background-thread use), so boot
-    /// renewals and retirements arrive via `bootSessionScopeDidChange`, not observation tracking.
-    /// The ObservationLoop remains for the other reads `follow()` depends on.
-    public func start() {
-        guard boots == nil else { return }
-        boots = ObservationLoop(read: { [weak self] in self?.follow() })
-        bootObserver = NotificationCenter.default.addObserver(
+    public nonisolated func start() {
+        let alreadyStarted = lock.withLock { () -> Bool in
+            guard !_started else { return true }
+            _started = true
+            return false
+        }
+        guard !alreadyStarted else { return }
+        let observer = NotificationCenter.default.addObserver(
             forName: .bootSessionScopeDidChange,
             object: apps.bootScope,
             queue: nil
-        ) { @MainActor [weak self] _ in
-            // Direct synchronous call, like the ObservationLoop's read: async @MainActor
-            // hops never execute on Linux without a pumped main queue, but a synchronous
-            // @MainActor call runs directly on the caller's thread (no hop), so follow()
-            // stays synchronous here.
-            self?.follow()
-        }
+        ) { [weak self] _ in self?.follow() }
+        lock.withLock { _bootObserver = observer }
+        // Initial follow: attach to the current boot now.
+        follow()
     }
 
-    public func stop() {
-        if let bootObserver {
-            NotificationCenter.default.removeObserver(bootObserver)
-            self.bootObserver = nil
+    public nonisolated func stop() {
+        let observer: NSObjectProtocol? = lock.withLock {
+            let o = _bootObserver
+            _bootObserver = nil
+            _started = false
+            return o
         }
-        boots?.cancel()
-        boots = nil
+        if let observer {
+            NotificationCenter.default.removeObserver(observer)
+        }
         endWatcher()
     }
 
     /// A new watcher when the boot changed, none without services.
     ///
     /// Synchronous on the caller's thread: @MainActor hops never execute on Linux
-    /// without a pumped main queue, so this must not hop (the observation loop's
-    /// read and the boot-change notification both call it directly).
-    private func follow() {
+    /// without a pumped main queue, so this must not hop (the boot-change
+    /// notification calls it directly).
+    nonisolated private func follow() {
         let current = (try? apps.services)?.endpoint
-        guard current != endpoint else { return }
-        endWatcher()
-        endpoint = current
-        guard let current else { return }
-        let watcher =
-            observe.map {
-                NotificationProxy(
-                    clientSocket: current.socket,
-                    udid: current.udid,
-                    session: current.session,
-                    observe: $0
-                )
-            } ?? NotificationProxy(clientSocket: current.socket, udid: current.udid, session: current.session)
-        self.watcher = watcher
-        watcher.start(attachAllowed: attachAllowed) { [weak self] in
-            // Off the library's callback thread and onto ours.
-            Task { @MainActor in
+        let watcher: NotificationProxy? = lock.withLock {
+            guard current != _endpoint else { return nil as NotificationProxy? }
+            _watcher?.stop()
+            _watcher = nil
+            _endpoint = current
+            guard let current else { return nil }
+            let w =
+                observe.map {
+                    NotificationProxy(
+                        clientSocket: current.socket,
+                        udid: current.udid,
+                        session: current.session,
+                        observe: $0
+                    )
+                } ?? NotificationProxy(clientSocket: current.socket, udid: current.udid, session: current.session)
+            _watcher = w
+            return w
+        }
+        // Start outside the lock: it spawns the watcher task.
+        if let watcher {
+            let attachAllowed = self.attachAllowed
+            let onChange = self.onChange
+            watcher.start(attachAllowed: attachAllowed) { [weak self] in
                 guard let self, (try? self.apps.services)?.endpoint == current else { return }
-                self.onChange()
+                onChange()
             }
         }
     }
 
-    private func endWatcher() {
-        watcher?.stop()
-        watcher = nil
-        endpoint = nil
+    nonisolated private func endWatcher() {
+        lock.withLock {
+            _watcher?.stop()
+            _watcher = nil
+            _endpoint = nil
+        }
     }
 }

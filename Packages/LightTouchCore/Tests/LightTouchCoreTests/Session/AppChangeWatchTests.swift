@@ -18,8 +18,8 @@ struct AppChangeWatchTests {
     @Test func aRenewedBootGetsItsOwnWatcher() async throws {
         let host = DeviceAppsTests.Host()
         let apps = DeviceApps(host: host)
-        var changes = 0
-        let watch = AppChangeWatch(apps: apps, attachAllowed: { true }) { changes += 1 }
+        let changes = Mutex(0)
+        let watch = AppChangeWatch(apps: apps, attachAllowed: { true }) { changes.withLock { $0 += 1 } }
         let attaches = Attaches()
         watch.observe = { endpoint, _, change in
             attaches.state.withLock { $0.append((endpoint, change)) }
@@ -33,7 +33,7 @@ struct AppChangeWatchTests {
         try #require(attaches.endpoints.count == 1, "the first boot's watcher attached")
         #expect(attaches.endpoints.first?.session == host.bootScope.id)
         attaches.change(0)
-        await eventually("its event") { changes == 1 }
+        await eventually("its event") { changes.withLock { $0 } == 1 }
 
         host.bootScope.renew()  // Restart in place: nothing tells the watch but the boot itself
         await eventually("the new boot's watcher") { attaches.endpoints.count == 2 }
@@ -41,9 +41,9 @@ struct AppChangeWatchTests {
         #expect(attaches.endpoints.last?.session == host.bootScope.id && watch.endpoint?.session == host.bootScope.id)
         attaches.change(0)  // the old boot's watcher, late
         attaches.change(1)
-        await eventually("the new boot's event") { changes == 2 }
+        await eventually("the new boot's event") { changes.withLock { $0 } == 2 }
         try? await Task.sleep(for: .milliseconds(20))
-        #expect(changes == 2, "the old boot's event is dropped")
+        #expect(changes.withLock { $0 } == 2, "the old boot's event is dropped")
 
         host.bootScope.retire()  // Stop
         await eventually("no services, no watcher") { watch.endpoint == nil }

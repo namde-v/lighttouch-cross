@@ -14,8 +14,12 @@ import HostServiceWire
 
 /// A long-lived notification_proxy session. One per device; `start` is
 /// idempotent and the watcher re-establishes itself if the link drops.
-@MainActor
-public final class NotificationProxy {
+///
+/// Thread-safe (not @MainActor): AppChangeWatch drives it from background threads,
+/// and @MainActor hops never execute on Linux without a pumped main queue.
+/// Mutable state is guarded by `lock`; the watcher task itself is Sendable.
+public final class NotificationProxy: @unchecked Sendable {
+    private let lock = NSLock()
     private var running = false
     private let endpoint: HostServiceEndpoint
     /// Held so the watcher can actually be stopped. This used to be
@@ -49,12 +53,16 @@ public final class NotificationProxy {
         attachAllowed: @escaping @Sendable () async -> Bool,
         onChange: @escaping @Sendable () -> Void
     ) {
-        guard !running else { return }
-        running = true
+        let shouldStart = lock.withLock { () -> Bool in
+            guard !running else { return false }
+            running = true
+            return true
+        }
+        guard shouldStart else { return }
         let endpoint = self.endpoint
         let observe = self.observe
 
-        watcher = Task {
+        let task = Task {
             // Re-establish on loss: the guest drops its services on reboot and
             // on a USB reset, and a watcher that gave up then would leave the
             // sidebar quietly stale for the rest of the session.
@@ -69,14 +77,17 @@ public final class NotificationProxy {
                 do { try await Task.sleep(for: .seconds(ok ? 2 : 10)) } catch { break }
             }
         }
+        lock.withLock { watcher = task }
     }
 
     /// Ends the session. Called when the inspector goes away or USB does.
     public func stop() {
-        running = false
-        watcher?.cancel()
-        watcher = nil
+        lock.withLock {
+            running = false
+            watcher?.cancel()
+            watcher = nil
+        }
     }
 
-    deinit { watcher?.cancel() }
+    deinit { lock.withLock { watcher?.cancel() } }
 }

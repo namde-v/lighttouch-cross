@@ -9,14 +9,18 @@ import HostServiceWire
 import Observation
 
 /// What app management reads of the session.
+///
+/// The boot/session properties are nonisolated: AppChangeWatch follows boot renewals
+/// from background threads, and @MainActor hops never execute on Linux without a
+/// pumped main queue.
 public protocol AppsHost: AnyObject {
-    var bootScope: BootSessionScope { get }
+    nonisolated var bootScope: BootSessionScope { get }
     var profile: Board { get }
     var iosVersion: String { get }
     /// The usbmuxd socket while usbmuxd runs.
-    var usbmuxSession: String? { get }
+    nonisolated var usbmuxSession: String? { get }
     /// The UDID the guest reports (the record's, or an upgraded iPhone identity's).
-    var guestUDID: String? { get }
+    nonisolated var guestUDID: String? { get }
     var storageFailed: Bool { get }
     var isRunning: Bool { get }
     var isPoweredOff: Bool { get }
@@ -29,11 +33,14 @@ public protocol AppsHost: AnyObject {
 }
 
 @Observable public final class DeviceApps {
-    @ObservationIgnored private unowned let host: AppsHost
+    @ObservationIgnored private nonisolated(unsafe) unowned let host: AppsHost
     public init(host: AppsHost) { self.host = host }
 
     /// The boot the app-management reads belong to (AppChangeWatch follows its renewals).
-    var bootScope: BootSessionScope { host.bootScope }
+    ///
+    /// Nonisolated: AppChangeWatch follows boot renewals from background threads, and
+    /// @MainActor hops never execute on Linux without a pumped main queue.
+    nonisolated var bootScope: BootSessionScope { host.bootScope }
 
     /// usbmuxd is up and the storage holds: the host side of app management.
     public var canManageApps: Bool { host.usbmuxSession != nil && !host.storageFailed }
@@ -68,7 +75,10 @@ public protocol AppsHost: AnyObject {
 
     /// This device's stock lockdown services (installation_proxy, AFC,
     /// springboardservices, lockdownd) on its usbmuxd; throws until usbmuxd is up.
-    public var services: DeviceServices {
+    ///
+    /// Nonisolated: AppChangeWatch follows boot renewals from background threads, and
+    /// @MainActor hops never execute on Linux without a pumped main queue.
+    nonisolated public var services: DeviceServices {
         get throws {
             guard !host.bootScope.retired, let socket = host.usbmuxSession else {
                 throw DeviceToolsError.failed("The device is not reachable over USB yet.")
