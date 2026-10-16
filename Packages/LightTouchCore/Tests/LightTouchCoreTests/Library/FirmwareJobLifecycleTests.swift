@@ -183,7 +183,9 @@ import Testing
             await Self.until { storeChanges > 0 }
             try await Task.sleep(for: .milliseconds(500))
             #expect(h.store.existing(e.source.sha1!) == h.store.imported(e.source.sha1!), "stored: the row says so")
-            #expect(storeChanges == 1, "the rows were told")
+            // >= 1, not == 1: the notification posts with object nil, so a
+            // concurrent test's import can add its own during the wait.
+            #expect(storeChanges >= 1, "the rows were told")
             #expect(h.changes[e.id] == nil && h.devices(e.id).isEmpty, "nothing prepared: \(h.seen)")
             #expect(h.errors.isEmpty, "the skipped files raised no alert: \(h.errors)")
 

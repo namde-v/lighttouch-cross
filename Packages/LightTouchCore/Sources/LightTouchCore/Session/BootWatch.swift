@@ -67,6 +67,9 @@ public enum BootEnd: Equatable {
 
     /// Why the helper died, for the row and the dead overlay.
     public private(set) var deathReason: String?
+    /// An abort is already terminating the helper; a second abort while the
+    /// first's halt is still under way must not terminate again.
+    private var aborted = false
     /// The board's boot budget (shorter in tests).
     @ObservationIgnored lazy var budget: TimeInterval = host.profile.bootBudget
     /// How long an aborted boot's helper gets to exit before it is killed.
@@ -110,6 +113,7 @@ public enum BootEnd: Equatable {
     /// and Restart). Only boot time counts: not the Mac's sleep, nor a paused device (BootBudget).
     public func start() {
         task?.cancel()
+        aborted = false
         let generation = host.bootScope.generation
         let budget = budget
         task = Task { [weak self] in
@@ -133,9 +137,10 @@ public enum BootEnd: Equatable {
     /// The guest will not come up (recovery mode, or out of time): halt the helper and become `.dead` with
     /// `reason`; the row offers Start again.
     public func abort(_ reason: String) {
-        guard !host.state.isDead, host.state != .poweredOff, !host.shuttingDown, !host.halting,
+        guard !aborted, !host.state.isDead, host.state != .poweredOff, !host.shuttingDown, !host.halting,
             let process = host.helper, !process.isDead
         else { return }
+        aborted = true
         logEvent("boot: \(reason)")
         deathReason = reason
         task?.cancel()
