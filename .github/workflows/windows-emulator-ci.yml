@@ -206,6 +206,59 @@ jobs:
            static bool n45_iboot_checks_epoch(IPodTouch1GMachineState *s, size_t size)
            {
                static const char needle[] = "Epoch Mismatch";
+          diff --git a/hw/arm/ipod_touch_tcp_usb.c b/hw/arm/ipod_touch_tcp_usb.c
+          index a1a91b2..b6bc07c 100644
+          --- a/hw/arm/ipod_touch_tcp_usb.c
+          +++ b/hw/arm/ipod_touch_tcp_usb.c
+          @@ -34,12 +34,25 @@
+            */
+           #include "hw/arm/ipod_touch_tcp_usb.h"
+ 
+          +#ifdef _WIN32
+          +#include <winsock2.h>
+          +#include <ws2tcpip.h>
+          +/*
+          + * Windows has no POSIX sockets and no AF_UNIX bridge: tcp_usb_connect()
+          + * (below) always fails there, so the socket stays -1 and these shims only
+          + * need to compile, never run.
+          + */
+          +#define close(s) closesocket((SOCKET)(intptr_t)(s))
+          +#define read(s, b, n) recv((SOCKET)(intptr_t)(s), (char *)(b), (int)(n), 0)
+          +#define write(s, b, n) send((SOCKET)(intptr_t)(s), (const char *)(b), (int)(n), 0)
+          +#else
+           #include <sys/types.h>
+           #include <sys/socket.h>
+           #include <netinet/in.h>
+           #include <netinet/tcp.h>
+           #include <sys/un.h>
+           #include <netdb.h>
+          +#endif
+           #include "trace.h"
+           #include "hw/trace-printf.h"
+ 
+          @@ -459,6 +472,14 @@ static void tcp_usb_write_callback(void *_arg)
+ 
+           int tcp_usb_connect(tcp_usb_state_t *_state, const char *_host, uint32_t _port)
+           {
+          +#ifdef _WIN32
+          +    /* The host TCP bridge needs POSIX/AF_UNIX sockets; not available here.
+          +     * Callers already treat connect failure as "no bridge, keep emulating". */
+          +    (void)_state;
+          +    (void)_host;
+          +    (void)_port;
+          +    return -EIO;
+          +#else
+           	struct addrinfo hints = {
+           		.ai_family = AF_INET,
+           		.ai_socktype = SOCK_STREAM,
+          @@ -519,6 +540,7 @@ connected:
+           	 * tcp_usb_callback) only while a write is pending, or the loop spins. */
+           	qemu_set_fd_handler(fd, tcp_usb_read_callback, NULL, _state);
+           	return 0;
+          +#endif
+           }
+ 
+           int tcp_usb_request(tcp_usb_state_t *_state, tcp_usb_header_t *_header, const char *_data)
           diff --git a/hw/arm/it_iboot.c b/hw/arm/it_iboot.c
           index aed0c70..73c5b28 100644
           --- a/hw/arm/it_iboot.c
