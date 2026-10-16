@@ -1,6 +1,6 @@
 import Testing
 
-@testable import HostRuntime
+import HostRuntime
 
 struct DebugPortTests {
     @Test func freeLoopbackPortAndArguments() throws {

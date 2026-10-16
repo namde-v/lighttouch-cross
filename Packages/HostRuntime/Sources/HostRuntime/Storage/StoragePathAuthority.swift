@@ -9,7 +9,8 @@ import Foundation
 
 #if os(Windows)
 // WinSDK declares its own UUID (rpcdce.h); pin the name to Foundation's.
-private typealias UUID = Foundation.UUID
+// Internal (not private): the public methods below take UUID parameters.
+typealias UUID = Foundation.UUID
 #endif
 
 /// Explicit private-library path policy; not imposed on caller-selected standalone stores.

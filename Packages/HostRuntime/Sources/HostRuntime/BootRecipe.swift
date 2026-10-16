@@ -297,6 +297,26 @@ public nonisolated enum BootRecipe {
             + (d.usbAddress.map { ",usb-tcp-addr=\($0)" } ?? "") + (d.wifi ? "" : ",wifi=off")
             + (d.guestPackage.map { ",guest-package=\(escape($0))" } ?? "") + options(d.machineOptions)
         #endif
+        #if os(Windows)
+        // As above: the single chained expression times out the Windows type
+        // checker; the same argv, appended piece by piece.
+        var argv = [
+            "LightTouchMac", "-M", machine, "-drive", "if=pflash,format=raw,file=\(escape(d.writableNOR))",
+            "-display", "none", "-no-shutdown",
+        ]
+        argv += audio
+        argv += ["-serial", serial]
+        argv += netdev.map { ["-netdev", $0] } ?? []
+        // The iPhone's modem carries its EDGE data (raw IP over a mux DLCI) to its own slirp, cell0, with the web
+        // proxy's guestfwd as Wi-Fi's (the image routes cellular through the proxy too) and its lan= setting; with
+        // no wifi0 given, off the LAN like the machine's own default wifi0.
+        if hardware.hasCellular {
+            argv += [
+                "-netdev",
+                netdev.map { $0.replacingOccurrences(of: "id=wifi0", with: "id=cell0") } ?? "user,id=cell0,lan=off",
+            ]
+        }
+        #else
         let argv =
             [
                 "LightTouchMac", "-M", machine, "-drive", "if=pflash,format=raw,file=\(escape(d.writableNOR))",
@@ -310,6 +330,7 @@ public nonisolated enum BootRecipe {
                     "-netdev",
                     netdev.map { $0.replacingOccurrences(of: "id=wifi0", with: "id=cell0") } ?? "user,id=cell0,lan=off",
                 ] : [])
+        #endif
         return BootConfig(argv: argv, machine: hardware.machine)
     }
 
