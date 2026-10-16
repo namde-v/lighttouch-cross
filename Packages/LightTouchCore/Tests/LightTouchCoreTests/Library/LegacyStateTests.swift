@@ -5,6 +5,10 @@ import WinSDK
 #else
 import Darwin
 #endif
+// Swift 6.4's member-import visibility attributes timespec's members to
+// SwiftOverlayShims; without this import, timespec()/tv_sec/tv_nsec fail with
+// "not available due to missing import of defining module 'SwiftOverlayShims'".
+import SwiftOverlayShims
 import FirmwareSchema
 import Foundation
 #if os(Linux)
