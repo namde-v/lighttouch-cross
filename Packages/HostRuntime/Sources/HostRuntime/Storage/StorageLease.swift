@@ -101,7 +101,9 @@ extension StorageLease {
     fileprivate static func lockExclusive(_ fd: Int32) -> Bool {
         guard let handle = lockHandle(fd) else { return false }
         var overlapped = OVERLAPPED()
-        return LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &overlapped) != 0
+        // LockFileEx returns BOOL (Swift Bool); the flag #defines import as
+        // Int32 and need a DWORD conversion for the DWORD parameters.
+        return LockFileEx(handle, DWORD(LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY), 0, 1, 0, &overlapped)
     }
 
     fileprivate static func unlock(_ fd: Int32) {
@@ -124,7 +126,7 @@ extension StorageLease {
         return wide.withUnsafeBufferPointer { buffer in
             guard let wpath = buffer.baseAddress else { return false }
             let attrs = GetFileAttributesW(wpath)
-            return attrs != INVALID_FILE_ATTRIBUTES && attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            return attrs != INVALID_FILE_ATTRIBUTES && attrs & DWORD(FILE_ATTRIBUTE_REPARSE_POINT) != 0
         }
     }
 }
