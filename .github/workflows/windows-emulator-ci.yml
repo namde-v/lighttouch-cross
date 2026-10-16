@@ -746,7 +746,17 @@ jobs:
           cd qemu-src
           mkdir -p dist
           cp build/qemu-system-arm.exe dist/
-          for dll in $(x86_64-w64-mingw32-objdump -p build/qemu-system-arm.exe | awk '/DLL Name:/{print $3}'); do
+          # Locate objdump robustly and FAIL LOUDLY if it is missing: a
+          # missing objdump used to fail silently, producing DLL-less,
+          # unrunnable bundles (the for loop just iterated over nothing).
+          OBJDUMP=$(command -v x86_64-w64-mingw32-objdump || command -v objdump || ls /mingw64/bin/*-objdump.exe 2>/dev/null | head -1)
+          if [ -z "$OBJDUMP" ]; then
+            echo "ERROR: no objdump found; /mingw64/bin contents:"
+            ls /mingw64/bin/ | head -40
+            exit 1
+          fi
+          echo "Using objdump: $OBJDUMP"
+          for dll in $("$OBJDUMP" -p build/qemu-system-arm.exe | awk '/DLL Name:/{print $3}'); do
             if [ -f "/mingw64/bin/$dll" ]; then cp "/mingw64/bin/$dll" dist/; fi
           done
           ls -la dist/
@@ -757,9 +767,11 @@ jobs:
       - name: Verify bundled DLLs are complete
         run: |
           cd qemu-src
+          OBJDUMP=$(command -v x86_64-w64-mingw32-objdump || command -v objdump || ls /mingw64/bin/*-objdump.exe 2>/dev/null | head -1)
+          if [ -z "$OBJDUMP" ]; then echo "ERROR: no objdump found"; exit 1; fi
           sys='kernel32\.dll|user32\.dll|gdi32\.dll|advapi32\.dll|shell32\.dll|ole32\.dll|oleaut32\.dll|uuid\.dll|msvcrt\.dll|ucrtbase\.dll|vcruntime140\.dll|ws2_32\.dll|winmm\.dll|version\.dll|secur32\.dll|crypt32\.dll|bcrypt\.dll|iphlpapi\.dll|dnsapi\.dll|imm32\.dll|comdlg32\.dll|comctl32\.dll|shlwapi\.dll|setupapi\.dll|wtsapi32\.dll|powrprof\.dll|dwmapi\.dll|uxtheme\.dll|ntdll\.dll|msimg32\.dll|gdiplus\.dll|opengl32\.dll|hid\.dll|api-ms-win-[a-z0-9-]+\.dll'
           fail=0
-          for dll in $(x86_64-w64-mingw32-objdump -p dist/qemu-system-arm.exe | awk '/DLL Name:/{print $3}'); do
+          for dll in $("$OBJDUMP" -p dist/qemu-system-arm.exe | awk '/DLL Name:/{print $3}'); do
             lc=$(printf '%s' "$dll" | tr 'A-Z' 'a-z')
             if [ -f "dist/$dll" ]; then continue; fi
             if printf '%s' "$lc" | grep -Eq "^($sys)$"; then continue; fi
