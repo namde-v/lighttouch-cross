@@ -2,7 +2,7 @@ import Foundation
 import Testing
 
 @testable import FirmwareKit
-import FirmwareSchema
+@testable import FirmwareSchema
 
 struct StorageCapacityTests {
     @Test(arguments: [Int64?.none, Int64?(0), Int64?(-1)])
