@@ -256,7 +256,7 @@ jobs:
            #include "trace.h"
            #include "hw/trace-printf.h"
           diff --git a/hw/arm/ipod_touch_tcp_usb.c b/hw/arm/ipod_touch_tcp_usb.c
-          index a1a91b2..aad9d85 100644
+          index a1a91b2..bfb93da 100644
           --- a/hw/arm/ipod_touch_tcp_usb.c
           +++ b/hw/arm/ipod_touch_tcp_usb.c
           @@ -34,12 +34,28 @@
@@ -303,11 +303,10 @@ jobs:
            	struct addrinfo hints = {
            		.ai_family = AF_INET,
            		.ai_socktype = SOCK_STREAM,
-          @@ -519,6 +543,8 @@ connected:
+          @@ -519,6 +543,7 @@ connected:
            	 * tcp_usb_callback) only while a write is pending, or the loop spins. */
            	qemu_set_fd_handler(fd, tcp_usb_read_callback, NULL, _state);
            	return 0;
-          +	return 0;
           +#endif
            }
  
@@ -448,6 +447,39 @@ jobs:
                            utc.tm_hour, utc.tm_min, utc.tm_sec);
            }
  
+          diff --git a/tests/unit/test-ios-baseband.c b/tests/unit/test-ios-baseband.c
+          index 6287252..dbf94c4 100644
+          --- a/tests/unit/test-ios-baseband.c
+          +++ b/tests/unit/test-ios-baseband.c
+          @@ -15,6 +15,28 @@
+           #include <math.h>
+           #include "hw/misc/ios_baseband_core.h"
+ 
+          +#ifdef _WIN32
+          +/*
+          + * setenv()/timegm() are POSIX/GNU; UCRT provides _putenv()/_mkgmtime().
+          + * UCRT only understands POSIX-style TZ ("EST5EDT"), not IANA names, so
+          + * translate the one TZ value this test uses (EDT is in effect on its date).
+          + */
+          +static int portable_setenv(const char *name, const char *value, int overwrite)
+          +{
+          +    char buf[512];
+          +    if (strcmp(name, "TZ") == 0 && strcmp(value, "America/New_York") == 0) {
+          +        value = "EST5EDT";
+          +    }
+          +    if (!overwrite && getenv(name) != NULL) {
+          +        return 0;
+          +    }
+          +    snprintf(buf, sizeof(buf), "%s=%s", name, value);
+          +    return _putenv(buf);
+          +}
+          +#define setenv portable_setenv
+          +#define timegm _mkgmtime
+          +#endif
+          +
+           /* ------------------------------------------------------------------- harness */
+ 
+           static int failures;
           PATCH_EOF
           sed -i 's/\r$//' win32-portability.patch
           git apply --check win32-portability.patch
