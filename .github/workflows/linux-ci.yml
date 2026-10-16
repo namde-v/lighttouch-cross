@@ -56,7 +56,7 @@ jobs:
         run: swift --version
 
       - name: Build
-        run: swift build --configuration release
+        run: swift build --configuration release --build-tests
 
       - name: Test
-        run: swift test --skip-build
+        run: swift test --skip-build --configuration release
