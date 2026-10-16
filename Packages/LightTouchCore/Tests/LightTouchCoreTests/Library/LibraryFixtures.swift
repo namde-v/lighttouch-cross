@@ -30,12 +30,31 @@ nonisolated enum LibraryFixtures {
     }
 
     static func randomData(_ count: Int) -> Data {
-        // arc4random_buf is absent from glibc < 2.36 (Ubuntu 22.04 ships 2.35);
-        // SystemRandomNumberGenerator is portable and equally suitable here.
+        // Fast: seed a xorshift PRNG once from the system RNG, then fill in
+        // 8-byte chunks. Byte-by-byte SystemRandomNumberGenerator (a getrandom
+        // syscall per byte on Linux) takes 30s+ for the 160MB buffer and hogs
+        // the MainActor under batch load, stalling every other test's timeouts.
         var data = Data(count: count)
         data.withUnsafeMutableBytes { ptr in
             var rng = SystemRandomNumberGenerator()
-            for i in 0..<count { ptr[i] = UInt8(truncatingIfNeeded: rng.next()) }
+            var state = rng.next() | 0x9E3779B97F4A7C15  // non-zero seed
+            func next() -> UInt64 {
+                // xorshift64*
+                state ^= state >> 12
+                state ^= state << 25
+                state ^= state >> 27
+                return state &* 0x2545F4914F6CDD1D
+            }
+            let words = ptr.bindMemory(to: UInt64.self)
+            for i in 0..<words.count { words[i] = next() }
+            let remainderStart = words.count * 8
+            if remainderStart < count {
+                var last = next()
+                for i in remainderStart..<count {
+                    ptr[i] = UInt8(truncatingIfNeeded: last)
+                    last >>= 8
+                }
+            }
         }
         return data
     }
