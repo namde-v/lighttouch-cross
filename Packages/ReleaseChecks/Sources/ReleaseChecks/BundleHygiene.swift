@@ -255,6 +255,11 @@ public enum BundleHygiene {
 
     /// Inflates the rest of `handle` (a zlib stream), handing each decompressed chunk to `body`. False on a bad stream.
     static func inflate(_ handle: FileHandle, _ body: (Data) -> Void) -> Bool {
+#if os(Windows)
+        // zlib is not available on Windows; packed-device hygiene checks are
+        // not applicable there. Return false (no data inflated).
+        return false
+#else
         var stream = z_stream()
         guard inflateInit_(&stream, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK else { return false }
         defer { inflateEnd(&stream) }
@@ -276,5 +281,6 @@ public enum BundleHygiene {
             }
         }
         return status == Z_STREAM_END
+#endif
     }
 }

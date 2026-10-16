@@ -34,9 +34,9 @@ static int win_setenv(const char *name, const char *value, int overwrite) {
     return r;
 }
 
-// mkdtemp() emulation: _mktemp fills the trailing XXXXXX, then mkdir.
+// mkdtemp() emulation: _mktemp_s fills the trailing XXXXXX, then mkdir.
 static char *win_mkdtemp(char *tmpl) {
-    if (_mktemp(tmpl) == NULL)
+    if (_mktemp_s(tmpl, strlen(tmpl) + 1) != 0)
         return NULL;
     if (_mkdir(tmpl) != 0)
         return NULL;

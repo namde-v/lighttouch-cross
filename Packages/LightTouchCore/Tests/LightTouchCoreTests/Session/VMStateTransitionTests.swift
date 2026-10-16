@@ -34,6 +34,7 @@ struct VMStateTransitionTests {
     /// A dead device coming back to life (a late frame or resume, dead with live timers: A-1) was a plain assignment
     /// away; now it traps in a debug build.
     @Test func aDeadDeviceCantRunAgain() async {
+        #if DEBUG
         await #expect(processExitsWith: .failure) {
             var state = VMState.dead(exitCode: nil)
             state.transition(to: .running)
@@ -42,5 +43,15 @@ struct VMStateTransitionTests {
             var state = VMState.poweredOff
             state.transition(to: .paused)
         }
+        #else
+        // Release builds don't trap: the refusal is logged and the state is left as it was
+        // (MachineState.transition(to:)). The invariant under test is the refusal itself.
+        var dead = VMState.dead(exitCode: nil)
+        dead.transition(to: .running)
+        #expect(dead == .dead(exitCode: nil), "a refused transition leaves a dead device dead")
+        var off = VMState.poweredOff
+        off.transition(to: .paused)
+        #expect(off == .poweredOff, "a refused transition leaves a powered-off device off")
+        #endif
     }
 }

@@ -4,6 +4,9 @@
 
 import Foundation
 import HostServiceWire
+#if os(Windows)
+import CRT
+#endif
 
 extension DeviceServices {
     // MARK: - Attachment and lockdown
@@ -189,6 +192,8 @@ extension DeviceServices {
         try Task.checkCancellation()
 #if os(macOS)
         let renamed = Darwin.rename(candidate.path, destination.path)
+#elseif os(Windows)
+        let renamed = CRT.rename(candidate.path, destination.path)
 #else
         let renamed = Glibc.rename(candidate.path, destination.path)
 #endif
