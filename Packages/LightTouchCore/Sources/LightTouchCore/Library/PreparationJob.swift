@@ -217,6 +217,13 @@ public nonisolated final class PreparationJob: @unchecked Sendable {
         lock.withLock { task }?.cancel()
     }
 
+    /// Wait for the preparation task to finish. Call after cancel() to ensure
+    /// the task (which blocks a pool thread in Subprocess.run) has released
+    /// its thread before the test ends.
+    public func waitForCompletion() async {
+        await lock.withLock { task }?.value
+    }
+
     /// The preparer, its JSON Lines read as they come, its stderr into the log.
     private func run(_ arguments: [String], log: FileDescriptor) async {
         var options = PlatformOptions()
@@ -231,7 +238,10 @@ public nonisolated final class PreparationJob: @unchecked Sendable {
                 output: .sequence,
                 error: .fileDescriptor(log, closeAfterSpawningProcess: true)
             ) { execution in
-                for try await line in execution.standardOutput.strings() { receive(Line(line)) }
+                for try await line in execution.standardOutput.strings() {
+                    try Task.checkCancellation()
+                    receive(Line(line))
+                }
             }
             status =
                 switch result.terminationStatus {

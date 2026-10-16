@@ -60,7 +60,8 @@ import HostRuntime
     /// Made in init, once self can be captured by its event handler.
     private var downloads: FirmwareDownloads?
     /// The preparers and import checks running, by the id their events carry.
-    private var preparations: [UUID: PreparationJob] = [:]
+    nonisolated(unsafe) private var preparations: [UUID: PreparationJob] = [:]
+    private let preparationsLock = NSLock()
     private var imports: [UUID: Task<Void, Never>] = [:]
     /// The downloading jobs (FirmwareJobTable.intents), for the next launch.
     private let intentsFile: URL
@@ -316,7 +317,19 @@ import HostRuntime
     /// App quit: every preparer gets SIGTERM (its own cancel path detaches
     /// its images); the next launch's sweep removes what's left.
     public func cancelAll() {
-        for job in preparations.values { job.cancel() }
+        for job in preparationsLock.withLock({ Array(preparations.values) }) { job.cancel() }
+    }
+
+    /// Wait for all preparation tasks to finish. Call after cancelAll() to
+    /// ensure no pool threads are left blocked in Subprocess.run.
+    public func waitForPreparations() async {
+        for job in preparationsLock.withLock({ Array(preparations.values) }) { await job.waitForCompletion() }
+    }
+
+    /// The current preparation jobs. Nonisolated so test harnesses can wait
+    /// for completion from deinit (which is never actor-isolated).
+    public nonisolated var preparationJobs: [PreparationJob] {
+        preparationsLock.withLock { Array(preparations.values) }
     }
 
     /// Peak disk use of the downloads and preparations under way.
@@ -361,15 +374,15 @@ import HostRuntime
             case .begin, .step, .progress: break
             case .warning(let message): logEvent("firmware: \(id): \(message)")
             case .published(let instance):
-                preparations[job] = nil
+                preparationsLock.withLock { preparations[job] = nil }
                 logEvent("firmware: \(id) is device \(instance.id.uuidString)")
                 library.reload()
                 NotificationCenter.default.post(name: Self.didPublishNotification, object: id)
             case .failed(let message):
-                preparations[job] = nil
+                preparationsLock.withLock { preparations[job] = nil }
                 logEvent("firmware: \(id): \(message)")
             case .cancelled:
-                preparations[job] = nil
+                preparationsLock.withLock { preparations[job] = nil }
                 logEvent("firmware: preparation of \(id) cancelled")
             }
             run(effects)
@@ -400,7 +413,7 @@ import HostRuntime
             case .startDownload(let sha1): startDownload(sha1)
             case .cancelDownload(let sha1): downloads?.cancel(sha1: sha1)
             case .cancelImport(let token): imports.removeValue(forKey: token)?.cancel()
-            case .cancelPreparation(let job): preparations[job]?.cancel()
+            case .cancelPreparation(let job): preparationsLock.withLock { preparations[job] }?.cancel()
             case .prepare(let id):
                 guard let entry = catalog.entry(id: id) else { continue }
                 guard let own = entry.source.sha1, let ipsw = store.existing(own) else {
@@ -471,7 +484,7 @@ import HostRuntime
         let job = PreparationJob(request, id: id) { [inputs, entryID = entry.id] event in
             inputs.yield(.preparation(entryID, id, event))
         }
-        preparations[id] = job
+        preparationsLock.withLock { preparations[id] = job }
         table.preparing(entry.id, id, afterDownload: afterDownload, now: Date())
         logEvent("firmware: \(bundled ? "unpacking the built-in" : "preparing") \(entry.id) as \(job.id.uuidString)")
         job.start()
