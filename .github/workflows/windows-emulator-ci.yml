@@ -629,6 +629,38 @@ jobs:
                struct timeval timeout = { .tv_sec = 3 };
                setsockopt(peer, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
                return peer;
+          diff --git a/tests/qtest/ipad1-h2fmi-test.c b/tests/qtest/ipad1-h2fmi-test.c
+          index 0152402..d02edff 100644
+          --- a/tests/qtest/ipad1-h2fmi-test.c
+          +++ b/tests/qtest/ipad1-h2fmi-test.c
+          @@ -36,6 +36,27 @@ static int portable_kill(GPid pid, int sig)
+           #define kill portable_kill
+           #endif
+ 
+          +#ifdef _WIN32
+          +/* UCRT has no pread()/pwrite(); emulate positionally with lseek. The test is
+          + * single-threaded on these descriptors, so the lseek+read/write pair is safe. */
+          +static ssize_t portable_pread(int fd, void *buf, size_t n, off_t off)
+          +{
+          +    if (lseek(fd, off, SEEK_SET) < 0) {
+          +        return -1;
+          +    }
+          +    return read(fd, buf, (unsigned)n);
+          +}
+          +static ssize_t portable_pwrite(int fd, const void *buf, size_t n, off_t off)
+          +{
+          +    if (lseek(fd, off, SEEK_SET) < 0) {
+          +        return -1;
+          +    }
+          +    return write(fd, buf, (unsigned)n);
+          +}
+          +#define pread portable_pread
+          +#define pwrite portable_pwrite
+          +#endif
+          +
+           #define FMI 0x81200000ULL
+           #define FMC (FMI + 0x40000)
+           #define PAGE_BYTES 4096
           PATCH_EOF
           sed -i 's/\r$//' win32-portability.patch
           git apply --check win32-portability.patch
