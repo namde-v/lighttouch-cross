@@ -160,6 +160,54 @@ jobs:
           git apply --check amc-nonavcodec-fix.patch
           git apply amc-nonavcodec-fix.patch
 
+      - name: Apply Windows portability fixes
+        run: |
+          cd qemu-src
+          cat > win32-portability.patch <<'PATCH_EOF'
+          --- a/hw/misc/ios_baseband_core.c
+          +++ b/hw/misc/ios_baseband_core.c
+          @@ -1042,6 +1042,27 @@
+           }
+ 
+           /*
+          + * Portable replacement for the BSD/glibc struct tm member tm_gmtoff
+          + * (seconds east of UTC, DST included): MS UCRT's struct tm has no such
+          + * member, so on Windows derive the offset from _get_timezone/_get_dstbias.
+          + */
+          +static long portable_tm_gmtoff(const struct tm *local)
+          +{
+          +#ifdef _WIN32
+          +    long tz = 0;
+          +    _get_timezone(&tz);          /* seconds WEST of UTC */
+          +    if (local->tm_isdst > 0) {
+          +        long dstbias = 0;
+          +        _get_dstbias(&dstbias);  /* added to tz while DST is in effect */
+          +        tz += dstbias;
+          +    }
+          +    return -tz;                  /* tm_gmtoff is seconds EAST of UTC */
+          +#else
+          +    return (long)local->tm_gmtoff;
+          +#endif
+          +}
+          +
+          +/*
+            * NITZ, as a network sends it on registration: +CTZV: <tz>,"yy/MM/dd,hh:mm:ss", tz the host's offset
+            * from UTC in quarter hours (DST included), the time UTC. 1.0's CommCenter (0x2a6e0) reads tz as
+            * field 0 (x15 minutes) and the time as field 1 at offsets 0,3,6,9,12,15, then points /var/db/localtime
+          @@ -1058,7 +1079,7 @@
+               gmtime_r(&secs, &utc);
+               localtime_r(&secs, &local);
+               chan_printf(bb, bb->ctzr_ch, "\r\n+CTZV: %ld,\"%02d/%02d/%02d,%02d:%02d:%02d\"\r\n",
+          -                (long)(local.tm_gmtoff / 900), utc.tm_year % 100, utc.tm_mon + 1, utc.tm_mday,
+          +                (long)(portable_tm_gmtoff(&local) / 900), utc.tm_year % 100, utc.tm_mon + 1, utc.tm_mday,
+                           utc.tm_hour, utc.tm_min, utc.tm_sec);
+           }
+ 
+          PATCH_EOF
+          sed -i 's/\r$//' win32-portability.patch
+          git apply --check win32-portability.patch
+          git apply win32-portability.patch
+
       - name: Pre-seed meson subprojects from GitHub mirrors
         run: |
           cd qemu-src
