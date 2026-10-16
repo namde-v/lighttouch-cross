@@ -1,0 +1,92 @@
+# LightTouch cross-platform port — Qt UI tests on Windows (scaffold)
+#
+# Runs the Qt 6 UI test suite headless via QT_QPA_PLATFORM=offscreen + ctest.
+# The runners are the test machines: ctest results (JUnit XML + full log)
+# upload as an artifact on EVERY run — pass or fail — so failures are
+# diagnosable without a local Windows box.
+#
+# Ownership split: W-UI owns the Qt test content; this file owns the runner
+# wiring. CONTRACT for W-UI: a CMake project at QtUI/ (see QT_UI_DIR below)
+# with enable_testing() and the QtTest-based tests registered with ctest.
+# Until QtUI/CMakeLists.txt exists, the job is skipped (no failure, no
+# wasted minutes): the paths trigger below only fires on QtUI/** changes,
+# and the job-level gate covers manual dispatches and workflow-file edits.
+name: Windows Qt UI tests
+
+on:
+  push:
+    branches: [main, port/**, win/**]
+    paths:
+      - 'QtUI/**'
+      - '.github/workflows/windows-qt-ci.yml'
+  pull_request:
+    paths:
+      - 'QtUI/**'
+      - '.github/workflows/windows-qt-ci.yml'
+  workflow_dispatch:
+
+env:
+  QT_UI_DIR: QtUI      # W-UI: adjust if the Qt UI lands elsewhere
+  QT_VERSION: "6.8.3"
+
+jobs:
+  qt-tests:
+    name: Qt offscreen tests (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      # Gate: everything below is skipped (not failed) until W-UI lands
+      # QtUI/CMakeLists.txt. The paths trigger above already limits runs to
+      # QtUI/** changes; this covers manual dispatches and workflow edits.
+      - name: Check Qt UI sources exist
+        id: src
+        run: |
+          if (Test-Path "${{ env.QT_UI_DIR }}/CMakeLists.txt") {
+            "present=true" >> $env:GITHUB_OUTPUT
+          } else {
+            "present=false" >> $env:GITHUB_OUTPUT
+            Write-Warning "QtUI/ not present yet (W-UI has not landed it) — Qt tests skipped."
+          }
+
+      - name: Install Qt
+        if: steps.src.outputs.present == 'true'
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Configure
+        if: steps.src.outputs.present == 'true'
+        run: cmake -S ${{ env.QT_UI_DIR }} -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        if: steps.src.outputs.present == 'true'
+        run: cmake --build build
+
+      # QT_QPA_PLATFORM=offscreen: no display server on runners. ctest writes
+      # JUnit XML (--output-junit needs CMake >= 3.21; runners are newer).
+      - name: Test (offscreen)
+        if: steps.src.outputs.present == 'true'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          ctest --test-dir build --output-on-failure --output-junit test-results.xml 2>&1 | Tee-Object -FilePath ctest.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload test results
+        if: always() && steps.src.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: qt-ui-tests-windows-x86_64
+          path: |
+            test-results.xml
+            ctest.log
+          if-no-files-found: warn
+          retention-days: 30

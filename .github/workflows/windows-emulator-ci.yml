@@ -736,6 +736,10 @@ jobs:
           cd qemu-src/build
           ./qemu-system-arm.exe --version
           ./qemu-system-arm.exe -M ? | grep -iE 'ipod|iphone|ipad'
+          # -device ? enumerates the registered device models: proves the
+          # binary initializes past machine listing without firmware images.
+          ./qemu-system-arm.exe -device ? > devices.txt
+          grep -ciE 'ipod|iphone|ipad' devices.txt
 
       - name: Bundle binary and MinGW DLLs
         run: |
@@ -746,6 +750,23 @@ jobs:
             if [ -f "/mingw64/bin/$dll" ]; then cp "/mingw64/bin/$dll" dist/; fi
           done
           ls -la dist/
+
+      # The artifact must be runnable from dist/ alone: every DLL the exe
+      # imports has to be either bundled in dist/ or a Windows system DLL.
+      # Anything else (e.g. a MinGW DLL the copy loop missed) fails the run.
+      - name: Verify bundled DLLs are complete
+        run: |
+          cd qemu-src
+          sys='kernel32\.dll|user32\.dll|gdi32\.dll|advapi32\.dll|shell32\.dll|ole32\.dll|oleaut32\.dll|uuid\.dll|msvcrt\.dll|ucrtbase\.dll|vcruntime140\.dll|ws2_32\.dll|winmm\.dll|version\.dll|secur32\.dll|crypt32\.dll|bcrypt\.dll|iphlpapi\.dll|dnsapi\.dll|imm32\.dll|comdlg32\.dll|comctl32\.dll|shlwapi\.dll|setupapi\.dll|wtsapi32\.dll|powrprof\.dll|dwmapi\.dll|uxtheme\.dll|ntdll\.dll|msimg32\.dll|gdiplus\.dll|opengl32\.dll|hid\.dll|api-ms-win-[a-z0-9-]+\.dll'
+          fail=0
+          for dll in $(x86_64-w64-mingw32-objdump -p dist/qemu-system-arm.exe | awk '/DLL Name:/{print $3}'); do
+            lc=$(printf '%s' "$dll" | tr 'A-Z' 'a-z')
+            if [ -f "dist/$dll" ]; then continue; fi
+            if printf '%s' "$lc" | grep -Eq "^($sys)$"; then continue; fi
+            echo "NOT BUNDLED and not a system DLL: $dll"
+            fail=1
+          done
+          exit $fail
 
       - name: Upload emulator artifact
         uses: actions/upload-artifact@v4

@@ -8,7 +8,7 @@
 #     *.dll                     MinGW runtime DLLs (bundled by the emulator job)
 #     *.dll                     Swift package DLLs (from windows-ci artifacts)
 #     swiftCore.dll, ...        Swift runtime DLLs (copied from the toolchain)
-#     README.txt                contents + signing status
+#     README.txt                contents manifest
 #
 # The layout is FLAT (no bin/ or lib/ subdirs): the Windows loader does not
 # search subdirectories for DLLs, so a flat directory is the only portable
@@ -18,12 +18,6 @@
 # Qt UI <-> core integration (Phase 6) is still open, so there is no Qt UI
 # executable artifact to stage. The Qt step below starts working automatically
 # once a workflow publishes `lighttouch-qt-ui-windows-x86_64`.
-#
-# *** CODE SIGNING: BLOCKED pending mixu (signing certificate). ***
-# The "Sign binaries" step is gated on the WINDOWS_SIGNING_CERT secret (base64
-# PFX) being present and is skipped until then; NOTHING is faked — an
-# unsigned ZIP is uploaded as-is, and README.txt records the signing status.
-# When the cert arrives, also set WINDOWS_SIGNING_CERT_PASSWORD.
 name: Windows package
 
 on:
@@ -135,52 +129,13 @@ jobs:
           Write-Host '--- layout contents ---'
           Get-ChildItem $layout | Format-Table Name, Length -AutoSize | Out-String | Write-Host
 
-      # *** BLOCKED: signing certificate pending from mixu. ***
-      # Gated on the WINDOWS_SIGNING_CERT secret (base64-encoded PFX), probed
-      # once in the step below. The sign step is skipped until the secret
-      # exists — the ZIP is uploaded UNSIGNED meanwhile. Nothing is faked.
-      - name: Check for signing certificate
-        id: cert
-        env:
-          CERT_PFX_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT }}
-        run: |
-          $present = -not [string]::IsNullOrEmpty($env:CERT_PFX_BASE64)
-          "present=$($present.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
-          if ($present) { Write-Host 'Signing certificate present — binaries will be signed.' } `
-            else { Write-Warning 'WINDOWS_SIGNING_CERT not set — binaries will be UNSIGNED (BLOCKED: cert pending from mixu).' }
-
-      - name: Sign binaries (BLOCKED — no cert yet)
-        if: steps.cert.outputs.present == 'true'
-        env:
-          CERT_PFX_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT }}
-          CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
-        run: |
-          $pfx = Join-Path $env:RUNNER_TEMP 'lt-sign.pfx'
-          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CERT_PFX_BASE64))
-          try {
-            $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
-              Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1 -ExpandProperty FullName
-            if (-not $signtool) { Write-Error 'signtool.exe not found (Windows SDK missing?)'; exit 1 }
-            Get-ChildItem LightTouch -Include *.exe,*.dll -Recurse | ForEach-Object {
-              & $signtool sign /f $pfx /p $env:CERT_PASSWORD /tr http://timestamp.digicert.com /td sha256 /fd sha256 $_.FullName
-              if ($LASTEXITCODE -ne 0) { Write-Error "signing failed: $($_.Name)"; exit 1 }
-            }
-          } finally {
-            Remove-Item $pfx -Force -ErrorAction SilentlyContinue
-          }
-
       - name: Create portable ZIP
-        env:
-          SIGNED: ${{ steps.cert.outputs.present }}
         run: |
-          $signed = $env:SIGNED -eq 'true'
           @(
             'LightTouch — portable Windows build (cross-platform port)'
             ''
             'Contents: Qt UI executable (when available), qemu-system-arm.exe + MinGW'
             'runtime DLLs, Swift package DLLs, Swift runtime DLLs.'
-            ''
-            ('Code signing: ' + $(if ($signed) { 'SIGNED (WINDOWS_SIGNING_CERT present)' } else { 'NOT SIGNED — certificate pending (BLOCKED)' }))
           ) | Out-File LightTouch/README.txt -Encoding utf8
           Compress-Archive -Path LightTouch -DestinationPath LightTouch-windows-x86_64.zip -Force
           Write-Host "ZIP size: $((Get-Item LightTouch-windows-x86_64.zip).Length) bytes"
