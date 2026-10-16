@@ -1,0 +1,33 @@
+# SwiftPM build artifacts
+.build/
+.swiftpm/
+
+# Xcode / macOS
+*.xcodeproj/
+*.xcworkspace/
+DerivedData/
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+xcuserdata/
+*.xcuserstate
+.DS_Store
+
+# Linux / Qt (later phases)
+build/
+*.o
+*.so
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# Misc
+*.log

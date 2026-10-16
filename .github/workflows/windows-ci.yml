@@ -1,0 +1,57 @@
+# LightTouch cross-platform port — Windows CI
+#
+# On every push/PR: builds and unit-tests each portable Swift package under
+# Packages/ on a real Windows runner (windows-latest).
+#
+# Toolchain is pinned to the same Swift version used for Linux development
+# (see docs/SWIFT_TOOLCHAIN.md) so both platforms stay in lockstep.
+name: Windows CI
+
+on:
+  push:
+    branches: [main, port/**]
+  pull_request:
+
+env:
+  SWIFT_VERSION: "6.4.1"
+
+jobs:
+  build-and-test:
+    name: swift build + test (${{ matrix.package }})
+    runs-on: windows-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - HostRuntime
+          - DeviceServices
+          - ReleaseChecks
+          - BuildTools
+          - FirmwareKit
+          - DeviceRuntime
+          - LightTouchCore
+    defaults:
+      run:
+        working-directory: Packages/${{ matrix.package }}
+        shell: pwsh
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install Swift
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: ${{ env.SWIFT_VERSION }}
+
+      - name: Show toolchain
+        run: swift --version
+
+      # Windows runners are headless: anything needing a display must be
+      # guarded in code/tests. UI tests for the Qt 6 rewrite run under
+      # QT_QPA_PLATFORM=minimal in a separate workflow (later phase).
+      - name: Build
+        run: swift build --configuration release
+
+      - name: Test
+        run: swift test --skip-build

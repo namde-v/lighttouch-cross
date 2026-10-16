@@ -1,0 +1,4 @@
+module LTMShm {
+    header "ltm_shm.h"
+    export *
+}
