@@ -229,7 +229,7 @@ public nonisolated enum DeviceStateStorage {
         return wide.withUnsafeBufferPointer { buffer in
             guard let path = buffer.baseAddress else { return false }
             let attrs = GetFileAttributesW(path)
-            return attrs != INVALID_FILE_ATTRIBUTES && attrs & FILE_ATTRIBUTE_READONLY != 0
+            return attrs != INVALID_FILE_ATTRIBUTES && attrs & DWORD(FILE_ATTRIBUTE_READONLY) != 0
         }
         #else
         var info = stat()
@@ -249,9 +249,9 @@ public nonisolated enum DeviceStateStorage {
             var attrs = GetFileAttributesW(wpath)
             guard attrs != INVALID_FILE_ATTRIBUTES else { return }
             if readOnly {
-                attrs |= FILE_ATTRIBUTE_READONLY
+                attrs |= DWORD(FILE_ATTRIBUTE_READONLY)
             } else {
-                attrs &= ~FILE_ATTRIBUTE_READONLY
+                attrs &= ~DWORD(FILE_ATTRIBUTE_READONLY)
             }
             _ = SetFileAttributesW(wpath, attrs)
         }

@@ -236,8 +236,8 @@ public struct Vendor {
                 throw ToolError("vendor: cannot lock \(path)")
             }
             var overlapped = OVERLAPPED()
-            while LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &overlapped) == 0 {
-                guard GetLastError() == ERROR_LOCK_VIOLATION else {
+            while !LockFileEx(handle, DWORD(LOCKFILE_EXCLUSIVE_LOCK), 0, 1, 0, &overlapped) {
+                guard GetLastError() == DWORD(ERROR_LOCK_VIOLATION) else {
                     close(fd)
                     throw ToolError("vendor: cannot lock \(path)")
                 }
@@ -267,7 +267,9 @@ public struct Vendor {
     private static func windowsTryLock(_ fd: Int32) -> Bool {
         guard let handle = windowsLockHandle(fd) else { return false }
         var overlapped = OVERLAPPED()
-        return LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &overlapped) != 0
+        // LockFileEx returns BOOL (Swift Bool); the flag #defines import as
+        // Int32 and need a DWORD conversion for the DWORD parameters.
+        return LockFileEx(handle, DWORD(LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY), 0, 1, 0, &overlapped)
     }
 
     private static func windowsLockHandle(_ fd: Int32) -> UnsafeMutableRawPointer? {
