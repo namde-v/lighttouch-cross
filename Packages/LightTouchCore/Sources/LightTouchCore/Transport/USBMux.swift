@@ -29,7 +29,9 @@ import SystemPackage
     }
     private let binaryOverride: String?
 
-    public struct Session: Sendable {
+    /// Nonisolated: read from background threads via the AppsHost witness (AppChangeWatch
+    /// follows boot renewals off the main thread; all fields are immutable).
+    nonisolated public struct Session: Sendable {
         public let clientSocket: String  // USBMUXD_SOCKET_ADDRESS for host tools: "UNIX:<path>"
         public let guestAddress: String  // usb-tcp-addr the VM dials out to: a socket path
 
