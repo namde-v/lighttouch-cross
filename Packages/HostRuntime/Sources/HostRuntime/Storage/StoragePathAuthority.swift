@@ -7,12 +7,6 @@ import Darwin
 #endif
 import Foundation
 
-#if os(Windows)
-// WinSDK declares its own UUID (rpcdce.h); pin the name to Foundation's.
-// Internal (not private): the public methods below take UUID parameters.
-typealias UUID = Foundation.UUID
-#endif
-
 /// Explicit private-library path policy; not imposed on caller-selected standalone stores.
 public nonisolated enum StoragePathAuthority {
     public enum Failure: Error { case invalidPath(URL) }
@@ -40,10 +34,10 @@ public nonisolated enum StoragePathAuthority {
     }
 
     /// The record directories under Devices/ (a UUID name with a record, DeviceRecord), but `owner`'s.
-    private static func otherRecordDirectories(state: URL, owner: UUID?) -> [String] {
+    private static func otherRecordDirectories(state: URL, owner: Foundation.UUID?) -> [String] {
         let devices = state.appendingPathComponent("Devices", isDirectory: true)
         return ((try? FileManager.default.contentsOfDirectory(atPath: devices.path)) ?? []).filter { name in
-            UUID(uuidString: name) != nil && UUID(uuidString: name) != owner
+            Foundation.UUID(uuidString: name) != nil && Foundation.UUID(uuidString: name) != owner
                 && [DeviceRecord.name, DeviceRecord.legacyName].contains {
                     FileManager.default.fileExists(atPath: devices.appendingPathComponent("\(name)/\($0)").path)
                 }
@@ -68,7 +62,7 @@ public nonisolated enum StoragePathAuthority {
     }
 
     /// Admit the private record/work directory before creating its lease.
-    public static func checkManagedDirectory(_ directory: URL, state: URL, owner: UUID) throws {
+    public static func checkManagedDirectory(_ directory: URL, state: URL, owner: Foundation.UUID) throws {
         let expected = state.appendingPathComponent("Devices/\(owner.uuidString)")
         try checkLinks(directory)
         try checkLinks(directory.appendingPathComponent("work"))
@@ -84,7 +78,7 @@ public nonisolated enum StoragePathAuthority {
 
     /// A managed container owns children, including immutable published bases.
     /// Check its confinement separately from disjointness of writable leaves.
-    public static func checkManagedContainer(_ container: URL, state: URL, owner: UUID) throws {
+    public static func checkManagedContainer(_ container: URL, state: URL, owner: Foundation.UUID) throws {
         try checkLinks(container)
         try checkRemovable(container, state: state, owner: owner)
         let owned = canonicalPath(state.appendingPathComponent("Devices/\(owner.uuidString)"))
@@ -94,7 +88,7 @@ public nonisolated enum StoragePathAuthority {
     /// Managed GUI records must keep writable state under their own record directory.
     /// Explicit external read-only bases and caller-authorized raw CLI fixtures are separate policy.
     /// This read-only preflight must run before helper spawn or storage preparation.
-    public static func checkBootPaths(base: URL, mutable: [URL], state: URL, owner: UUID) throws {
+    public static func checkBootPaths(base: URL, mutable: [URL], state: URL, owner: Foundation.UUID) throws {
         let directory = state.appendingPathComponent("Devices/\(owner.uuidString)")
         func invalid(_ url: URL) -> Failure { .invalidPath(url) }
         try checkLinks(directory)
@@ -115,7 +109,7 @@ public nonisolated enum StoragePathAuthority {
     /// Erase and Delete only remove paths strictly inside the state root that
     /// are neither the root, Devices/, nor inside another record's directory.
     /// A damaged or hand-edited record can't reach anything else.
-    public static func checkRemovable(_ url: URL, state: URL, owner: UUID?) throws {
+    public static func checkRemovable(_ url: URL, state: URL, owner: Foundation.UUID?) throws {
         let root = canonicalPath(state)
         let path = canonicalPath(url)
         let devices = root + "/Devices"
