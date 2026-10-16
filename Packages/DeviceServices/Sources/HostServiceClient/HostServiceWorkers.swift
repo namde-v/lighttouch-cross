@@ -172,14 +172,16 @@ actor HostServiceWorker {
                     input: .inputWriter,
                     output: .sequence,
                     error: .discarded
-                ) { @Sendable execution in
+                ) { execution in
+                    let inputWriter = execution.standardInputWriter
+                    let output = execution.standardOutput
                     try await withThrowingTaskGroup(of: Void.self) { group in
                         group.addTask {
-                            for await bytes in stream { _ = try await execution.standardInputWriter.write(bytes) }
-                            try await execution.standardInputWriter.finish()
+                            for await bytes in stream { _ = try await inputWriter.write(bytes) }
+                            try await inputWriter.finish()
                         }
                         group.addTask {
-                            for try await line in execution.standardOutput.strings(
+                            for try await line in output.strings(
                                 bufferingPolicy: .maxLineLength(16 * 1024 * 1024)
                             ) {
                                 let event = try JSONDecoder().decode(HostServiceEvent.self, from: Data(line.utf8))
