@@ -45,9 +45,15 @@ public enum MergeNative {
 
     /// realpath(3): /private kept, unlike URL.resolvingSymlinksInPath.
     static func real(_ path: String) -> String {
+        #if os(Windows)
+        // No realpath(3) on Windows. Merging only runs on macOS (merge throws
+        // on Windows), so the identity is enough to compile and test here.
+        return path
+        #else
         guard let resolved = realpath(path, nil) else { return path }
         defer { free(resolved) }
         return String(cString: resolved)
+        #endif
     }
 
     static func relocated(_ data: Data, _ pairs: Pairs) -> Data {

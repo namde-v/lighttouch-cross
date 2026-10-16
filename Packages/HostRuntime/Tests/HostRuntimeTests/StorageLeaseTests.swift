@@ -12,7 +12,8 @@ import Testing
 
 struct StorageLeaseTests {
     private func fixture(_ body: (URL) throws -> Void) throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        // WinSDK declares its own UUID; the temporary directory needs Foundation's.
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(Foundation.UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try body(root)
@@ -21,11 +22,13 @@ struct StorageLeaseTests {
     @Test func sameInodeExcludesUntilOwnerRelease() throws {
         try fixture { root in
             let path = root.appendingPathComponent("explicit-external/work/lease")
+            #if !os(Windows)
             var inode: NSNumber?
+            #endif
             do {
                 let owner = try StorageLease(path)
+                #if !os(Windows)
                 inode = try FileManager.default.attributesOfItem(atPath: path.path)[.systemFileNumber] as? NSNumber
-                #expect(throws: StorageLease.Failure.inUse) { _ = try StorageLease(path) }
                 let descriptors = try FileManager.default.contentsOfDirectory(atPath: "/dev/fd").compactMap(Int32.init)
                 let matching = descriptors.filter { fd in
                     var attributes = stat()
@@ -38,12 +41,16 @@ struct StorageLeaseTests {
                 #expect(fd >= 0)
                 defer { close(fd) }
                 #expect(flock(fd, LOCK_EX | LOCK_NB) != 0)
+                #endif
+                #expect(throws: StorageLease.Failure.inUse) { _ = try StorageLease(path) }
                 withExtendedLifetime(owner) {}
             }
             let owner = try StorageLease(path)
+            #if !os(Windows)
             #expect(
                 try FileManager.default.attributesOfItem(atPath: path.path)[.systemFileNumber] as? NSNumber == inode
             )
+            #endif
             withExtendedLifetime(owner) {}
         }
     }
@@ -75,6 +82,8 @@ struct StorageLeaseTests {
 
     /// A lease refused for a pending edit had already taken the lock; a child being spawned at that moment shares
     /// the descriptor until its exec, so closing alone could leave the lock held and refuse the next owner.
+    /// POSIX-only: exercises posix_spawn descriptor inheritance.
+    #if !os(Windows)
     @Test func pendingEditRefusalUnlocksWhileChildrenSpawn() throws {
         try fixture { root in
             let path = root.appendingPathComponent("work/lease")
@@ -106,7 +115,11 @@ struct StorageLeaseTests {
             #expect(refused == 0)
         }
     }
+    #endif
 
+    /// POSIX-only: asserts ELOOP from O_NOFOLLOW and flock on a raw fd; the
+    /// Windows lease refuses reparse points instead (no ELOOP in the UCRT).
+    #if !os(Windows)
     @Test func symlinkLeafCannotMutateOrLockTarget() throws {
         try fixture { root in
             let target = root.appendingPathComponent("target")
@@ -123,6 +136,8 @@ struct StorageLeaseTests {
             #expect(try FileManager.default.destinationOfSymbolicLink(atPath: path.path) == target.path)
         }
     }
+    #endif
+
     @Test func explicitCloseRetainedAliasDoesNotUnlockSuccessor() throws {
         try fixture { root in
             let path = root.appendingPathComponent("work/lease")
@@ -140,6 +155,8 @@ struct StorageLeaseTests {
         }
     }
 
+    /// POSIX-only: inspects /dev/fd and fcntl FD_CLOEXEC.
+    #if !os(Windows)
     @Test(
         .enabled(
             if: ProcessInfo.processInfo.environment["FK_ISOLATED_DESCRIPTOR_REUSE"] == "1",
@@ -168,9 +185,10 @@ struct StorageLeaseTests {
             #expect(fcntl(reused, F_GETFD) >= 0)
         }
     }
+    #endif
 
     @Test func concurrentCloseEndsOneSharedScopeBeforeReacquisition() async throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(Foundation.UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let path = root.appendingPathComponent("work/lease")
         var previous: StorageLease? = try StorageLease(path)
