@@ -56,7 +56,11 @@ jobs:
         run: swift --version
 
       - name: Build
-        run: swift build --configuration release --build-tests
+        run: swift build --configuration release
 
+      # Note: --skip-build is intentionally NOT used. `swift build --build-tests`
+      # does not produce testing-enabled library objects, so a skipped build
+      # fails with "module was not compiled for testing". A plain `swift test`
+      # builds everything correctly (incrementally reusing the Build step).
       - name: Test
-        run: swift test --skip-build --configuration release
+        run: swift test --configuration release
