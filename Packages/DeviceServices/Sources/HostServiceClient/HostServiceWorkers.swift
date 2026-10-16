@@ -172,7 +172,7 @@ actor HostServiceWorker {
                     input: .inputWriter,
                     output: .sequence,
                     error: .discarded
-                ) { execution in
+                ) { @Sendable execution in
                     try await withThrowingTaskGroup(of: Void.self) { group in
                         group.addTask {
                             for await bytes in stream { _ = try await execution.standardInputWriter.write(bytes) }
