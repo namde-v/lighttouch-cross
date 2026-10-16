@@ -14,13 +14,10 @@ func withSession(
     guard let uuid = ltResolveDevice(device) else { return kLTNoSuchDevice }
     Task { @MainActor in
         guard let core = appCore() else { return }
-        let session: DeviceSession
-        do {
-            session = try core.ensureSession(for: uuid)
-        } catch {
+        guard let session = core.session(for: uuid) else {
             postToast(
                 title: "Couldn’t open the device",
-                body: error.localizedDescription,
+                body: "The device record is missing.",
                 category: "session"
             )
             return
@@ -189,8 +186,9 @@ public func lt_network_set_allowed(_ allowed: Int32) -> LTResult {
     guard ltIsInitialized(), !ltIsShutDown() else { return kLTNotReady }
     let answer = allowed != 0
     Task { @MainActor in
-        ltPrefs().set(answer, forKey: NetworkAccessPreference.key)
-        appCore()?.refreshNetworkStatusSnapshot()
+        guard let core = appCore() else { return }
+        core.prefs.set(answer, forKey: NetworkAccessPreference.key)
+        core.refreshNetworkStatusSnapshot()
         EventPump.shared.post(kind: kLTEventNetworkAccessChanged)
     }
     return kLTAccepted

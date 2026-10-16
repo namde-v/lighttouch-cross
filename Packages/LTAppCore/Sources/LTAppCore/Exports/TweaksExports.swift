@@ -3,6 +3,7 @@ import FirmwareSchema
 import Foundation
 import LTBridgeC
 import LightTouchCore
+import HostRuntime
 
 // MARK: - Tweaks
 
@@ -339,7 +340,8 @@ public func lt_proxy_set(
         }
         guard let handle = core.handle(for: session.instance.id) else { return }
         core.refreshProxySnapshot(session: session, handle: handle)
-        EventPump.shared.post(kind: kLTEventProxyChanged, device: handle)
+        // No event: the ABI has no proxy-changed event; the caller just set it
+        // and lt_proxy_get reads the refreshed snapshot.
     }
 }
 
@@ -365,7 +367,7 @@ public func lt_debug_port_set(
         return kLTBadArgument
     }
     return withSession(device, what: "lt_debug_port_set") { core, session in
-        session.options.setDebugPort(setting.enabled)
+        session.setDebugPortEnabled(setting.enabled)
         guard let handle = core.handle(for: session.instance.id) else { return }
         core.refreshDebugPortSnapshot(session: session, handle: handle)
     }

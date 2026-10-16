@@ -88,6 +88,11 @@ public protocol RotationHost: AnyObject {
     /// A fresh boot starts portrait. A helper still coming up can't take the accelerometer yet, and its machine
     /// starts portrait anyway, so that refusal isn't logged (it read as an error at every iPad and 3GS start).
     public func reset() {
+        // LTAppCore: the boot state machines call this from background tasks.
+        guard Thread.isMainThread else {
+            Task { @MainActor [weak self] in self?.reset() }
+            return
+        }
         degrees = 0
         setAccelerometer(for: 0, logRefusal: false)
     }
@@ -181,6 +186,11 @@ public protocol RotationHost: AnyObject {
     /// (the edges rule above). rotate(toward:) moves the shell and the
     /// accelerometer together.
     public func startInterfaceWatch() {
+        // LTAppCore: the boot state machines call this from background tasks.
+        guard Thread.isMainThread else {
+            Task { @MainActor [weak self] in self?.startInterfaceWatch() }
+            return
+        }
         task?.cancel()
         task = Task { [weak self] in
             var last: Int?
@@ -218,6 +228,11 @@ public protocol RotationHost: AnyObject {
     /// a boot, a respring, or a dropped USB session — the same "the guest drops
     /// its services and comes back" reality NotificationProxy backs off around.
     public func startGuestWatch() {
+        // LTAppCore: the boot state machines call this from background tasks.
+        guard Thread.isMainThread else {
+            Task { @MainActor [weak self] in self?.startGuestWatch() }
+            return
+        }
         task?.cancel()
         task = Task { [weak self] in
             while !Task.isCancelled {

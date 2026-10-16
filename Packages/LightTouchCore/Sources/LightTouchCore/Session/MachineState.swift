@@ -7,7 +7,10 @@ import HostRuntime
 
 /// The VM's lifecycle. Everything the UI enables or disables keys off this; `.dead` is the one that used to be
 /// invisible — QEMU would exit and the app kept a frozen frame with every control live.
-public enum VMState: Equatable {
+///
+/// Nonisolated (LTAppCore addition): pure state enum; the bridge's session
+/// and the (nonisolated) state machines compare it off-actor.
+public nonisolated enum VMState: Equatable {
     case notStarted, booting, running, paused, poweredOff
     case dead(exitCode: Int32?)
 

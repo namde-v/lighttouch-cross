@@ -20,29 +20,29 @@ import WinSDK
 /// Copies `s` to a malloc'd NUL-terminated UTF-8 buffer. `nil` in → `nil` out.
 /// Embedded NULs truncate (Swift strings cannot carry them across this
 /// boundary; see the header contract). Never fails for representable input.
-func ltCopyCString(_ s: String?) -> UnsafeMutablePointer<CChar>? {
+func ltCopyCString(_ s: String?) -> UnsafePointer<CChar>? {
     guard let s else { return nil }
     return s.withCString { src in
         let len = Int(strlen(src))
         guard let dst = malloc(len + 1)?.assumingMemoryBound(to: CChar.self) else { return nil }
         dst.update(from: src, count: len + 1) // copies the NUL too
         LTStringStats.recordAlloc()
-        return dst
+        return UnsafePointer(dst)
     }
 }
 
 /// Copies raw UTF-8 bytes (already validated) to a malloc'd NUL-terminated buffer.
-func ltCopyCString(bytes: UnsafeRawBufferPointer) -> UnsafeMutablePointer<CChar>? {
+func ltCopyCString(bytes: UnsafeRawBufferPointer) -> UnsafePointer<CChar>? {
     guard let dst = malloc(bytes.count + 1)?.assumingMemoryBound(to: CChar.self) else { return nil }
     if bytes.count > 0 {
         dst.update(from: bytes.baseAddress!.assumingMemoryBound(to: CChar.self), count: bytes.count)
     }
     dst[bytes.count] = 0
     LTStringStats.recordAlloc()
-    return dst
+    return UnsafePointer(dst)
 }
 
-func ltCopyCString(_ data: Data) -> UnsafeMutablePointer<CChar>? {
+func ltCopyCString(_ data: Data) -> UnsafePointer<CChar>? {
     data.withUnsafeBytes { ltCopyCString(bytes: $0) }
 }
 
@@ -85,7 +85,7 @@ enum LTLastError {
 
     /// Copies the stored message into a caller-owned C string, or nil when the
     /// calling thread has no recorded failure.
-    static func copyCString() -> UnsafeMutablePointer<CChar>? {
+    static func copyCString() -> UnsafePointer<CChar>? {
         guard let message = Thread.current.threadDictionary[key] as? String else { return nil }
         return ltCopyCString(message)
     }
@@ -117,60 +117,73 @@ enum LTStringStats {
 
 // MARK: - The two deallocators (ui/ABI.md §1.3)
 
+/// The C free() for buffers from ltCopyCString (avoids shadowing the
+/// nested helpers' names).
+func ltCFree(_ p: UnsafeMutableRawPointer?) {
+    guard let p else { return }
+    #if canImport(Darwin)
+    Darwin.free(p)
+    #elseif os(Linux)
+    Glibc.free(p)
+    #elseif os(Windows)
+    WinSDK.free(p)
+    #endif
+}
+
 /// Deep-frees exactly the string fields of the event's active union member.
 /// After this returns, the event holds no allocated strings.
 func ltFreeEventStrings(_ event: inout LTEvent) {
-    func free(_ p: UnsafePointer<CChar>?) {
+    func freeString(_ p: UnsafePointer<CChar>?) {
         guard let p else { return }
-        free(UnsafeMutableRawPointer(mutating: p))
+        ltCFree(UnsafeMutableRawPointer(mutating: UnsafeRawPointer(p)))
         LTStringStats.recordFree()
     }
     // Only the active member's strings are valid; free exactly those.
     switch event.kind {
     case kLTEventBootStage:
-        free(event.u.bootStage.detail)
+        freeString(event.u.bootStage.detail)
     case kLTEventNoticeChanged:
-        free(event.u.noticeChanged.message)
-        free(event.u.noticeChanged.operation)
+        freeString(event.u.noticeChanged.message)
+        freeString(event.u.noticeChanged.operation)
     case kLTEventZoomChanged:
-        free(event.u.zoomChanged.mode)
+        freeString(event.u.zoomChanged.mode)
     case kLTEventHiddenAppsListed:
-        free(event.u.hiddenAppsListed.appsJson)
+        freeString(event.u.hiddenAppsListed.appsJson)
     case kLTEventInstallProgress:
-        free(event.u.installProgress.bundleId)
-        free(event.u.installProgress.phase)
+        freeString(event.u.installProgress.bundleId)
+        freeString(event.u.installProgress.phase)
     case kLTEventInstallDone:
-        free(event.u.installDone.bundleId)
-        free(event.u.installDone.message)
+        freeString(event.u.installDone.bundleId)
+        freeString(event.u.installDone.message)
     case kLTEventFilesListed:
-        free(event.u.filesListed.entriesJson)
+        freeString(event.u.filesListed.entriesJson)
     case kLTEventFilesProgress:
-        free(event.u.filesProgress.currentFile)
+        freeString(event.u.filesProgress.currentFile)
     case kLTEventFilesDone:
-        free(event.u.filesDone.message)
+        freeString(event.u.filesDone.message)
     case kLTEventLogLine:
-        free(event.u.logLine.source)
-        free(event.u.logLine.text)
+        freeString(event.u.logLine.source)
+        freeString(event.u.logLine.text)
     case kLTEventLogRotated:
-        free(event.u.logRotated.source)
+        freeString(event.u.logRotated.source)
     case kLTEventCaptureDone:
-        free(event.u.captureDone.path)
-        free(event.u.captureDone.message)
+        freeString(event.u.captureDone.path)
+        freeString(event.u.captureDone.message)
     case kLTEventRecordingSaveNeeded:
-        free(event.u.recordingSaveNeeded.suggestedName)
+        freeString(event.u.recordingSaveNeeded.suggestedName)
     case kLTEventJobProgress:
-        free(event.u.jobProgress.entryId)
-        free(event.u.jobProgress.detail)
+        freeString(event.u.jobProgress.entryId)
+        freeString(event.u.jobProgress.detail)
     case kLTEventJobDone:
-        free(event.u.jobDone.entryId)
-        free(event.u.jobDone.message)
+        freeString(event.u.jobDone.entryId)
+        freeString(event.u.jobDone.message)
     case kLTEventToast:
-        free(event.u.toast.title)
-        free(event.u.toast.body)
-        free(event.u.toast.category)
+        freeString(event.u.toast.title)
+        freeString(event.u.toast.body)
+        freeString(event.u.toast.category)
     case kLTEventDropAction:
-        free(event.u.dropAction.action)
-        free(event.u.dropAction.detailJson)
+        freeString(event.u.dropAction.action)
+        freeString(event.u.dropAction.detailJson)
     default:
         break // no string payload
     }

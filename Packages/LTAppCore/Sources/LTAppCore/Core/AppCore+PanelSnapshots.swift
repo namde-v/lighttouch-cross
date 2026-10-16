@@ -214,7 +214,7 @@ extension AppCore {
     func refreshDebugPortSnapshot(session: DeviceSession, handle: lt_device_t) {
         let dto = LTDebugPortDTO(
             enabled: session.options.debugPortEnabled,
-            lldbAttachCommand: session.options.lldbAttachCommand
+            lldbCommand: session.options.lldbAttachCommand
         )
         if let data = ltEncodeJSON(dto) {
             SnapshotStore.shared.setDevice(handle, key: "debugPort", json: data)

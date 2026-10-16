@@ -8,7 +8,7 @@ import HostServiceWire
 /// The Files window's tie to one device's boot. Nonisolated (was @Observable
 /// @MainActor): the bridge's file exports read it from any thread. State is
 /// guarded by `lock`. Changed for LTAppCore (ui/ABI.md §6 gap 1).
-public final class FilesConnection: @unchecked Sendable {
+public nonisolated final class FilesConnection: @unchecked Sendable {
     public struct Binding: Equatable, Sendable {
         public let device: UUID
         public let endpoint: HostServiceEndpoint

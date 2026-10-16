@@ -50,7 +50,7 @@ final class EventPump: @unchecked Sendable {
     /// callback synchronously from the caller's thread, then frees the
     /// event's strings. When no callback is registered the event is dropped
     /// and the §2.4 diagnostics counter is bumped.
-    func post(kind: Int32, device: lt_device_t = 0, build: (inout LTEvent) -> Void) {
+    func post(kind: Int32, device: lt_device_t = 0, build: (inout LTEvent) -> Void = { _ in }) {
         let (cb, c): (lt_event_fn?, UnsafeMutableRawPointer?) = lock.withLock { (callback, ctx) }
         guard let cb else {
             lock.withLock { dropped &+= 1 }
@@ -90,7 +90,7 @@ final class EventPump: @unchecked Sendable {
                 defer { deviceListPending = false }
                 return true
             }
-            if fire { post(kind: kLTEventDeviceListChanged) }
+            if fire { post(kind: kLTEventDeviceListChanged) { _ in } }
         }
     }
 
@@ -106,7 +106,7 @@ final class EventPump: @unchecked Sendable {
             lock.withLock { coalesced &+= 1 }
             return
         }
-        post(kind: kLTEventCarrierChanged, device: device)
+        post(kind: kLTEventCarrierChanged, device: device) { _ in }
     }
 
     // MARK: - Test support

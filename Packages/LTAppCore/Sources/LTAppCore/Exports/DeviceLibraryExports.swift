@@ -188,6 +188,7 @@ public func lt_device_delete(_ device: lt_device_t) -> LTResult {
             return
         }
         let lower = uuid.uuidString.lowercased()
+        let stateDir = core.library.state
         do {
             try await core.storageWork.run(lower, as: .deleting) {
                 if let session = core.session(for: uuid), !session.state.isDead, session.state != .notStarted {
@@ -197,8 +198,12 @@ public func lt_device_delete(_ device: lt_device_t) -> LTResult {
                 }
                 return true
             } _: {
-                try core.library.remove(id: uuid)
+                // Background thread: the record + device tree are just files.
+                // (DeviceLibrary.remove is @MainActor; this is its file half,
+                // DeviceStateStorage being nonisolated.)
+                try DeviceStateStorage.removeDevice(uuid, state: stateDir)
             }
+            await MainActor.run { core.library.reload() }
             HandleRegistry.shared.unregister(uuid)
             core.refreshLibrarySnapshots()
             EventPump.shared.postDeviceListChanged()
@@ -219,7 +224,7 @@ public func lt_device_rename(_ device: lt_device_t, _ name: UnsafePointer<CChar>
         return kLTBadArgument
     }
     Task { @MainActor in
-        guard let core = appCore(), var instance = core.library.device(id: uuid) else { return }
+        guard let core = appCore(), var instance = core.library.instance(id: uuid) else { return }
         instance.name = nameStr
         do {
             try core.library.save(instance)
@@ -251,7 +256,7 @@ public func lt_device_duplicate(
     Task { @MainActor in
         defer { done.value = true }
         guard let core = appCore() else { failureBox.value = "The core isn’t initialized."; return }
-        guard let source = core.library.device(id: uuid) else {
+        guard let source = core.library.instance(id: uuid) else {
             failureBox.value = "Device not found."
             return
         }
@@ -262,18 +267,31 @@ public func lt_device_duplicate(
         let newId = UUID()
         let oldPrefix = "Devices/\(uuid.uuidString)"
         let newPrefix = "Devices/\(newId.uuidString)"
-        var copy = source
-        copy.id = newId
-        copy.name = "\(source.name) copy"
-        copy.created = Date()
         func remap(_ path: String) -> String {
             path.hasPrefix(oldPrefix) ? newPrefix + path.dropFirst(oldPrefix.count) : path
         }
-        copy.base.path = remap(source.base.path)
-        copy.storage.overlay = remap(source.storage.overlay)
-        copy.storage.writableNOR = source.storage.writableNOR.map(remap)
-        copy.storage.snapshot = remap(source.storage.snapshot)
-        copy.storage.usbmuxConf = remap(source.storage.usbmuxConf)
+        var newStorage = source.storage
+        newStorage.overlay = remap(source.storage.overlay)
+        newStorage.writableNOR = source.storage.writableNOR.map(remap)
+        newStorage.snapshot = remap(source.storage.snapshot)
+        newStorage.usbmuxConf = remap(source.storage.usbmuxConf)
+        var newBase = source.base
+        newBase.path = remap(source.base.path)
+        // id is immutable; build the copy through the public init.
+        let copy = DeviceInstance(
+            format: source.format,
+            id: newId,
+            name: "\(source.name) copy",
+            board: source.board,
+            firmware: source.firmware,
+            created: Date(),
+            base: newBase,
+            storage: newStorage,
+            identity: nil,
+            provenance: source.provenance,
+            guest: nil,
+            panel: source.panel
+        )
         let fm = FileManager.default
         let oldDir = core.directories.stateDir.appendingPathComponent(oldPrefix, isDirectory: true)
         let newDir = core.directories.stateDir.appendingPathComponent(newPrefix, isDirectory: true)
@@ -349,8 +367,8 @@ public func lt_sidebar_add(_ idsJson: UnsafePointer<CChar>?) -> LTResult {
         defer { done.value = true }
         guard let core = appCore() else { failureBox.value = "The core isn’t initialized."; return }
         core.sidebar.add(ids)
-        core.saveSidebar()
-        core.refreshSidebarSnapshot()
+        core.sidebar.save(core.prefs)
+        core.refreshLibrarySnapshots()
         EventPump.shared.post(kind: kLTEventSidebarChanged)
     }
     let deadline = Date().addingTimeInterval(5)
@@ -375,8 +393,8 @@ public func lt_sidebar_remove(_ id: UnsafePointer<CChar>?) -> LTResult {
     Task { @MainActor in
         guard let core = appCore() else { return }
         core.sidebar.remove(idStr)
-        core.saveSidebar()
-        core.refreshSidebarSnapshot()
+        core.sidebar.save(core.prefs)
+        core.refreshLibrarySnapshots()
     }
     return kLTAccepted
 }
@@ -389,8 +407,8 @@ public func lt_sidebar_rename(_ id: UnsafePointer<CChar>?, _ title: UnsafePointe
     Task { @MainActor in
         guard let core = appCore() else { return }
         core.sidebar.rename(idStr, to: titleStr, defaultTitle: "")
-        core.saveSidebar()
-        core.refreshSidebarSnapshot()
+        core.sidebar.save(core.prefs)
+        core.refreshLibrarySnapshots()
     }
     return kLTAccepted
 }

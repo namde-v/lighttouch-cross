@@ -7,6 +7,7 @@ import LTBridgeC
 /// @MainActor, into `SnapshotStore` (lock-protected), from which the
 /// nonisolated queries serve them without ever hopping to @MainActor.
 import DeviceRuntime
+import FirmwareSchema
 import Foundation
 import HostRuntime
 import LightTouchCore

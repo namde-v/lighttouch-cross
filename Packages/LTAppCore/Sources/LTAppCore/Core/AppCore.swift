@@ -103,7 +103,9 @@ final class AppCore {
     /// written once during lt_init and cleared during lt_shutdown.
     nonisolated(unsafe) static var shared: AppCore?
 
-    let directories: LTAppDirectories
+    /// Immutable after @MainActor init; nonisolated(unsafe) so synchronous
+    /// queries (log sources, help lookup) can read paths off-actor.
+    nonisolated(unsafe) let directories: LTAppDirectories
     let prefs: LTFileDefaults
     let library: DeviceLibrary
     let catalog: FirmwareCatalog
@@ -115,10 +117,11 @@ final class AppCore {
     /// session without a @MainActor hop — off-actor the session is only ever
     /// touched through its thread-safe injection entry points.
     private let sessionsLock = NSLock()
-    nonisolated(unsafe) private var sessions: [UUID: DeviceSession] = [:]
+    nonisolated(unsafe) var sessions: [UUID: DeviceSession] = [:]
 
-    /// All sessions (a copy, for @MainActor iteration).
-    func allSessions() -> [DeviceSession] {
+    /// All sessions (a copy, for @MainActor iteration). Lock-guarded, so
+    /// nonisolated: log-source enumeration reads it off-actor.
+    nonisolated func allSessions() -> [DeviceSession] {
         sessionsLock.withLock { Array(sessions.values) }
     }
 
@@ -207,7 +210,8 @@ final class AppCore {
         // No catalog shipped (or not yet): the firmware surfaces are empty but
         // the core is usable. The UI is told through empty query results.
         logEvent("catalog: no firmware-catalog.json in \(resourceDir.path); starting with an empty catalog")
-        return FirmwareCatalog(format: 1, entries: [], firstRun: nil, bundled: nil)
+        let empty = #"{"format":1,"entries":[]}"#
+        return (try? JSONDecoder().decode(FirmwareCatalog.self, from: Data(empty.utf8)))!
     }
 
     // MARK: - Handles and sessions
@@ -218,8 +222,9 @@ final class AppCore {
         }
     }
 
-    /// The handle for a library device, or nil when unknown.
-    func handle(for uuid: UUID) -> lt_device_t? {
+    /// The handle for a library device, or nil when unknown. Nonisolated: the
+    /// handle registry is thread-safe; background witnesses resolve handles.
+    nonisolated func handle(for uuid: UUID) -> lt_device_t? {
         HandleRegistry.shared.handle(for: uuid)
     }
 
@@ -229,7 +234,7 @@ final class AppCore {
         guard let instance = library.instance(id: uuid),
             let profile = instance.profile
         else { return nil }
-        let session = DeviceSession(
+        let session = DeviceSession.create(
             instance: instance,
             profile: profile,
             firmwareVersion: catalog.entry(id: instance.firmware)?.version ?? "",

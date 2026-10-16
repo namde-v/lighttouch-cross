@@ -2,6 +2,8 @@
 import Foundation
 import LTBridgeC
 import LightTouchCore
+import HostRuntime
+import HostServiceClient
 
 @_cdecl("lt_apps_list")
 public func lt_apps_list(
@@ -55,7 +57,7 @@ public func lt_apps_install(
                         EventPump.shared.post(kind: kLTEventInstallProgress, device: handle) { e in
                             e.u.installProgress.bundleId = ltCopyCString("")
                             e.u.installProgress.fraction = -1
-                            e.u.installProgress.stage = ltCopyCString(progress)
+                            e.u.installProgress.phase = ltCopyCString(progress)
                         }
                     }
                 }
@@ -180,7 +182,7 @@ public func lt_apps_import_media(
                                 EventPump.shared.post(kind: kLTEventInstallProgress, device: handle) { e in
                                     e.u.installProgress.bundleId = ltCopyCString("")
                                     e.u.installProgress.fraction = fraction
-                                    e.u.installProgress.stage = ltCopyCString(media.title)
+                                    e.u.installProgress.phase = ltCopyCString(media.title)
                                 }
                             }
                         },

@@ -1,15 +1,25 @@
 import Foundation
 import Observation
 
+public extension Notification.Name {
+    /// Posted (object: the scope) after `retire()` or `renew()` changes the boot.
+    ///
+    /// The scope is deliberately not @Observable (nonisolated: session state machines call it from
+    /// background threads), so boot changes travel by notification instead of observation tracking.
+    /// AppChangeWatch follows each boot through this.
+    nonisolated static let bootSessionScopeDidChange = Notification.Name("LTBootSessionScopeDidChange")
+}
+
 /// Owns work which must never outlive one boot. The halt transaction itself
 /// belongs to the controller, so retiring a boot cannot cancel its cleanup.
-/// Observable: which boot is current (`id`, `retired`), for what follows each boot (AppChangeWatch).
+/// Which boot is current (`id`, `retired`) is published via `bootSessionScopeDidChange`,
+/// for what follows each boot (AppChangeWatch).
 ///
 /// Nonisolated (was @MainActor): the session state machines call the host's
 /// BootSessionScope from background threads, so the scope must be callable
 /// off @MainActor. Mutable state is guarded by `lock`. Changed for LTAppCore
 /// (the portable app-core orchestrator, ui/ABI.md §6 gap 1).
-public final class BootSessionScope: @unchecked Sendable {
+public nonisolated final class BootSessionScope: @unchecked Sendable {
     public init() {}
     public enum Work: CaseIterable {
         case foreground, readiness, recovery, watchdog, timeZone, orientation
@@ -65,16 +75,20 @@ public final class BootSessionScope: @unchecked Sendable {
         }
     }
     public func retire() {
-        lock.withLock {
-            guard !_retired else { return }
+        let didChange = lock.withLock { () -> Bool in
+            guard !_retired else { return false }
             _retired = true
             _generation += 1  // invalidate suspended completions before another boot
             for task in tasks.values { task.cancel() }
             tasks.removeAll()
+            return true
         }
         // Observers touch NotificationCenter; do it outside the lock.
         timeZoneObserver = nil
         localeObserver = nil
+        if didChange {
+            NotificationCenter.default.post(name: .bootSessionScopeDidChange, object: self)
+        }
     }
     public func renew() {
         retire()
@@ -82,6 +96,7 @@ public final class BootSessionScope: @unchecked Sendable {
             _id = UUID()
             _retired = false
         }
+        NotificationCenter.default.post(name: .bootSessionScopeDidChange, object: self)
     }
 }
 // force rebuild

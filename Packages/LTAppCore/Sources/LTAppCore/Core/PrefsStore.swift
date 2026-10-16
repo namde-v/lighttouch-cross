@@ -25,8 +25,10 @@ final class LTFileDefaults: UserDefaults {
     private var values: [String: Any]
 
     /// Creates (or opens) the backend at `fileURL`. Missing/corrupt files
-    /// start empty; corruption is logged, never fatal.
-    init(fileURL: URL) {
+    /// start empty; corruption is logged, never fatal. Failable only because
+    /// `UserDefaults.init(suiteName:)` is (a hardcoded valid name never fails
+    /// in practice).
+    init?(fileURL: URL) {
         self.fileURL = fileURL
         if let data = try? Data(contentsOf: fileURL),
             let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any]

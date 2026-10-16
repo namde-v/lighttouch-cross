@@ -58,6 +58,31 @@ from any thread (Qt UI thread, worker threads).
 
 **Upstream mirror:** `LightTouchMac`'s `FilesConnection` (Mac UI-owned).
 
+### 2b. `LightTouchCore`: `AboutCredits`, `WorkerRetirement` — made nonisolated
+
+**What:** Added explicit `nonisolated` to the `AboutCredits` enum and its
+`Project` struct (`App/AboutCredits.swift`), and to `WorkerRetirement`
+(`Session/SessionLink.swift`; also `@unchecked Sendable`). No behavior change.
+
+**Why:** The package declares `.defaultIsolation(MainActor.self)`, so without
+the annotation these were `@MainActor`-isolated and unusable from the bridge's
+nonisolated contexts (`lt_about_credits` reads `AboutCredits.projects` from
+any thread; `DeviceSession` owns a `WorkerRetirement`).
+
+**Upstream mirror:** `LightTouchMac`'s credits/about panel and session worker
+tracking (Mac UI-owned; the bridge needs them off-actor).
+
+### 2c. `LightTouchCore`: `CapturePreferences`, `HelpTopic`, `KeyboardPointer` — made nonisolated
+
+**What:**
+- `CapturePreferences` (`Features/CapturePreferences.swift`): `public nonisolated struct ... : @unchecked Sendable`. The struct is a thin `UserDefaults` wrapper (thread-safe); the bridge's synchronous `lt_capture_prefs_get` query reads it off-actor. The bridge constructs it with the file-backed `LTFileDefaults`, not `.shared`/`.standard`.
+- `HelpTopic` (`UI/HelpTopic.swift`): `public nonisolated struct`. Pure value type; `lt_help_topics` parses Help.txt off-actor.
+- `KeyboardPointer` + nested `Phase`/`Touch`/`FocusMove` (`Input/KeyboardPointer.swift`): `public nonisolated`. Pure pointer-math value types; `lt_input_keyboard_pointer_key` drives them on the input fast path.
+
+**Why:** The package declares `.defaultIsolation(MainActor.self)`; without the
+annotations these were `@MainActor`-isolated and unusable from the bridge's
+nonisolated `@_cdecl` exports. No behavior change.
+
 ### 3. `LTAppCore`: `DeviceSession` — nonisolated session class (gap 1)
 
 **What:** `DeviceSession` is a nonisolated `final class` (was `@MainActor` in

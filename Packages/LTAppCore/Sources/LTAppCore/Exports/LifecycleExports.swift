@@ -58,9 +58,12 @@ public func lt_init(_ configJson: UnsafePointer<CChar>?) -> LTResult {
         LTLastError.set("lt_init: can’t create appSupportDir: \(error.localizedDescription)")
         return kLTFailed
     }
-    let prefs = LTFileDefaults(
+    guard let prefs = LTFileDefaults(
         fileURL: appSupportDir.appendingPathComponent("ltappcore-preferences.json")
-    )
+    ) else {
+        LTLastError.set("lt_init: can’t create preferences backend")
+        return kLTFailed
+    }
     setPrefs(prefs)
 
     // Build the @MainActor core, pumping the main runloop until it finishes.
@@ -135,6 +138,10 @@ final class LTBox<T: Sendable>: @unchecked Sendable {
         set { lock.withLock { _value = newValue } }
     }
     init(_ value: T? = nil) { self._value = value }
+    /// Non-optional get/set for region-isolation bridging (the value is
+    /// always set before get in the semaphore pattern).
+    func get() -> T { lock.withLock { _value! } }
+    func set(_ v: T) { lock.withLock { _value = v } }
 }
 
 // MARK: - Events, version, strings
@@ -157,7 +164,7 @@ public func lt_version(_ out: UnsafeMutablePointer<UnsafePointer<CChar>?>?) -> L
         return kLTBadArgument
     }
     guard ltIsInitialized() else { return kLTNotReady }
-    out.pointee = ltCopyCString(LTAppVersion).map { UnsafePointer($0) }
+    out.pointee = ltCopyCString(LTAppVersion)
     return out.pointee == nil ? kLTFailed : kLTOk
 }
 
@@ -209,24 +216,20 @@ public func lt_quit_request() -> LTResult {
             return
         }
         var remaining = halts.count
-        let budget = Task {
+        let budget = Task { @MainActor in
             try? await Task.sleep(for: .seconds(30))
-            MainActor.assumeIsolated {
-                if remaining > 0 {
-                    remaining = 0
-                    EventPump.shared.post(kind: kLTEventQuitReady)
-                }
+            if remaining > 0 {
+                remaining = 0
+                EventPump.shared.post(kind: kLTEventQuitReady)
             }
         }
         for session in halts {
-            Task {
+            Task { @MainActor in
                 _ = await session.ladder.halt().value
-                MainActor.assumeIsolated {
-                    remaining -= 1
-                    if remaining == 0 {
-                        budget.cancel()
-                        EventPump.shared.post(kind: kLTEventQuitReady)
-                    }
+                remaining -= 1
+                if remaining == 0 {
+                    budget.cancel()
+                    EventPump.shared.post(kind: kLTEventQuitReady)
                 }
             }
         }

@@ -13,9 +13,9 @@ nonisolated public struct KeyModifiers: OptionSet, Sendable {
 /// With typing off, the arrow keys move a pointer over the screen (a fraction of the panel, 0...1 each way); Space,
 /// or an arrow with Shift, holds a touch at it, so Shift-arrows drag. Every key held for the touch must go up
 /// before the touch ends.
-public struct KeyboardPointer {
-    public enum Phase: Equatable { case begin, update, end }
-    public struct Touch: Equatable {
+public nonisolated struct KeyboardPointer {
+    public nonisolated enum Phase: Equatable { case begin, update, end }
+    public nonisolated struct Touch: Equatable {
         public let phase: Phase
         public let point: CGPoint
         public init(_ phase: Phase, _ point: CGPoint) {
@@ -23,7 +23,7 @@ public struct KeyboardPointer {
             self.point = point
         }
     }
-    public enum FocusMove: Equatable { case next, previous }
+    public nonisolated enum FocusMove: Equatable { case next, previous }
 
     public static let space: UInt16 = 49
     public static let arrows: Set<UInt16> = [123, 124, 125, 126]

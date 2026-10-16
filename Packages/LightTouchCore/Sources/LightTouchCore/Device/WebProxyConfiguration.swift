@@ -24,12 +24,15 @@ public enum WebProxyStatus: Equatable {
 }
 
 /// Host routing is read once per guest connection. Changes need no VM restart.
-public struct WebProxyConfiguration: Codable, Equatable {
+///
+/// Nonisolated (LTAppCore addition): pure Codable value type; the bridge
+/// decodes it from `lt_proxy_set`'s JSON off-actor.
+public nonisolated struct WebProxyConfiguration: Codable, Equatable {
     public init(mode: Mode = .direct, archiveDate: String = "") {
         self.mode = mode
         self.archiveDate = archiveDate
     }
-    public enum Mode: String, Codable {
+    public nonisolated enum Mode: String, Codable {
         case off, direct, archive
     }
     /// A device that never set its proxy goes through it to the live web.

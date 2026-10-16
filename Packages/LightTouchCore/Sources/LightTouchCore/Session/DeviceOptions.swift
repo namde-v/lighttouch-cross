@@ -59,13 +59,18 @@ import Observation
     // MARK: Boot environment (app-wide)
 
     /// UserDefaults key for Settings ▸ verbose boot.
-    public static let verboseBootDefaultsKey = "verboseBoot"
-    public static let kernelConsoleDefaultsKey = "kernelConsole"
+    // Nonisolated (LTAppCore addition): string constants for the nonisolated
+    // bootArgs above.
+    public nonisolated static let verboseBootDefaultsKey = "verboseBoot"
+    public nonisolated static let kernelConsoleDefaultsKey = "kernelConsole"
 
     /// Early iBoot handoff arguments; serial output is included in diagnostics.
     /// The regression checker compares the base command line with the harness;
     /// verbose boot and kernel-console output remain optional app settings.
-    public static func bootArgs(_ defaults: UserDefaults = .standard) -> String {
+    ///
+    /// Nonisolated (LTAppCore addition): pure UserDefaults read; the bridge's
+    /// boot path calls it from nonisolated witnesses.
+    public nonisolated static func bootArgs(_ defaults: UserDefaults = .standard) -> String {
         var args = "amfi_allow_any_signature=1 cs_enforcement_disable=1"
         if defaults.bool(forKey: verboseBootDefaultsKey) { args += " -v" }
         if defaults.bool(forKey: kernelConsoleDefaultsKey) { args += " serial=3 debug=0x8" }

@@ -2,7 +2,10 @@ import Foundation
 
 /// Resolve consent before QEMU can send any guest traffic. Loopback USB and
 /// Mac-side app downloads remain available when guest networking is off.
-public enum NetworkAccessPreference {
+///
+/// Nonisolated (LTAppCore addition): pure UserDefaults reads; the bridge's
+/// boot path calls `decided` from nonisolated witnesses.
+public nonisolated enum NetworkAccessPreference {
     public static let key = "guestNetworkEnabled"
 
     /// Whether the device about to start gets the Mac's network without asking: `--network`/`--no-network`

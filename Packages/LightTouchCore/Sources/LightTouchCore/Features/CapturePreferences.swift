@@ -3,7 +3,12 @@ import HostRuntime
 
 /// Capture choices are shared by the toolbar, menus, and focused options panel.
 /// The existing folder key is retained so upgrading never moves a user's saves.
-public struct CapturePreferences {
+///
+/// Nonisolated (LTAppCore addition): the bridge reads/writes these from
+/// nonisolated @_cdecl exports (`lt_capture_prefs_get` is a synchronous
+/// query). The struct holds only a `UserDefaults`, which is thread-safe, so
+/// @unchecked Sendable is sound.
+public nonisolated struct CapturePreferences: @unchecked Sendable {
     public static let shared = CapturePreferences()
     private let defaults: UserDefaults
 

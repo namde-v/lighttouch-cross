@@ -94,11 +94,11 @@ final class TestEventCollector: @unchecked Sendable {
 // MARK: - Export smoke tests (bad handles)
 
 @Test func exportsRejectBadHandles() {
-    // All device-scoped exports should return kLTBadHandle (or kLTNoSuchDevice)
+    // All device-scoped exports should return kLTNoSuchDevice (or kLTNoSuchDevice)
     // for handle 0 without crashing.
-    #expect(lt_device_boot(0, nil) == kLTBadHandle || lt_device_boot(0, nil) == kLTNoSuchDevice)
-    #expect(lt_device_halt(0) == kLTBadHandle || lt_device_halt(0) == kLTNoSuchDevice)
-    #expect(lt_capture_screenshot(0) == kLTBadHandle || lt_capture_screenshot(0) == kLTNoSuchDevice)
+    #expect(lt_device_boot(0, nil) == kLTNoSuchDevice || lt_device_boot(0, nil) == kLTNoSuchDevice)
+    #expect(lt_device_halt(0) == kLTNoSuchDevice || lt_device_halt(0) == kLTNoSuchDevice)
+    #expect(lt_capture_screenshot(0) == kLTNoSuchDevice || lt_capture_screenshot(0) == kLTNoSuchDevice)
 }
 
 @Test func exportsRejectNullPointers() {

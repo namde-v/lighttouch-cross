@@ -41,9 +41,9 @@ public func lt_settings_get_string(
     }
     guard let value else {
         LTLastError.set("lt_settings_get_string: no value for '\(k)'")
-        return kLTNotFound
+        return kLTFailed
     }
-    out.pointee = ltCopyCString(value).map { UnsafePointer($0) }
+    out.pointee = ltCopyCString(value)
     return kLTOk
 }
 
@@ -62,16 +62,17 @@ public func lt_settings_set_string(
 @_cdecl("lt_help_topics")
 public func lt_help_topics(_ out: UnsafeMutablePointer<UnsafePointer<CChar>?>?) -> LTResult {
     guard let out else { return kLTBadArgument }
-    // Help.txt ships beside the library (copied from upstream at build time;
+    // Help.txt ships beside the package (copied from upstream at port time;
     // upstream itself is pristine). Fall back to empty if absent.
     let candidates = [
         AppCore.shared?.directories.resourceDir.appendingPathComponent("Help.txt"),
-        URL(fileURLWithPath: "Help.txt"),
+        URL(fileURLWithPath: "Help/Help.txt"),
+        URL(fileURLWithPath: "../Help/Help.txt"),
     ].compactMap { $0 }
     let text = candidates.lazy.compactMap { try? String(contentsOf: $0, encoding: .utf8) }.first ?? ""
     let topics = HelpTopic.topics(text).map { ["title": $0.title, "body": $0.body] }
     guard let json = ltEncodeJSON(topics) else { return kLTFailed }
-    out.pointee = ltCopyCString(json).map { UnsafePointer($0) }
+    out.pointee = ltCopyCString(json)
     return kLTOk
 }
 
@@ -81,13 +82,26 @@ public func lt_help_topics(_ out: UnsafeMutablePointer<UnsafePointer<CChar>?>?) 
 public func lt_diagnostics_export(_ out: UnsafeMutablePointer<UnsafePointer<CChar>?>?) -> LTResult {
     guard let out else { return kLTBadArgument }
     guard let core = appCore() else { return kLTFailed }
+    // The export is async; the path is delivered via kLTEventToast when done
+    // (documented in ADDITIONS.md). Fill `out` with the *destination* path up
+    // front so the caller knows where to look.
+    let destination = FileManager.default.temporaryDirectory
+        .appendingPathComponent("LightTouch-diagnostics-\(UUID().uuidString).zip")
+    out.pointee = ltCopyCString(destination.path)
+    let logDir = core.directories.logDir
+    let logs = (try? FileManager.default.contentsOfDirectory(
+        at: logDir, includingPropertiesForKeys: nil
+    ))?.filter { $0.pathExtension == "log" } ?? []
     Task { @MainActor in
         do {
-            let url = try await core.exportDiagnostics()
-            out.pointee = ltCopyCString(url.path).map { UnsafePointer($0) }
+            try await DiagnosticsExport.write(
+                to: destination,
+                logs: logs,
+                info: DiagnosticsExport.systemSummary()
+            )
             EventPump.shared.post(kind: kLTEventToast) { e in
                 e.u.toast.title = ltCopyCString("Diagnostics exported")
-                e.u.toast.body = ltCopyCString(url.path)
+                e.u.toast.body = ltCopyCString(destination.path)
                 e.u.toast.category = ltCopyCString("diagnostics")
             }
         } catch {
@@ -99,11 +113,6 @@ public func lt_diagnostics_export(_ out: UnsafeMutablePointer<UnsafePointer<CCha
             }
         }
     }
-    // The path is delivered via the out pointer synchronously? No — the export
-    // is async. Per ABI.md it's "synchronous enough to be a command with
-    // immediate path return", but the real DiagnosticsExport is async. We post
-    // the path via kLTEventToast and return kLTOk; Qt reads the path from the
-    // toast. (Documented deviation; the header's `out` is filled when ready.)
     return kLTOk
 }
 
@@ -112,19 +121,14 @@ public func lt_diagnostics_export(_ out: UnsafeMutablePointer<UnsafePointer<CCha
 /// §2.4 diagnostics counter: events dropped by the pump.
 @_cdecl("lt_debug_dropped_events")
 public func lt_debug_dropped_events() -> UInt64 {
-    EventPump.shared.droppedCount
+    EventPump.shared.droppedEvents()
 }
 
-// MARK: - ABI version
-
-@_cdecl("lt_abi_version")
-public func lt_abi_version() -> UInt32 {
-    UInt32(kLTAbiVersion)
-}
+// MARK: - ABI version (defined in LifecycleExports.swift)
 
 // MARK: - Last error
 
 @_cdecl("lt_last_error")
 public func lt_last_error() -> UnsafePointer<CChar>? {
-    LTLastError.cString()
+    LTLastError.copyCString()
 }

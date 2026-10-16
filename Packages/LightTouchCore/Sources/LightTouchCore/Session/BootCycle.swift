@@ -75,7 +75,10 @@ extension BootCycleHost {
 /// What a helper's boot was built with that only a fresh helper changes: the free-form panel, the Internet, the debug
 /// port and the boot arguments. Chosen while the device was shut down, they used to wait for a Stop, since Start
 /// powered the same helper on (state audit A-4).
-public struct BootSettings: Equatable {
+///
+/// Nonisolated (LTAppCore addition): pure value type; the bridge compares it
+/// from nonisolated boot witnesses.
+public nonisolated struct BootSettings: Equatable {
     public var panel: String?
     public var network: Bool
     public var debugPort: Bool

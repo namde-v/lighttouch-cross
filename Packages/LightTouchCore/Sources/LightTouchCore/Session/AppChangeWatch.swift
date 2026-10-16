@@ -16,6 +16,7 @@ public final class AppChangeWatch {
     public private(set) var endpoint: HostServiceEndpoint?
     private var watcher: NotificationProxy?
     private var boots: ObservationLoop?
+    private var bootObserver: NSObjectProtocol?
 
     public init(apps: DeviceApps, attachAllowed: @escaping @Sendable () async -> Bool, onChange: @escaping () -> Void) {
         self.apps = apps
@@ -23,20 +24,33 @@ public final class AppChangeWatch {
         self.onChange = onChange
     }
 
-    /// Watches the current boot from now on, following each new one (the scope's id and usbmuxd are observable).
+    /// Watches the current boot from now on, following each new one.
+    ///
+    /// BootSessionScope is not @Observable (nonisolated for background-thread use), so boot
+    /// renewals and retirements arrive via `bootSessionScopeDidChange`, not observation tracking.
+    /// The ObservationLoop remains for the other reads `follow()` depends on.
     public func start() {
         guard boots == nil else { return }
         boots = ObservationLoop(read: { [weak self] in self?.follow() })
+        bootObserver = NotificationCenter.default.addObserver(
+            forName: .bootSessionScopeDidChange,
+            object: apps.bootScope,
+            queue: nil
+        ) { [weak self] _ in self?.follow() }
     }
 
     public func stop() {
+        if let bootObserver {
+            NotificationCenter.default.removeObserver(bootObserver)
+            self.bootObserver = nil
+        }
         boots?.cancel()
         boots = nil
         endWatcher()
     }
 
     /// A new watcher when the boot changed, none without services.
-    private func follow() {
+    nonisolated private func follow() {
         let current = (try? apps.services)?.endpoint
         guard current != endpoint else { return }
         endWatcher()

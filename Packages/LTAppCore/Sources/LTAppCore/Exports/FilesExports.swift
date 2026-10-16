@@ -5,6 +5,7 @@
 import Foundation
 import LTBridgeC
 import HostServiceWire
+import HostServiceClient
 import LightTouchCore
 
 /// A file transfer's state, for lt_files_transfer / lt_files_cancel.
@@ -234,7 +235,7 @@ extension LTFileTransfers {
         transfer: LTFileTransfer, handle: lt_device_t
     ) async -> TransferResult {
         do {
-            let services = try session.apps.services
+            let services = try await MainActor.run { try session.apps.services }
             switch op.op {
             case "upload":
                 guard let dst = op.dst else {

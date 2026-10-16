@@ -1,7 +1,10 @@
 import Foundation
 
 /// One of Help.txt's task topics: a "# " line starts one. "[Device]" reads as the selected device's name.
-public struct HelpTopic: Equatable {
+///
+/// Nonisolated (LTAppCore addition): pure value type; the bridge parses
+/// Help.txt from nonisolated `lt_help_topics`.
+public nonisolated struct HelpTopic: Equatable {
     public let title: String
     public let body: String
 

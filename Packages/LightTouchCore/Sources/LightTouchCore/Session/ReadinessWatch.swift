@@ -71,17 +71,36 @@ public protocol ReadinessHost: AnyObject {
 
     private var task: Task<Void, Never>? {
         get { host.bootScope[.readiness] }
-        set { host.bootScope[.readiness] = newValue }
+        set {
+            host.bootScope[.readiness] = newValue
+            // Mirror for the nonisolated `current` below: the boot state
+            // machines (LTAppCore) await the watch from background tasks.
+            currentLock.withLock { _currentTask = newValue }
+        }
     }
+    private let currentLock = NSLock()
+    /// Lock-guarded (see currentLock); nonisolated(unsafe) so the nonisolated
+    /// `current` can read it. The lock makes this safe.
+    private nonisolated(unsafe) var _currentTask: Task<Void, Never>?
     /// Bumped by each start(): a watch clears `preparingDevice` as it ends unless a later start() owns it.
     @ObservationIgnored private var run = 0
     public func cancel() { task?.cancel() }
     /// Waits for this boot's watch (a restart lets it finish first).
-    public var current: Task<Void, Never>? { task }
+    /// Nonisolated (LTAppCore addition): the boot state machines await this
+    /// from background tasks; the Task handle itself is thread-safe.
+    public nonisolated var current: Task<Void, Never>? {
+        currentLock.withLock { _currentTask }
+    }
 
     /// The boot's readiness steps, shown as the startup status until the Home screen answers: lockdown, then
     /// SpringBoard.
     public func start() {
+        // LTAppCore: the boot state machines call this from background tasks.
+        // The watch itself stays @MainActor.
+        guard Thread.isMainThread else {
+            Task { @MainActor [weak self] in self?.start() }
+            return
+        }
         guard !host.shuttingDown else { return }
         task?.cancel()
         run += 1

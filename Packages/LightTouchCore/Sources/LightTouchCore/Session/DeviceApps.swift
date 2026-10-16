@@ -32,6 +32,9 @@ public protocol AppsHost: AnyObject {
     @ObservationIgnored private unowned let host: AppsHost
     public init(host: AppsHost) { self.host = host }
 
+    /// The boot the app-management reads belong to (AppChangeWatch follows its renewals).
+    var bootScope: BootSessionScope { host.bootScope }
+
     /// usbmuxd is up and the storage holds: the host side of app management.
     public var canManageApps: Bool { host.usbmuxSession != nil && !host.storageFailed }
 

@@ -92,7 +92,7 @@ import HostRuntime
         (Int(entry.version.split(separator: ".").first ?? "") ?? 0) >= 2
     }
     /// Setup Assistant runs on a fresh device from iOS 5 on; before that iTunes activated it.
-    public static func offersSkipSetup(_ entry: FirmwareCatalog.Entry) -> Bool {
+    public nonisolated static func offersSkipSetup(_ entry: FirmwareCatalog.Entry) -> Bool {
         BootRecipe.setupPhonesHome(iosVersion: entry.version)
     }
 

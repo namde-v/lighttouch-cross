@@ -345,6 +345,14 @@ public nonisolated struct HiddenApp: Equatable, Sendable, Identifiable {
     /// Its bundle under /Applications.
     public let bundle: String
 
+    /// Public memberwise init (LTAppCore addition): the bridge builds a
+    /// fallback entry for bundle IDs outside `candidates`.
+    public init(name: String, bundleID: String, bundle: String) {
+        self.name = name
+        self.bundleID = bundleID
+        self.bundle = bundle
+    }
+
     public static let candidates: [HiddenApp] = [
         HiddenApp(name: "Field Test", bundleID: "com.apple.fieldtest", bundle: "FieldTest"),
         HiddenApp(name: "Diagnostics", bundleID: "com.apple.iosdiagnostics", bundle: "iOS Diagnostics"),

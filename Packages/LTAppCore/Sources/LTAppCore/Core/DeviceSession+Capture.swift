@@ -175,6 +175,9 @@ extension DeviceSession {
 
     // MARK: - Recording callbacks
 
+    // Called via MainActor.assumeIsolated from ScreenRecordingSession's
+    // callbacks (which fire on the recorder's task).
+    @MainActor
     private func recordingChanged() {
         guard let core = AppCore.shared, let handle = core.handle(for: instance.id) else { return }
         core.refreshCaptureAvailabilitySnapshot(session: self, handle: handle)
@@ -191,6 +194,7 @@ extension DeviceSession {
         }
     }
 
+    @MainActor
     private func recordingCompleted(_ completion: ScreenRecordingSession.Completion) {
         guard let core = AppCore.shared, let handle = core.handle(for: instance.id) else { return }
         pendingSavePath = nil
@@ -218,6 +222,7 @@ extension DeviceSession {
     }
 
     /// Suspends until Qt answers the save-destination prompt (gap 11).
+    @MainActor
     private func awaitSaveDestination() async -> URL? {
         if let handle = AppCore.shared?.handle(for: instance.id) {
             let suggested = CapturePreferences.captureName("recording")

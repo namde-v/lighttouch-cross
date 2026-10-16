@@ -28,17 +28,28 @@ extension DeviceSession {
     private func refreshEraseBusy() {
         if isErasing != wasErasing {
             wasErasing = isErasing
-            let lower = uuid.uuidString.lowercased()
+            let lower = instance.id.uuidString.lowercased()
             if !isErasing {
                 AppCore.shared?.storageWork.unclaim(lower)
             }
             AppCore.shared?.refreshLibrarySnapshots()
-            EventPump.shared.postStorageBusyChanged()
+            EventPump.shared.post(kind: kLTEventStorageBusyChanged)
         }
     }
 
     @MainActor
     private func pollHelper() {
+        // Refresh the lock-guarded snapshots the background host witnesses
+        // read (BootCycle/Shutdown/Erase call them off the main thread).
+        lock.withLock {
+            _bgStatus = process?.status
+            _bgShuttingDown = ladder.shuttingDown
+            _bgHalting = ladder.halting
+            _bgStorageFailed = process?.status?.storageFailed ?? false
+            _bgPreparingDevice = readiness.preparingDevice
+            _bgInstallerUsesDevice = AppInstaller.isUsingDevice(instance.id)
+            _bgKeyboardInputEnabled = keyboard.enabled
+        }
         guard let process else { return }
         if process.isDead {
             // Death is reported through process.onDeath; nothing to poll.

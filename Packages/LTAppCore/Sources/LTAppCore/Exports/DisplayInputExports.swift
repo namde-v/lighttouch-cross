@@ -53,7 +53,7 @@ public func lt_input_key(
     guard ltResolveDevice(device) != nil else { return kLTNoSuchDevice }
     guard ltIsInitialized(), !ltIsShutDown() else { return kLTNotReady }
     _ = modifiers // accepted for ABI parity; the guest-side mapping is Qt's (gap 8)
-    ltFastSession(device)?.keyboard.sendKey(macKeyCode: code, down: down != 0)
+    ltFastSession(device)?.injectKey(macKeyCode: Int32(code), down: down != 0)
     return kLTAccepted
 }
 
@@ -67,7 +67,7 @@ public func lt_input_text(
     guard ltIsInitialized(), !ltIsShutDown() else { return kLTNotReady }
     guard let textStr = ltTakeString(text, what: "lt_input_text: text") else { return kLTBadArgument }
     guard !textStr.isEmpty else { return kLTAccepted }
-    ltFastSession(device)?.input.typeText(textStr, shiftHeld: shiftHeld != 0)
+    ltFastSession(device)?.injectText(textStr, shiftHeld: shiftHeld != 0)
     return kLTAccepted
 }
 
@@ -81,7 +81,7 @@ public func lt_input_button(_ device: lt_device_t, _ button: Int32) -> LTResult 
         LTLastError.set("lt_input_button: unknown button \(button)")
         return kLTBadArgument
     }
-    ltFastSession(device)?.input.tap(btn)
+    ltFastSession(device)?.injectTap(button: Int32(btn.rawValue))
     return kLTAccepted
 }
 
@@ -90,7 +90,7 @@ public func lt_input_button(_ device: lt_device_t, _ button: Int32) -> LTResult 
 public func lt_input_shake(_ device: lt_device_t) -> LTResult {
     guard ltResolveDevice(device) != nil else { return kLTNoSuchDevice }
     guard ltIsInitialized(), !ltIsShutDown() else { return kLTNotReady }
-    ltFastSession(device)?.input.shake()
+    ltFastSession(device)?.injectShake()
     return kLTAccepted
 }
 
@@ -103,7 +103,11 @@ public func lt_input_tilt(_ device: lt_device_t, _ angle: Double, _ pitch: Doubl
         LTLastError.set("lt_input_tilt: angle/pitch must be finite")
         return kLTBadArgument
     }
-    ltFastSession(device)?.input.setTilt(angle: angle, pitch: pitch)
+    // Tilt needs the motion pose from DeviceSettings (@MainActor), so it hops;
+    // the command still enqueues and returns immediately (ui/ABI.md §4).
+    if let session = ltFastSession(device) {
+        Task { @MainActor in session.input.setTilt(angle: angle, pitch: pitch) }
+    }
     return kLTAccepted
 }
 
@@ -192,10 +196,10 @@ public func lt_display_set_zoom(
         return kLTBadArgument
     }
     return withSession(device, what: "lt_display_set_zoom") { core, session in
-        zoomMode.save(for: session.profile, in: ltPrefs())
+        zoomMode.save(for: session.profile, in: core.prefs)
         guard let handle = core.handle(for: session.instance.id) else { return }
         core.refreshZoomSnapshot(session: session, handle: handle)
-        core.postZoomChanged(for: session)
+        postZoomChanged(for: session, handle: handle)
     }
 }
 
@@ -336,7 +340,7 @@ public func lt_display_set_panel_size(
         guard let handle = core.handle(for: session.instance.id) else { return }
         EventPump.shared.post(kind: kLTEventRotationChanged, device: handle)
         core.refreshZoomSnapshot(session: session, handle: handle)
-        core.postZoomChanged(for: session)
+        postZoomChanged(for: session, handle: handle)
     }
 }
 
@@ -462,4 +466,9 @@ public func lt_key_mac_from_evdev(_ evdevCode: Int32) -> UInt16 {
     case 103: return 0x52  // KEY_UP
     default: return 0
     }
+}
+
+/// Posts kLTEventZoomChanged for the session (zoom mode changed).
+private func postZoomChanged(for session: DeviceSession, handle: lt_device_t) {
+    EventPump.shared.post(kind: kLTEventZoomChanged, device: handle)
 }

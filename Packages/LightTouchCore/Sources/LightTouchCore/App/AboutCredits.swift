@@ -3,7 +3,7 @@ import Foundation
 /// About Light Touch's credits: the bundled components with their versions (build-inputs.json `components`, written
 /// by scripts/vendor; a development build has none), the open-source projects it includes, each linked to its site
 /// with its license, and a link that opens the Licenses window (`licensesLink`). The app styles the runs (AboutPanel).
-public enum AboutCredits {
+public nonisolated enum AboutCredits {
     public struct Run: Equatable {
         public var text: String
         public var isHeading = false
@@ -13,7 +13,7 @@ public enum AboutCredits {
     }
 
     /// An open-source project Light Touch includes. `directory`: its folder under the bundled licenses/.
-    public struct Project: Equatable, Sendable {
+    public nonisolated struct Project: Equatable, Sendable {
         public let name: String
         public let site: URL
         public let license: String
@@ -157,7 +157,7 @@ public enum AboutCredits {
 }
 
 extension AboutCredits.Project {
-    fileprivate init(_ name: String, _ site: String, _ license: String, _ directory: String) {
+    fileprivate nonisolated init(_ name: String, _ site: String, _ license: String, _ directory: String) {
         guard let url = URL(string: site) else { preconditionFailure("\(name)'s site is a constant, valid URL") }
         self.init(name: name, site: url, license: license, directory: directory)
     }

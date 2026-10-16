@@ -1,4 +1,13 @@
 import LTBridgeC
+
+/// Lets init-created closures reference the session before definite
+/// initialization completes: the box is created first, captured weakly by the
+/// closures, and filled with `self` at the end of init (before anyone can
+/// call them).
+final class WeakSessionBox {
+    weak var session: DeviceSession?
+}
+
 /// The portable per-device session (ui/ABI.md §6 gap 1).
 ///
 /// Mirrors `upstream/LightTouchMac/Device/EmulatorController.swift` (the
@@ -44,10 +53,14 @@ struct LTBootOptions: Decodable {
     var bootArgs: String?
 }
 
-final class DeviceSession {
+/// Concurrency: the session is **nonisolated** (see the class doc above) and
+/// `@unchecked Sendable`: every mutable field is guarded by `lock` (or
+/// confined to @MainActor entry points); cross-thread captures rely on that
+/// discipline, not on the compiler.
+final class DeviceSession: @unchecked Sendable {
     /// Guards every mutable field below. Never held across a call into a
     /// component, AppCore, or the event pump (reentrancy would deadlock).
-    private let lock = NSLock()
+    let lock = NSLock()
 
     /// The library record this session runs.
     var instance: DeviceInstance
@@ -115,8 +128,24 @@ final class DeviceSession {
     /// thread-safe and ordered (DeviceLink writes on its own queue), and a
     /// stale link is harmless: sends to a dead helper are dropped by the link.
     nonisolated(unsafe) var fastLink: HelperLink?
-    var link: DeviceLink? { process?.link }
-    var status: SharedStatus? { process?.status }
+    @MainActor var link: DeviceLink? { process?.link }
+    /// BootCycleHost.status witness: a lock-guarded snapshot refreshed by
+    /// poll() on @MainActor (the state machines call this off the main
+    /// thread; DeviceProcess.status is @MainActor).
+    var status: SharedStatus? {
+        lock.withLock { _bgStatus }
+    }
+    var _bgStatus: SharedStatus?
+    /// Background caches for the other BootCycle/Shutdown/Erase host reads
+    /// that touch @MainActor state (ladder, ReadinessWatch, DeviceProcess).
+    /// Refreshed by poll() on @MainActor and at the mutation points.
+    var _bgShuttingDown = false
+    var _bgHalting = false
+    var _bgStorageFailed = false
+    var _bgPreparingDevice = false
+    var _bgInstallerUsesDevice = false
+    var _bgKeyboardInputEnabled = true
+    var _bgDebugPort = false
     /// What this helper's boot was built with (BootSettings); a Start after
     /// Shut Down compares it with the next (BootCycleHost.nextStartChanged).
     private var _bootSettings: BootSettings?
@@ -133,21 +162,31 @@ final class DeviceSession {
     // MARK: - Settings, notices, watches (immutable after init)
 
     let settingsFile: DeviceSettingsFile
-    let notices: DeviceNotices
-    let readiness: ReadinessWatch
-    let bootWatch: BootWatch
+    /// nonisolated(unsafe): BootCycle calls report/resolve off the main thread;
+    /// the methods hop to @MainActor internally (see DeviceNotices).
+    nonisolated(unsafe) let notices: DeviceNotices
+    /// nonisolated(unsafe): BootCycle awaits `current` and calls `start()` off
+    /// the main thread; both are safe (see ReadinessWatch). Filled by the
+    /// create() factory (needs host: self, which init can't pass).
+    nonisolated(unsafe) private var _readiness: ReadinessWatch?
+    var readiness: ReadinessWatch { _readiness! }
+    @MainActor lazy var bootWatch: BootWatch = BootWatch(host: self)
 
     // MARK: - Machine control (immutable after init)
 
-    let cycle: BootCycle
-    let ladder: ShutdownLadder
-    let eraser: DeviceErase
+    @MainActor lazy var cycle: BootCycle = BootCycle(host: self)
+    @MainActor lazy var ladder: ShutdownLadder = ShutdownLadder(host: self)
+    @MainActor lazy var eraser: DeviceErase = DeviceErase(host: self)
 
     // MARK: - Input (immutable after init)
 
-    let input: DeviceInput
+    @MainActor lazy var input: DeviceInput = DeviceInput(host: self, settings: settingsFile)
     let keyboard: KeyboardInput
-    let rotation: DeviceRotation
+    /// nonisolated(unsafe): the rotation witnesses call reset/start off the
+    /// main thread; the methods hop to @MainActor internally. Filled by the
+    /// create() factory.
+    nonisolated(unsafe) private var _rotation: DeviceRotation?
+    var rotation: DeviceRotation { _rotation! }
     private var _compassHeading: Int?
     var compassHeading: Int? {
         get { lock.withLock { _compassHeading } }
@@ -158,15 +197,31 @@ final class DeviceSession {
 
     let tweaks: DeviceTweaks
     let tweaksPanel: TweaksPanelModel
-    let carrierModem: CarrierModem
+    @MainActor lazy var carrierModem: CarrierModem = CarrierModem(
+        hasCellular: profile.hasCellular,
+        settings: settingsFile,
+        scope: bootScope
+    ) { [weak self] in self?.fastLink }
     /// @MainActor (CarrierPanelModel is); only touched from @MainActor methods.
-    let carrierPanel: CarrierPanelModel
+    /// Filled by the create() factory (needs backend: self).
+    private var _carrierPanel: CarrierPanelModel?
+    @MainActor var carrierPanel: CarrierPanelModel { _carrierPanel! }
 
     // MARK: - App management, options, proxy (immutable after init)
 
-    let apps: DeviceApps
-    let options: DeviceOptions
-    let proxy: DeviceWebProxy
+    @MainActor lazy var apps: DeviceApps = DeviceApps(host: self)
+    @MainActor lazy var options: DeviceOptions = DeviceOptions(
+        settings: settingsFile,
+        board: instance.board,
+        link: { [weak self] in self?.fastLink }
+    )
+    @MainActor lazy var proxy: DeviceWebProxy = DeviceWebProxy(
+        directory: { [weak self] in
+            guard let self else { return URL(fileURLWithPath: "/tmp") }
+            return WebProxyConfiguration.directory(for: instance)
+        },
+        shortName: profile.shortName
+    )
     /// @MainActor (USBMux is); only touched from @MainActor methods.
     private var _usbmux: USBMux?
     @MainActor var usbmux: USBMux {
@@ -275,7 +330,9 @@ final class DeviceSession {
 
     // MARK: - Init
 
+    @MainActor
     init(instance: DeviceInstance, profile: Board, firmwareVersion: String, directories: LTAppDirectories, helperURL: URL?) {
+        let box = WeakSessionBox()
         self.instance = instance
         self.profile = profile
         self.firmwareVersion = firmwareVersion
@@ -289,27 +346,14 @@ final class DeviceSession {
         let notices = DeviceNotices(
             settings: settingsFile,
             shortName: profile.shortName
-        ) { [weak self] in self?.storageFailed ?? false }
+        ) { [weak box] in box?.session?.storageFailed ?? false }
         self.notices = notices
-        // The components below take the session as an unowned host; all
-        // stored properties are initialized before any of them is created.
-        self.readiness = ReadinessWatch(host: self, notices: notices)
-        self.bootWatch = BootWatch(host: self)
-        self.cycle = BootCycle(host: self)
-        self.ladder = ShutdownLadder(host: self)
-        self.eraser = DeviceErase(host: self)
-        self.input = DeviceInput(host: self, settings: settingsFile)
         self.keyboard = KeyboardInput(
             settings: settingsFile,
             canToggleHardwareKeyboard: profile.canToggleHardwareKeyboard,
-            control: { [weak self] request, done in self?.keyboardControl(request, done: done) },
-            send: { [weak self] command in self?.link?.send(command) },
-            canPress: { [weak self] in self.map { $0.acceptsInput && !$0.isSleeping } ?? false }
-        )
-        self.rotation = DeviceRotation(
-            host: self,
-            settings: settingsFile,
-            setsAccelerometer: profile.orientationSource == .springBoard
+            control: { [weak box] request, done in box?.session?.keyboardControl(request, done: done) },
+            send: { [weak box] command in box?.session?.fastLink?.send(command) },
+            canPress: { [weak box] in box?.session.map { $0.acceptsInput && !$0.isSleeping } ?? false }
         )
         let tweaks = DeviceTweaks(
             settings: settingsFile,
@@ -321,34 +365,50 @@ final class DeviceSession {
         self.tweaks = tweaks
         let tweaksPanel = TweaksPanelModel(tweaks: tweaks, guest: nil)
         self.tweaksPanel = tweaksPanel
-        self.carrierModem = CarrierModem(
-            hasCellular: profile.hasCellular,
-            settings: settingsFile,
-            scope: bootScope
-        ) { [weak self] in self?.link }
-        self.carrierPanel = CarrierPanelModel(backend: self)
-        self.apps = DeviceApps(host: self)
-        self.options = DeviceOptions(
-            settings: settingsFile,
-            board: instance.board,
-            link: { [weak self] in self?.link }
-        )
-        self.proxy = DeviceWebProxy(
-            directory: { [weak self] in
-                guard let self else { return URL(fileURLWithPath: "/tmp") }
-                return WebProxyConfiguration.directory(for: instance)
-            },
-            shortName: profile.shortName
-        )
+        // The session is fully initialized now; arm the init-time closures.
+        box.session = self
         // The Tweaks panel's finger-dots get/set drives the window toggle
         // through the bridge (lt_display_set_finger_dots + event).
         tweaksPanel.fingerDots = (
             get: { [weak self] in self?.fingerDotsShown ?? false },
             set: { [weak self] in self?.setFingerDots($0) }
         )
+        // Force the lazy host components now (on @MainActor): the background
+        // witnesses must never trigger lazy initialization off-actor.
+        _ = bootWatch; _ = cycle; _ = ladder; _ = eraser
+        _ = input; _ = carrierModem; _ = apps; _ = options; _ = proxy
+    }
+
+    /// Creates a session and wires the host-taking components. Init can't pass
+    /// `host: self` (definite initialization), so the factory fills them after
+    /// the session exists — before anyone else can see it.
+    @MainActor
+    static func create(
+        instance: DeviceInstance,
+        profile: Board,
+        firmwareVersion: String,
+        directories: LTAppDirectories,
+        helperURL: URL?
+    ) -> DeviceSession {
+        let session = DeviceSession(
+            instance: instance,
+            profile: profile,
+            firmwareVersion: firmwareVersion,
+            directories: directories,
+            helperURL: helperURL
+        )
+        session._readiness = ReadinessWatch(host: session, notices: session.notices)
+        session._rotation = DeviceRotation(
+            host: session,
+            settings: session.settingsFile,
+            setsAccelerometer: profile.orientationSource == .springBoard
+        )
+        session._carrierPanel = CarrierPanelModel(backend: session)
+        return session
     }
 
     /// Sets the finger-dots toggle: snapshot refresh + event for Qt.
+    @MainActor
     func setFingerDots(_ shown: Bool) {
         let changed = lock.withLock { () -> Bool in
             guard _fingerDotsShown != shown else { return false }
@@ -379,15 +439,28 @@ final class DeviceSession {
     var isSleeping: Bool { false } // host sleep is not wired on Linux/Windows yet (ADDITIONS.md)
     var isRunning: Bool { state == .running }
     var isPaused: Bool { state == .paused }
-    var shuttingDown: Bool { ladder.shuttingDown }
-    var storageFailed: Bool { status?.storageFailed ?? false }
-    var preparingDevice: Bool { readiness.preparingDevice }
+    /// Host witnesses read by the boot/shutdown/erase state machines from
+    /// background tasks. The underlying components (ladder, ReadinessWatch,
+    /// DeviceProcess) are @MainActor, so these are lock-guarded snapshots
+    /// refreshed by poll() on @MainActor and at the mutation points.
+    var shuttingDown: Bool { lock.withLock { _bgShuttingDown } }
+    var storageFailed: Bool { lock.withLock { _bgStorageFailed } }
+    var preparingDevice: Bool { lock.withLock { _bgPreparingDevice } }
     var isInstalling: Bool { false } // wired to AppInstaller when installs run
     var acceptsInput: Bool {
         isRunning && !isSleeping && deviceReachable == true
     }
     var canReachDevice: Bool { deviceReachable == true }
-    var halting: Bool { ladder.halting }
+    /// See the shuttingDown comment above.
+    var halting: Bool { lock.withLock { _bgHalting } }
+
+    /// lt_debug_port_set: DeviceOptions is @MainActor; the boot witness
+    /// currentBootSettings reads the cached copy off-actor.
+    @MainActor
+    func setDebugPortEnabled(_ enabled: Bool) {
+        options.setDebugPort(enabled)
+        lock.withLock { _bgDebugPort = enabled }
+    }
 
     /// The one way `state` changes (VMState.transition(to:)).
     func transition(to next: VMState) {
@@ -405,22 +478,32 @@ final class DeviceSession {
     // MARK: - Boot / halt / pause / reset / lock
 
     /// lt_device_boot: BootSettings from optionsJson, then a fresh helper.
+    @MainActor
     func boot(options: LTBootOptions?) {
         guard !isReleased else { return }
         if let panel = options?.panel { instance.panel = panel }
         bootSettings = BootSettings(
             panel: options?.panel ?? instance.panel,
-            network: options?.network ?? NetworkAccessPreference.decided(defaults: ltPrefs()) ?? true,
+            network: options?.network ?? NetworkAccessPreference.decided(defaults: ltPrefs() ?? UserDefaults.standard) ?? true,
             debugPort: options?.debugPort ?? self.options.debugPortEnabled,
-            bootArgs: options?.bootArgs ?? DeviceOptions.bootArgs(ltPrefs())
+            bootArgs: options?.bootArgs ?? DeviceOptions.bootArgs()
         )
         restart()
     }
 
     /// Spawns a fresh helper (DeviceSessionHost.restart in upstream).
+    /// A BootCycle/Shutdown/Erase host witness: the state machines call it
+    /// from background tasks, so the spawn itself hops to @MainActor (the
+    /// process, link and notices are all actor-bound).
     func restart() {
         guard !isReleased else { return }
         retireBoot()
+        Task { @MainActor [weak self] in self?.spawnHelper() }
+    }
+
+    @MainActor
+    private func spawnHelper() {
+        guard !isReleased else { return }
         let instanceID = instance.id
         let profile = profile
         let logURL = paths.logs.appendingPathComponent("native.log")
@@ -441,7 +524,6 @@ final class DeviceSession {
             guard let self else { return }
             let session = self.usbmux.start(paths: self.paths)
             self.usbmuxSessionCached = session
-            self.apps.host = self  // refresh usbmux session if DeviceApps was created earlier
         }
         process.onDeath = { [weak self, weak process] reason in
             guard let self, let process, self.process === process else { return }
@@ -462,6 +544,8 @@ final class DeviceSession {
     }
 
     /// Builds the BootConfig after the helper's hello (nil = cannot boot).
+    /// @MainActor: DeviceProcess.start's build closure runs on @MainActor.
+    @MainActor
     private func bootConfiguration(hardware: DeviceInfo?) -> BootConfig? {
         guard !isDead, !isReleased else { return nil }
         proxy.forgetEndpoint()
@@ -516,6 +600,7 @@ final class DeviceSession {
         }
     }
 
+    @MainActor
     private func failBoot(_ error: Error) {
         logEvent("boot: \(instance.name): \(error)")
         notices.report(error.localizedDescription, for: .powerOff)
@@ -523,6 +608,7 @@ final class DeviceSession {
     }
 
     /// The helper died: release the boot's resources, mark dead unless halted.
+    @MainActor
     func helperDied(reason: String) {
         let wasHalting = halting
         releaseBootResources()
@@ -536,13 +622,13 @@ final class DeviceSession {
         retireBoot()
         switch end {
         case .unbuildable:
-            transition(to: .dead(nil))
+            transition(to: .dead(exitCode: nil))
         case .guestPoweredOff:
             transition(to: .poweredOff)
         case .helperGone:
             // A halt's exit is Stopped (already .poweredOff via the ladder);
             // anything else is a crash: dead.
-            if !isPoweredOff && !isDead { transition(to: .dead(nil)) }
+            if !isPoweredOff && !isDead { transition(to: .dead(exitCode: nil)) }
         }
         let session = self
         Task { @MainActor in AppCore.shared?.sessionBootEnded(session, end: end) }
@@ -554,6 +640,7 @@ final class DeviceSession {
     }
 
     /// The helper is gone: the mirror ring and usbmuxd end with it.
+    @MainActor
     func releaseBootResources() {
         if let mirror = displayMirror {
             displayMirror = nil
@@ -574,6 +661,7 @@ final class DeviceSession {
     // MARK: - Teardown
 
     /// Releases the session (lt_shutdown / device deleted).
+    @MainActor
     func release() {
         isReleased = true
         retireBoot()

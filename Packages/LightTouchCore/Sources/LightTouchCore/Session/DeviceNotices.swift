@@ -96,6 +96,12 @@ public final class DeviceNotices {
     }
 
     public func report(_ message: String, for operation: Operation) {
+        // LTAppCore: the boot state machines call this from background tasks.
+        // The settings write stays on @MainActor.
+        guard Thread.isMainThread else {
+            Task { @MainActor [weak self] in self?.report(message, for: operation) }
+            return
+        }
         let failed = storageFailed()
         let value =
             failed
@@ -122,6 +128,11 @@ public final class DeviceNotices {
     }
 
     public func resolve(_ operation: Operation) {
+        // LTAppCore: may be called from background state-machine tasks.
+        guard Thread.isMainThread else {
+            Task { @MainActor [weak self] in self?.resolve(operation) }
+            return
+        }
         guard !storageFailed(), notices.contains(where: { $0.operation == operation.rawValue }) else { return }
         update { $0.removeAll { $0.operation == operation.rawValue } }
     }
@@ -129,6 +140,11 @@ public final class DeviceNotices {
     /// A fresh helper starts: the last boot's notices (its storage, its stop, its files, its startup, its free
     /// space) no longer hold; the device's own stay.
     public func helperStarted() {
+        // LTAppCore: may be called from background state-machine tasks.
+        guard Thread.isMainThread else {
+            Task { @MainActor [weak self] in self?.helperStarted() }
+            return
+        }
         let device: Set = [Operation.erase.rawValue, Operation.activation.rawValue]
         guard notices.contains(where: { !device.contains($0.operation ?? "") }) else { return }
         update { $0.removeAll { !device.contains($0.operation ?? "") } }

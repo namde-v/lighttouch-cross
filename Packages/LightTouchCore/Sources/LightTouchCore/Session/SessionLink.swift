@@ -27,6 +27,7 @@ extension BootSessionScope {
     /// A control request for this boot; `done(true)` when the machine applied it (false on a machine without the
     /// control, the iPod, or from a helper that's gone). A reply that lands after this boot retired, or in a later
     /// boot, is dropped: it must not change the next boot.
+    ///
     public func control(
         _ request: LinkRequest,
         on link: HelperLink?,
@@ -44,12 +45,21 @@ extension BootSessionScope {
 }
 
 /// Retired boots' services workers, stopped one after another; Stop waits for them only so long.
-public final class WorkerRetirement {
+///
+/// Nonisolated (was @MainActor via package default): the session state
+/// machines use it from background threads. Changed for LTAppCore (ui/ABI.md
+/// §6 gap 1).
+public nonisolated final class WorkerRetirement: @unchecked Sendable {
     public init() {}
-    public private(set) var task: Task<Void, Never>?
+    private let lock = NSLock()
+    private var _task: Task<Void, Never>?
+    public var task: Task<Void, Never>? {
+        get { lock.withLock { _task } }
+        set { lock.withLock { _task = newValue } }
+    }
 
     /// After every earlier retirement, `stop` (the retired boot's services worker teardown).
-    public func chain(_ stop: @escaping () async -> Void) {
+    public func chain(_ stop: @escaping @Sendable () async -> Void) {
         let previous = task
         task = Task {
             await previous?.value

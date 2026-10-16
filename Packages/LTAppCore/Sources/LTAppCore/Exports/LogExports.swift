@@ -60,11 +60,11 @@ private final class LogFollowers: @unchecked Sendable {
 private enum LogSources {
     static func url(for source: String) -> URL? {
         if source == "app" {
-            return AppCore.shared?.directories.logs.appendingPathComponent("app.log")
+            return AppCore.shared?.directories.logDir.appendingPathComponent("app.log")
         }
         if source.hasPrefix("helper:") {
             let id = String(source.dropFirst("helper:".count))
-            return AppCore.shared?.directories.logs.appendingPathComponent("helper-\(id).log")
+            return AppCore.shared?.directories.logDir.appendingPathComponent("helper-\(id).log")
         }
         return nil
     }
@@ -111,7 +111,7 @@ public func lt_log_read(
     // Offset advances by the bytes read (whole lines per LogTail's contract).
     let dto = LogReadDTO(text: text, rotated: rotated, offset: from + UInt64(text.utf8.count))
     guard let json = ltEncodeJSON(dto) else { return kLTFailed }
-    out.pointee = UnsafePointer(ltCopyCString(json))
+    out.pointee = ltCopyCString(json)
     return kLTOk
 }
 
