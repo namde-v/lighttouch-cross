@@ -49,6 +49,9 @@ jobs:
         with:
           msystem: MINGW64
           update: true
+          # Explicit even though true is the default: caches the pacman package
+          # dir between runs so `update` + `install` below skip re-downloading.
+          cache: true
           install: >-
             base-devel
             git
@@ -74,12 +77,34 @@ jobs:
           restore-keys: |
             qemu-ios-win-ccache-
 
+      # The qemu-ios clone (~1 GB history) + 4 meson subproject clones cost
+      # several minutes per run. Cache the source tree keyed on the pinned
+      # commit; the combined actions/cache step saves it at job end ONLY on a
+      # cache miss. A "Prune build outputs" step at the end of the job keeps
+      # build/ and dist/ out of the cache so it stays a source-only cache.
+      - name: Restore qemu-ios source cache
+        id: qemu-src-cache
+        uses: actions/cache@v4
+        with:
+          path: qemu-src
+          key: qemu-ios-win-src-${{ env.QEMU_PIN }}
+
       - name: Clone qemu-ios at pinned commit
+        if: steps.qemu-src-cache.outputs.cache-hit != 'true'
         run: |
           git clone https://github.com/samhenrigold/qemu-ios qemu-src
           cd qemu-src
           git fetch --depth 1 origin "$QEMU_PIN"
           git checkout "$QEMU_PIN"
+
+      # Runs on both paths: on a cache hit the tree may still carry patches
+      # from the previous run, so force-checkout the pin (reverts tracked-file
+      # modifications) and make sure the pinned commit object is present.
+      - name: Ensure pinned qemu-ios commit
+        run: |
+          cd qemu-src
+          git rev-parse --verify --quiet "$QEMU_PIN^{commit}" >/dev/null || git fetch --depth 1 origin "$QEMU_PIN"
+          git checkout -f "$QEMU_PIN"
 
       - name: Apply no-FFmpeg link fix
         run: |
@@ -670,8 +695,12 @@ jobs:
         run: |
           cd qemu-src
           seed_subproject() {
-            rm -rf "subprojects/$1"
-            git clone --quiet "$2" "subprojects/$1"
+            # The subproject clones live inside qemu-src/, so a source-cache
+            # hit already has them; just re-pin to the recorded commit.
+            if [ ! -d "subprojects/$1/.git" ]; then
+              rm -rf "subprojects/$1"
+              git clone --quiet "$2" "subprojects/$1"
+            fi
             git -C "subprojects/$1" fetch --depth 1 origin "$3"
             git -C "subprojects/$1" checkout --quiet "$3"
           }
@@ -707,19 +736,61 @@ jobs:
           cd qemu-src/build
           ./qemu-system-arm.exe --version
           ./qemu-system-arm.exe -M ? | grep -iE 'ipod|iphone|ipad'
+          # -device ? enumerates the registered device models: proves the
+          # binary initializes past machine listing without firmware images.
+          ./qemu-system-arm.exe -device ? > devices.txt
+          grep -ciE 'ipod|iphone|ipad' devices.txt
 
       - name: Bundle binary and MinGW DLLs
         run: |
           cd qemu-src
           mkdir -p dist
           cp build/qemu-system-arm.exe dist/
-          for dll in $(x86_64-w64-mingw32-objdump -p build/qemu-system-arm.exe | awk '/DLL Name:/{print $3}'); do
+          # Locate objdump robustly and FAIL LOUDLY if it is missing: a
+          # missing objdump used to fail silently, producing DLL-less,
+          # unrunnable bundles (the for loop just iterated over nothing).
+          OBJDUMP=$(command -v x86_64-w64-mingw32-objdump || command -v objdump || ls /mingw64/bin/*-objdump.exe 2>/dev/null | head -1)
+          if [ -z "$OBJDUMP" ]; then
+            echo "ERROR: no objdump found; /mingw64/bin contents:"
+            ls /mingw64/bin/ | head -40
+            exit 1
+          fi
+          echo "Using objdump: $OBJDUMP"
+          for dll in $("$OBJDUMP" -p build/qemu-system-arm.exe | awk '/DLL Name:/{print $3}'); do
             if [ -f "/mingw64/bin/$dll" ]; then cp "/mingw64/bin/$dll" dist/; fi
           done
           ls -la dist/
+
+      # The artifact must be runnable from dist/ alone: every DLL the exe
+      # imports has to be either bundled in dist/ or a Windows system DLL.
+      # Anything else (e.g. a MinGW DLL the copy loop missed) fails the run.
+      - name: Verify bundled DLLs are complete
+        run: |
+          cd qemu-src
+          OBJDUMP=$(command -v x86_64-w64-mingw32-objdump || command -v objdump || ls /mingw64/bin/*-objdump.exe 2>/dev/null | head -1)
+          if [ -z "$OBJDUMP" ]; then echo "ERROR: no objdump found"; exit 1; fi
+          sys='kernel32\.dll|user32\.dll|gdi32\.dll|advapi32\.dll|shell32\.dll|ole32\.dll|oleaut32\.dll|uuid\.dll|msvcrt\.dll|ucrtbase\.dll|vcruntime140\.dll|ws2_32\.dll|winmm\.dll|version\.dll|secur32\.dll|crypt32\.dll|bcrypt\.dll|iphlpapi\.dll|dnsapi\.dll|imm32\.dll|comdlg32\.dll|comctl32\.dll|shlwapi\.dll|setupapi\.dll|wtsapi32\.dll|powrprof\.dll|dwmapi\.dll|uxtheme\.dll|ntdll\.dll|msimg32\.dll|gdiplus\.dll|opengl32\.dll|hid\.dll|api-ms-win-[a-z0-9-]+\.dll'
+          fail=0
+          for dll in $("$OBJDUMP" -p dist/qemu-system-arm.exe | awk '/DLL Name:/{print $3}'); do
+            lc=$(printf '%s' "$dll" | tr 'A-Z' 'a-z')
+            if [ -f "dist/$dll" ]; then continue; fi
+            if printf '%s' "$lc" | grep -Eq "^($sys)$"; then continue; fi
+            echo "NOT BUNDLED and not a system DLL: $dll"
+            fail=1
+          done
+          exit $fail
 
       - name: Upload emulator artifact
         uses: actions/upload-artifact@v4
         with:
           name: qemu-system-arm-windows-x86_64
           path: qemu-src/dist/
+          retention-days: 30
+
+      # Runs before the post-job cache save, so the qemu-src cache entry stays
+      # a lean source tree (no GBs of build objects or the dist/ staging dir).
+      # `always()` keeps it lean even when the build fails.
+      - name: Prune build outputs (keep source cache lean)
+        if: always()
+        run: |
+          rm -rf qemu-src/build qemu-src/dist

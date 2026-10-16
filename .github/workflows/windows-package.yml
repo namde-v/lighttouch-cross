@@ -1,0 +1,155 @@
+# LightTouch cross-platform port — Windows packaging (GROUNDWORK)
+#
+# Assembles the portable Windows ZIP from CI artifacts. Intended layout:
+#
+#   LightTouch/
+#     LightTouch.exe            Qt 6 UI executable (PENDING — see below)
+#     qemu-system-arm.exe       from the windows-emulator-ci artifact
+#     *.dll                     MinGW runtime DLLs (bundled by the emulator job)
+#     *.dll                     Swift package DLLs (from windows-ci artifacts)
+#     swiftCore.dll, ...        Swift runtime DLLs (copied from the toolchain)
+#     README.txt                contents manifest
+#
+# The layout is FLAT (no bin/ or lib/ subdirs): the Windows loader does not
+# search subdirectories for DLLs, so a flat directory is the only portable
+# layout that works without a launcher shim or PATH manipulation.
+#
+# Trigger: manual (workflow_dispatch) only. Not wired to releases yet — the
+# Qt UI <-> core integration (Phase 6) is still open, so there is no Qt UI
+# executable artifact to stage. The Qt step below starts working automatically
+# once a workflow publishes `lighttouch-qt-ui-windows-x86_64`.
+name: Windows package
+
+on:
+  # The paths push trigger exists so the workflow is registered with GitHub
+  # (a workflow_dispatch-only file that has never run cannot be dispatched
+  # by name) and self-validates when edited. It only fires on this file.
+  push:
+    branches: [main, port/**, win/**]
+    paths:
+      - '.github/workflows/windows-package.yml'
+  workflow_dispatch:
+    inputs:
+      windows_ci_run_id:
+        description: "Windows CI run id to package (default: latest successful run on main)"
+        required: false
+        default: "latest"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  SWIFT_VERSION: "6.4.1"
+
+jobs:
+  package:
+    name: Assemble portable ZIP
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      # Only needed as the source of the Swift runtime DLLs (swiftCore.dll,
+      # ...); nothing is compiled in this job.
+      - name: Install Swift
+        uses: compnerd/gha-setup-swift@main
+        with:
+          swift-version: swift-6.2.4-release
+          swift-build: 6.2.4-RELEASE
+
+      - name: Resolve Windows CI run id
+        id: run-id
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_RUN_ID: ${{ inputs.windows_ci_run_id }}
+        run: |
+          if ($env:INPUT_RUN_ID -eq 'latest') {
+            $id = gh run list --workflow windows-ci.yml --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+            if (-not $id) { Write-Error 'No successful windows-ci run found on main'; exit 1 }
+          } else {
+            $id = $env:INPUT_RUN_ID
+          }
+          "run_id=$id" >> $env:GITHUB_OUTPUT
+          Write-Host "Packaging artifacts from windows-ci run $id"
+
+      - name: Download Swift package artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download ${{ steps.run-id.outputs.run_id }} --dir swift-artifacts
+          Get-ChildItem swift-artifacts -Directory | ForEach-Object { Write-Host "artifact: $($_.Name)" }
+
+      # The emulator workflow only runs when its own file changes, so a
+      # successful run may not exist yet — warn and continue without qemu.
+      - name: Download emulator artifact (best effort)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $id = gh run list --workflow windows-emulator-ci.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+          if (-not $id) { Write-Warning 'No successful windows-emulator-ci run found; qemu-system-arm.exe will be missing from the ZIP'; exit 1 }
+          gh run download $id --name qemu-system-arm-windows-x86_64 --dir qemu-artifact
+
+      # PENDING (Phase 6): no workflow publishes this artifact yet. Kept as a
+      # real download attempt so packaging starts including LightTouch.exe the
+      # moment the Qt UI build workflow lands — no workflow edit needed then.
+      - name: Download Qt UI executable (pending Phase 6)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download ${{ steps.run-id.outputs.run_id }} --name lighttouch-qt-ui-windows-x86_64 --dir qt-artifact
+          if (-not (Test-Path qt-artifact/LightTouch.exe)) { Write-Warning 'Qt UI artifact not present yet (expected until Phase 6 lands)'; exit 1 }
+
+      - name: Assemble portable layout
+        run: |
+          $layout = 'LightTouch'
+          New-Item -ItemType Directory -Force -Path $layout | Out-Null
+
+          # Swift package DLLs / import libs / executables from windows-ci
+          Get-ChildItem swift-artifacts -Recurse -Include *.dll,*.exe | Copy-Item -Destination $layout -Force
+
+          # qemu-system-arm.exe + MinGW runtime DLLs (when the artifact exists)
+          if (Test-Path qemu-artifact) {
+            Get-ChildItem qemu-artifact -Recurse -Include *.exe,*.dll | Copy-Item -Destination $layout -Force
+          } else {
+            Write-Warning 'qemu-system-arm.exe not staged (no emulator artifact)'
+          }
+
+          # Qt UI executable (when the artifact exists)
+          if (Test-Path qt-artifact/LightTouch.exe) {
+            Copy-Item qt-artifact/LightTouch.exe $layout -Force
+          }
+
+          # Swift runtime DLLs ship next to swiftc.exe in the toolchain
+          $binDir = Split-Path (Get-Command swiftc.exe).Source
+          foreach ($dll in 'swiftCore.dll', 'swift_Concurrency.dll', 'Foundation.dll', 'dispatch.dll', 'BlocksRuntime.dll') {
+            $p = Join-Path $binDir $dll
+            if (Test-Path $p) { Copy-Item $p $layout -Force } else { Write-Warning "Swift runtime DLL not found in toolchain: $dll" }
+          }
+
+          Write-Host '--- layout contents ---'
+          Get-ChildItem $layout | Format-Table Name, Length -AutoSize | Out-String | Write-Host
+
+      - name: Create portable ZIP
+        run: |
+          @(
+            'LightTouch — portable Windows build (cross-platform port)'
+            ''
+            'Contents: Qt UI executable (when available), qemu-system-arm.exe + MinGW'
+            'runtime DLLs, Swift package DLLs, Swift runtime DLLs.'
+          ) | Out-File LightTouch/README.txt -Encoding utf8
+          Compress-Archive -Path LightTouch -DestinationPath LightTouch-windows-x86_64.zip -Force
+          Write-Host "ZIP size: $((Get-Item LightTouch-windows-x86_64.zip).Length) bytes"
+
+      - name: Upload portable ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttouch-windows-x86_64-portable
+          path: LightTouch-windows-x86_64.zip
+          retention-days: 30

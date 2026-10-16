@@ -8,11 +8,26 @@
 # Swift.Toolchain and swift-actions/setup-swift failed on fresh runners with
 # "unable to load standard library for target 'x86_64-unknown-windows-msvc'",
 # so the install method — not the version — was the problem.
+#
+# The runners ARE the test machines (no local Windows box): every matrix job
+# runs the full `swift test` suite, captures build + test logs, and uploads
+# logs AND binaries on EVERY run — pass or fail — so failures are diagnosable
+# from the artifacts alone.
+#
+# Artifacts per package (30-day retention, stable names for the packaging
+# workflow): `swift-<Package>-windows-x86_64` (release DLLs, import libs,
+# executables; absent when the build fails) and
+# `swift-<Package>-windows-x86_64-logs` (build.log + test.log, always).
+#
+# Caching: SwiftPM dependency checkouts + the shared SwiftPM package cache are
+# cached per package (keyed on the manifests). Compiled objects are
+# deliberately NOT cached: the .build trees are GBs per package and the
+# cache upload/restore would cost more minutes than recompiling saves.
 name: Windows CI
 
 on:
   push:
-    branches: [main, port/**]
+    branches: [main, port/**, win/**]
   pull_request:
 
 env:
@@ -54,11 +69,59 @@ jobs:
       - name: Show toolchain
         run: swift --version
 
+      # Skip re-cloning swift-crypto, MachOKit, ZIPFoundation, etc. on every
+      # run. Keyed on the package manifests; restore-keys fall back to the
+      # newest cache for this package when the manifests change (SwiftPM then
+      # re-resolves incrementally on top of it).
+      - name: Cache SwiftPM dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            Packages/${{ matrix.package }}/.build/checkouts
+            ~\AppData\Local\org.swift.swiftpm
+          key: ${{ runner.os }}-swiftpm-6.2.4-${{ matrix.package }}-${{ hashFiles(format('Packages/{0}/Package.swift', matrix.package), format('Packages/{0}/Package.resolved', matrix.package)) }}
+          restore-keys: |
+            ${{ runner.os }}-swiftpm-6.2.4-${{ matrix.package }}-
+
       # Windows runners are headless: anything needing a display must be
-      # guarded in code/tests. UI tests for the Qt 6 rewrite run under
-      # QT_QPA_PLATFORM=minimal in a separate workflow (later phase).
+      # guarded in code/tests. UI tests for the Qt 6 rewrite run offscreen
+      # (QT_QPA_PLATFORM=offscreen) in windows-qt-ci.yml.
+      #
+      # Both steps tee their output to log files so the logs can be uploaded
+      # as artifacts below. $LASTEXITCODE survives the Tee-Object pipeline and
+      # carries swift's exit code, so failures still fail the step.
       - name: Build
-        run: swift build --configuration release --build-tests
+        run: |
+          swift build --configuration release --build-tests 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Test
-        run: swift test --skip-build --configuration release
+        run: |
+          swift test --skip-build --configuration release 2>&1 | Tee-Object -FilePath test.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # if: always() — binaries AND logs upload on every run, pass or fail.
+      # if-no-files-found: warn (not error): a failed build legitimately has
+      # no binaries, and a build-step failure means there is no test.log yet.
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: swift-${{ matrix.package }}-windows-x86_64
+          path: |
+            Packages/${{ matrix.package }}/.build/x86_64-unknown-windows-msvc/release/*.dll
+            Packages/${{ matrix.package }}/.build/x86_64-unknown-windows-msvc/release/*.lib
+            Packages/${{ matrix.package }}/.build/x86_64-unknown-windows-msvc/release/*.exe
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload build/test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: swift-${{ matrix.package }}-windows-x86_64-logs
+          path: |
+            Packages/${{ matrix.package }}/build.log
+            Packages/${{ matrix.package }}/test.log
+          if-no-files-found: warn
+          retention-days: 30
