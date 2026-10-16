@@ -78,9 +78,14 @@ struct DeviceFilesTests {
         #endif
         if enforcementHolds {
             #expect(throws: (any Error).self, "unlink a page") { try fm.removeItem(at: page) }
+            #if !os(Linux)
+            // On Linux the immutable flag guards a directory's contents, not the
+            // directory's own name (renaming it is the parent's writability); on
+            // BSD uchg stops the rename too.
             #expect(throws: (any Error).self, "rename the base") {
                 try fm.moveItem(at: base, to: work.appendingPathComponent("moved"))
             }
+            #endif
             #expect(throws: (any Error).self, "add to the base") {
                 try Data().write(to: base.appendingPathComponent("stray"))
             }

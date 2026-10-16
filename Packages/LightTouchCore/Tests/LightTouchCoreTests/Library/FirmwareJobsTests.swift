@@ -89,17 +89,22 @@ import Testing
         }
         deinit {
             observer.map(NotificationCenter.default.removeObserver)
-            // Wait for preparation tasks to finish. They block pool threads in
-            // Subprocess.run; without this, cancelled "slow" preparers keep
-            // running after the test ends and starve later suites. Capture the
-            // jobs on the MainActor first; the wait itself runs detached.
+            // Cancel first: a still-running "slow" preparer would otherwise keep
+            // its pool thread (blocked in Subprocess.run) for its full duration.
+            jobs.cancelAll()
             let pending = jobs.preparationJobs
-            let semaphore = DispatchSemaphore(value: 0)
-            Task.detached {
-                for job in pending { await job.waitForCompletion() }
-                semaphore.signal()
+            // Wait off the MainActor. semaphore.wait() on this thread blocks the
+            // main thread, stalling every other test's MainActor work (their
+            // `eventually` timeouts expire) until the preparations end. A dedicated
+            // thread waits instead; the pool threads are still reclaimed.
+            Thread.detachNewThread {
+                let semaphore = DispatchSemaphore(value: 0)
+                Task.detached {
+                    for job in pending { await job.waitForCompletion() }
+                    semaphore.signal()
+                }
+                semaphore.wait()
             }
-            semaphore.wait()
         }
 
         func devices(_ id: String) -> [DeviceInstance] { DeviceInstance.all(state: state).filter { $0.firmware == id } }
