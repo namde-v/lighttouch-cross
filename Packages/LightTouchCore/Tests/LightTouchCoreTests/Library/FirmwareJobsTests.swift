@@ -634,8 +634,17 @@ enum FirmwareKitTool {
             "firmwarekit"
         )
     }
-    /// Off the main actor: a no-op `swift build` still takes seconds, and the tests share the main actor.
-    static func path() async throws -> URL { try await Task.detached { try built.get() }.value }
+    /// Off the cooperative pool: `swift build` blocks its thread in waitUntilExit (minutes on a cold cache),
+    /// and several tests call path() at once. Parking pool threads here starves every other test's async work
+    /// -- the watch suites' `eventually` loops time out. A dedicated thread per call keeps the pool free; the
+    /// static's init lock still builds only once.
+    static func path() async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            Thread.detachNewThread {
+                continuation.resume(with: Result { try built.get() })
+            }
+        }
+    }
 }
 
 /// A loopback HTTP server: GET of a known path answers its bytes, a `hanging` one never answers, anything else 404;

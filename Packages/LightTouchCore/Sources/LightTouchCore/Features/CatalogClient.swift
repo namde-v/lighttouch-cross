@@ -170,6 +170,10 @@ public enum CatalogClient {
     public static var scratchDirectory: URL?
     /// Where the client's diagnostics go (HTTP statuses, undecodable responses): app.log, or a test's own record.
     public static var log: (String) -> Void = { logEvent($0) }
+    /// The session requests run on. Tests inject one whose protocolClasses put their stub first:
+    /// URLSession.shared snapshots the registered protocols at creation, so a stub registered after any session
+    /// was made is shadowed by the native HTTP protocol on Linux.
+    public static var session: URLSession = .shared
 
     private static let userAgent: String = {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
@@ -220,7 +224,7 @@ public enum CatalogClient {
                     ])
                 + target(device: device, os: os)
         )
-        let (data, response) = try await URLSession.shared.data(for: request(url))
+        let (data, response) = try await session.data(for: request(url))
         if let code = (response as? HTTPURLResponse)?.statusCode, code != 200 {
             log("Legacy Store: HTTP \(code) for \(url.path)?\(url.query ?? "")")
             throw CatalogError.status(code, body: data)
@@ -264,7 +268,7 @@ public enum CatalogClient {
     }
 
     private static func get<T: Decodable>(_ url: URL) async throws -> T {
-        let (data, response) = try await URLSession.shared.data(for: request(url))
+        let (data, response) = try await session.data(for: request(url))
         guard let response = response as? HTTPURLResponse, response.statusCode == 200 else {
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             log("Legacy Store: HTTP \(code) for \(url.path)?\(url.query ?? "")")
@@ -332,7 +336,7 @@ public enum CatalogClient {
                 // the download; fetch with data(for:) and stage to a temp
                 // file. (LegacyStoreStub sends single-chunk on Linux because
                 // data tasks drop all but the first didLoad chunk.)
-                let (bytes, response) = try await URLSession.shared.data(
+                let (bytes, response) = try await session.data(
                     for: request(current.downloadURL)
                 )
                 progress(0.5)
@@ -342,7 +346,7 @@ public enum CatalogClient {
                 defer { try? FileManager.default.removeItem(at: temporary) }
                 #else
                 let delegate = CatalogDownloadProgress(report: progress)
-                let (temporary, response) = try await URLSession.shared.download(
+                let (temporary, response) = try await session.download(
                     for: request(current.downloadURL),
                     delegate: delegate
                 )
