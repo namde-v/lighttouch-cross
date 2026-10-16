@@ -190,7 +190,8 @@ public nonisolated enum DeviceStateStorage {
     /// The immutable flag, per platform: BSD chflags uchg on Darwin; on Linux
     /// the FS_IOC_SETFLAGS immutable bit (stops even root, like uchg), falling
     /// back to write-bit removal where the file system doesn't support it
-    /// (e.g. tmpfs). removeTree undoes it.
+    /// (e.g. tmpfs); on Windows the read-only file attribute (the closest
+    /// available primitive). removeTree undoes it.
     private static func lock(_ directory: URL) {
         #if os(Linux)
         if !setImmutable(directory.path, true) {
@@ -198,6 +199,8 @@ public nonisolated enum DeviceStateStorage {
             guard let permissions = fm.posixPermissions(of: directory) else { return }
             try? fm.setAttributes([.posixPermissions: permissions & ~0o222], ofItemAtPath: directory.path)
         }
+        #elseif os(Windows)
+        setReadOnlyAttribute(directory.path, true)
         #else
         chflags(directory.path, UInt32(UF_IMMUTABLE))
         #endif
@@ -208,6 +211,8 @@ public nonisolated enum DeviceStateStorage {
         if !setImmutable(directory.path, false) {
             // The write bits come back with the 0700 below; nothing to do.
         }
+        #elseif os(Windows)
+        setReadOnlyAttribute(directory.path, false)
         #else
         chflags(directory.path, 0)
         #endif
@@ -218,12 +223,40 @@ public nonisolated enum DeviceStateStorage {
         if let immutable = isImmutable(base.path) { return immutable }
         guard let permissions = FileManager.default.posixPermissions(of: base) else { return false }
         return permissions & 0o222 == 0
+        #elseif os(Windows)
+        var wide = Array(base.path.utf16)
+        wide.append(0)
+        return wide.withUnsafeBufferPointer { buffer in
+            guard let path = buffer.baseAddress else { return false }
+            let attrs = GetFileAttributesW(path)
+            return attrs != INVALID_FILE_ATTRIBUTES && attrs & FILE_ATTRIBUTE_READONLY != 0
+        }
         #else
         var info = stat()
         guard lstat(base.path, &info) == 0 else { return false }
         return info.st_flags & UInt32(UF_IMMUTABLE) != 0
         #endif
     }
+
+    #if os(Windows)
+    /// Windows has no per-file immutable flag; the read-only attribute is the
+    /// closest primitive (mirrors the Linux write-bit-removal fallback).
+    private static func setReadOnlyAttribute(_ path: String, _ readOnly: Bool) {
+        var wide = Array(path.utf16)
+        wide.append(0)
+        wide.withUnsafeBufferPointer { buffer in
+            guard let wpath = buffer.baseAddress else { return }
+            var attrs = GetFileAttributesW(wpath)
+            guard attrs != INVALID_FILE_ATTRIBUTES else { return }
+            if readOnly {
+                attrs |= FILE_ATTRIBUTE_READONLY
+            } else {
+                attrs &= ~FILE_ATTRIBUTE_READONLY
+            }
+            _ = SetFileAttributesW(wpath, attrs)
+        }
+    }
+    #endif
 
     #if os(Linux)
     // FS_IOC_GETFLAGS/SETFLAGS and FS_IMMUTABLE_FL aren't in Swift's Glibc overlay.
