@@ -207,9 +207,16 @@ import Testing
         private var task: Task<Void, Never>?
         private var last = Date(), lastBusy = 0.0
         private func busy() -> Double {
+            #if os(Linux)
+            // CLOCK_THREAD_CPUTIME_ID is meaningless on Linux: @MainActor tasks
+            // hop between pool threads, so per-thread CPU time isn't comparable
+            // across ticks. Return wall time instead.
+            return Date().timeIntervalSinceReferenceDate
+            #else
             var t = timespec()
             clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t)
             return Double(t.tv_sec) + Double(t.tv_nsec) / 1e9
+            #endif
         }
         private func gap() {
             let now = Date()
