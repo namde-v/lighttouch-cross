@@ -37,9 +37,9 @@ public final class AppChangeWatch {
             object: apps.bootScope,
             queue: nil
         ) { [weak self] _ in
-            // Onto the main actor like the ObservationLoop's re-arm: follow() touches
-            // main-actor-isolated state (this package defaults to @MainActor).
-            Task { @MainActor [weak self] in self?.follow() }
+            // Direct call, like the ObservationLoop's read: @MainActor hops never execute
+            // on Linux without a pumped main queue, so follow() stays synchronous.
+            self?.follow()
         }
     }
 
@@ -54,13 +54,11 @@ public final class AppChangeWatch {
     }
 
     /// A new watcher when the boot changed, none without services.
-    /// Nonisolated (LTAppCore): called from the observation loop and
-    /// notifications off the main thread; the body hops to @MainActor.
+    ///
+    /// Synchronous on the caller's thread: @MainActor hops never execute on Linux
+    /// without a pumped main queue, so this must not hop (the observation loop's
+    /// read and the boot-change notification both call it directly).
     private func follow() {
-        guard Thread.isMainThread else {
-            Task { @MainActor [weak self] in self?.follow() }
-            return
-        }
         let current = (try? apps.services)?.endpoint
         guard current != endpoint else { return }
         endWatcher()
