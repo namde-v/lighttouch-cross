@@ -204,7 +204,8 @@ struct BootCycleTests {
             let changed = session(directory)
             changed.state = .poweredOff
             changed.nextStartChanged = true
-            changed.fakeHelper!.onExit = { [unowned changed] in changed.bootWatch.helperDied("quit") }
+            // Weak: see BootWatchTests.session — abort()'s Task can outlive the session.
+            changed.fakeHelper!.onExit = { [weak changed] in changed?.bootWatch.helperDied("quit") }
             changed.link.onCommand = { if case .machine(.quit) = $0 { changed.fakeHelper!.exit() } }
             var restarted = false
             changed.onRestart = { restarted = true }

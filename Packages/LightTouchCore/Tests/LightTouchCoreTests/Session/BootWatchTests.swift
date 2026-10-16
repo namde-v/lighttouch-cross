@@ -13,7 +13,9 @@ struct BootWatchTests {
         let s = FakeSession(directory: directory, profile: profile)
         s.bootWatch.budget = 0.3
         s.bootWatch.haltBudget = 0.2
-        s.fakeHelper!.onExit = { [unowned s] in s.bootWatch.helperDied("The emulator stopped.") }
+        // Weak: BootWatch.abort() parks a fire-and-forget Task that can outlive the
+        // test's session; an unowned capture then crashes on the dangling session.
+        s.fakeHelper!.onExit = { [weak s] in s?.bootWatch.helperDied("The emulator stopped.") }
         return s
     }
     /// The deadline fired and chose to stop (the helper was told), then the helper's exit ends the session.
