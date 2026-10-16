@@ -15,6 +15,10 @@ name: Windows emulator CI
 on:
   push:
     branches: [main]
+    # Only this workflow's own file triggers it: unrelated pushes (Swift code,
+    # UI, docs) must not cancel the ~20-minute emulator build in flight.
+    paths:
+      - '.github/workflows/windows-emulator-ci.yml'
   workflow_dispatch:
 
 concurrency:
