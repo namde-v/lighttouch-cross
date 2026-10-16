@@ -1,5 +1,5 @@
 {
-  "originHash" : "63d26a5621319b4234c8651be453c504753f5c61ebd60b60a0fd4f592b370627",
+  "originHash" : "211123c138a049f825db9631e28c247393a3c48e496dc23ce1e922d8779ad944",
   "pins" : [
     {
       "identity" : "swift-asn1",
@@ -13,10 +13,10 @@
     {
       "identity" : "swift-crypto",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/apple/swift-crypto.git",
+      "location" : "https://github.com/namde-v/swift-crypto.git",
       "state" : {
-        "revision" : "95ba0316a9b733e92bb6b071255ff46263bbe7dc",
-        "version" : "3.15.1"
+        "branch" : "windows-msvc-fix",
+        "revision" : "be40141d62933ea857fa9538fa50bb44ed726382"
       }
     }
   ],

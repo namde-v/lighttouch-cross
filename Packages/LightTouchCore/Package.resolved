@@ -1,5 +1,5 @@
 {
-  "originHash" : "9e439a973f1efb12e21df0d1c6c9fa9ae3a51b3f8d220177a65829564e54b83b",
+  "originHash" : "e8dd17b24a14d7fbf303d62b92ada8600820daf768a6123626b14a473f29c379",
   "pins" : [
     {
       "identity" : "machokit",
@@ -49,10 +49,10 @@
     {
       "identity" : "swift-crypto",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/apple/swift-crypto.git",
+      "location" : "https://github.com/namde-v/swift-crypto.git",
       "state" : {
-        "revision" : "95ba0316a9b733e92bb6b071255ff46263bbe7dc",
-        "version" : "3.15.1"
+        "branch" : "windows-msvc-fix",
+        "revision" : "be40141d62933ea857fa9538fa50bb44ed726382"
       }
     },
     {
@@ -103,10 +103,10 @@
     {
       "identity" : "unrar.swift",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/mtgto/Unrar.swift.git",
+      "location" : "https://github.com/namde-v/Unrar.swift.git",
       "state" : {
-        "revision" : "7216007a38ac122dbdeae26cfdaf7f10775c868f",
-        "version" : "0.5.4"
+        "branch" : "windows-msvc-fix",
+        "revision" : "da9f936842281b145355c98221ddcd9799d88f56"
       }
     },
     {
