@@ -14,6 +14,8 @@ import Foundation
 final class TestEventCollector: @unchecked Sendable {
     private let lock = NSLock()
     private var events: [LTEvent] = []
+    /// The collector for the C callback (which can't capture context).
+    nonisolated(unsafe) static var active: TestEventCollector?
 
     func record(_ event: LTEvent) {
         lock.withLock { events.append(event) }
@@ -94,11 +96,15 @@ final class TestEventCollector: @unchecked Sendable {
 // MARK: - Export smoke tests (bad handles)
 
 @Test func exportsRejectBadHandles() {
-    // All device-scoped exports should return kLTNoSuchDevice (or kLTNoSuchDevice)
-    // for handle 0 without crashing.
-    #expect(lt_device_boot(0, nil) == kLTNoSuchDevice || lt_device_boot(0, nil) == kLTNoSuchDevice)
-    #expect(lt_device_halt(0) == kLTNoSuchDevice || lt_device_halt(0) == kLTNoSuchDevice)
-    #expect(lt_capture_screenshot(0) == kLTNoSuchDevice || lt_capture_screenshot(0) == kLTNoSuchDevice)
+    // All device-scoped exports should return kLTNoSuchDevice for handle 0
+    // without crashing (after init; before init they'd return kLTNotReady).
+    let config = """
+        {"appSupportDir": "/tmp/lt-test", "logDir": "/tmp/lt-test", "resourceDir": "/tmp/lt-test"}
+        """
+    _ = config.withCString { lt_init($0) }
+    #expect(lt_device_boot(0, nil) == kLTNoSuchDevice)
+    #expect(lt_device_halt(0) == kLTNoSuchDevice)
+    #expect(lt_capture_screenshot(0) == kLTNoSuchDevice)
 }
 
 @Test func exportsRejectNullPointers() {
@@ -112,9 +118,10 @@ final class TestEventCollector: @unchecked Sendable {
 
 @Test func eventPumpDeliversInOrder() async {
     let collector = TestEventCollector()
-    // Register a callback that records events.
+    // C callbacks can't capture context; use a global + the user-data pointer.
+    TestEventCollector.active = collector
     let callback: lt_event_fn = { event, _ in
-        if let event {
+        if let event, let collector = TestEventCollector.active {
             collector.record(event.pointee)
         }
     }

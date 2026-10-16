@@ -136,6 +136,60 @@ capture/screenshots are produced Swift-side from the shm ring.
 **Why:** The Mac app's UI owned log following; the portable core needs it for
 `lt_log_follow` / `kLTEventLogLine`.
 
+### 2d. `LightTouchCore`: background-thread entry points for the state machines
+
+**What:** The boot/shutdown/erase state machines (`BootCycle`,
+`ShutdownLadder`, `DeviceErase`) are nonisolated classes that call their host
+witnesses from background `Task`s. The host (our `DeviceSession`) is
+nonisolated, but the underlying components are `@MainActor`. Added minimal
+thread-safe entry points:
+- `NetworkAccessPreference` → `nonisolated enum`; `DeviceOptions.bootArgs`
+  (+ `verboseBootDefaultsKey`/`kernelConsoleDefaultsKey`) → nonisolated;
+  `BootSettings` → `nonisolated struct` (pure value reads for `currentBootSettings`).
+- `DeviceNotices.report`/`resolve`/`helperStarted`, `ReadinessWatch.start`,
+  `DeviceRotation.reset`/`startInterfaceWatch`/`startGuestWatch`,
+  `AppChangeWatch.follow`: `Thread.isMainThread` guard — run directly on the
+  main thread, otherwise hop via `Task { @MainActor in }`. Preserves
+  synchronous behavior on `@MainActor`; safe off-actor.
+- `ReadinessWatch.current` → nonisolated via a lock-guarded `_currentTask`
+  mirror (the `Task` handle itself is thread-safe).
+- `VMState` → nonisolated (pure enum).
+
+**Why:** ABI.md §4 requires commands to return in microseconds and the event
+pump to run off the UI thread. The state machines drive boot/shutdown/erase
+from background tasks; without these, every host witness would need an
+`await` hop, breaking their synchronous protocol contracts.
+
+**Upstream mirror:** None — upstream's `EmulatorController` is `@MainActor`
+and the state machines run on the main actor there. The port's bridge needs
+them callable from background threads.
+
+### 2e. `LTAppCore`: `SessionDeviceHelper`, `WeakSessionBox`, `LTBox`, `ltCFree`
+
+**What:**
+- `SessionDeviceHelper` (in `DeviceSession+Hosts.swift`): nonisolated
+  `DeviceHelper` facade. `isDead` reads the lock-guarded session state;
+  `terminate`/`kill`/`waitForExit` hop to `@MainActor`. Returned by the
+  `BootCycleHost.helper` witness (nil when no process, preserving BootCycle's
+  "no helper → restart" logic).
+- `WeakSessionBox`: lets `@MainActor init`-created closures reference the
+  session before definite initialization completes (filled at end of init).
+- `LTBox.get()`/`set()`: non-optional accessors for the region-isolation
+  bridging pattern (synchronous C exports reading `@MainActor` state via
+  semaphore).
+- `ltCFree`: explicit C `free()` helper (fixes a shadowing bug where
+  `ltFreeEventStrings`' nested `free` recursively called itself).
+- `Sources/LTBridgeC/dummy.c`: empty translation unit so SwiftPM's linker
+  finds a `.o` for the header-only `LTBridgeC` target.
+- `Sources/LTAppCore/LTAppCore.swift`: `@_exported import LTBridgeC` so the
+  ABI C types (`LTEvent`, etc.) are visible to clients without a separate
+  import.
+
+**Why:** The `DeviceSession` must satisfy 10 nonisolated host protocols while
+fronting `@MainActor` components. The session uses lock-guarded background
+caches (refreshed by `poll()` on `@MainActor`) for witness reads, and
+fire-and-forget `@MainActor` hops for witness commands.
+
 ## ABI.md §6 gap coverage
 
 | Gap | Status |

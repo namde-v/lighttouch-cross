@@ -33,6 +33,8 @@ public protocol ReadinessHost: AnyObject {
 
 @Observable public final class ReadinessWatch {
     private unowned let host: ReadinessHost
+    /// The host's boot scope, captured at init (nonisolated and thread-safe).
+    private let bootScopeRef: BootSessionScope
     private let notices: DeviceNotices
     /// Fired with the old value when `preparingDevice` is set (the startup clock).
     @ObservationIgnored public var onPreparingChange: ((Bool) -> Void)?
@@ -42,6 +44,9 @@ public protocol ReadinessHost: AnyObject {
     public init(host: ReadinessHost, notices: DeviceNotices) {
         self.host = host
         self.notices = notices
+        // Nonisolated (LTAppCore): BootSessionScope is thread-safe; the
+        // nonisolated `current` reads the task through it.
+        self.bootScopeRef = host.bootScope
         budget = .seconds(host.profile.bootBudget)
     }
 
@@ -71,36 +76,22 @@ public protocol ReadinessHost: AnyObject {
 
     private var task: Task<Void, Never>? {
         get { host.bootScope[.readiness] }
-        set {
-            host.bootScope[.readiness] = newValue
-            // Mirror for the nonisolated `current` below: the boot state
-            // machines (LTAppCore) await the watch from background tasks.
-            currentLock.withLock { _currentTask = newValue }
-        }
+        set { host.bootScope[.readiness] = newValue }
     }
-    private let currentLock = NSLock()
-    /// Lock-guarded (see currentLock); nonisolated(unsafe) so the nonisolated
-    /// `current` can read it. The lock makes this safe.
-    private nonisolated(unsafe) var _currentTask: Task<Void, Never>?
     /// Bumped by each start(): a watch clears `preparingDevice` as it ends unless a later start() owns it.
     @ObservationIgnored private var run = 0
     public func cancel() { task?.cancel() }
     /// Waits for this boot's watch (a restart lets it finish first).
     /// Nonisolated (LTAppCore addition): the boot state machines await this
-    /// from background tasks; the Task handle itself is thread-safe.
+    /// from background tasks. BootSessionScope is thread-safe, so this reads
+    /// the live value (cleared on retire).
     public nonisolated var current: Task<Void, Never>? {
-        currentLock.withLock { _currentTask }
+        bootScopeRef[.readiness]
     }
 
     /// The boot's readiness steps, shown as the startup status until the Home screen answers: lockdown, then
     /// SpringBoard.
     public func start() {
-        // LTAppCore: the boot state machines call this from background tasks.
-        // The watch itself stays @MainActor.
-        guard Thread.isMainThread else {
-            Task { @MainActor [weak self] in self?.start() }
-            return
-        }
         guard !host.shuttingDown else { return }
         task?.cancel()
         run += 1

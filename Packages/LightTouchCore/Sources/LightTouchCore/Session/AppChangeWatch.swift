@@ -36,9 +36,11 @@ public final class AppChangeWatch {
             forName: .bootSessionScopeDidChange,
             object: apps.bootScope,
             queue: nil
-        ) { [weak self] _ in
-            // Direct call, like the ObservationLoop's read: @MainActor hops never execute
-            // on Linux without a pumped main queue, so follow() stays synchronous.
+        ) { @MainActor [weak self] _ in
+            // Direct synchronous call, like the ObservationLoop's read: async @MainActor
+            // hops never execute on Linux without a pumped main queue, but a synchronous
+            // @MainActor call runs directly on the caller's thread (no hop), so follow()
+            // stays synchronous here.
             self?.follow()
         }
     }
