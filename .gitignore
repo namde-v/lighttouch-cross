@@ -31,3 +31,5 @@ Makefile
 
 # Misc
 *.log
+# ...except test fixtures, which are recorded logs the test suite reads.
+!tests/fixtures/*.log
