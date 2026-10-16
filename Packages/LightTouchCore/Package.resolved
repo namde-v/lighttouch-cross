@@ -115,7 +115,7 @@
       "location" : "https://github.com/namde-v/ZIPFoundation.git",
       "state" : {
         "branch" : "windows-msvc-fix",
-        "revision" : "137915857dd0e1e9906dfb209ae223f4661299b8"
+        "revision" : "6d3f388d07d94298b1e67345761fdfc6ecd58ecd"
       }
     }
   ],
