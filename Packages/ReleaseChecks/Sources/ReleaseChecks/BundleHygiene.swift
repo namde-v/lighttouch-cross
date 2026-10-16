@@ -50,7 +50,35 @@ public enum BundleHygiene {
     public static let placeholderSeed = "lighttouch-built-in"
     static let licenseTexts = ["LICENSE*", "LICENCE*", "COPYING*", "COPYRIGHT*", "GPL-*.txt"]
 
+#if os(Windows)
+    /// fnmatch replacement for Windows: the call-site patterns use only `*` (and `?`) wildcards.
+    static func matches(_ name: String, _ pattern: String) -> Bool {
+        var px = pattern.startIndex
+        var sx = name.startIndex
+        var star: String.Index? = nil
+        var ss = sx
+        while sx < name.endIndex {
+            if px < pattern.endIndex, pattern[px] == "?" || pattern[px] == name[sx] {
+                px = pattern.index(after: px)
+                sx = name.index(after: sx)
+            } else if px < pattern.endIndex, pattern[px] == "*" {
+                star = px
+                px = pattern.index(after: px)
+                ss = sx
+            } else if let st = star {
+                px = pattern.index(after: st)
+                ss = name.index(after: ss)
+                sx = ss
+            } else {
+                return false
+            }
+        }
+        while px < pattern.endIndex, pattern[px] == "*" { px = pattern.index(after: px) }
+        return px == pattern.endIndex
+    }
+#else
     static func matches(_ name: String, _ pattern: String) -> Bool { fnmatch(pattern, name, 0) == 0 }
+#endif
 
     public static func isMachO(_ url: URL) -> Bool {
         guard let handle = try? FileHandle(forReadingFrom: url), let head = try? handle.read(upToCount: 4) else {

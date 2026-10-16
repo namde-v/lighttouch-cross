@@ -1,5 +1,9 @@
 import Foundation
 
+#if os(Windows)
+    import WinSDK
+#endif
+
 /// A finished command: its status and what it wrote.
 public struct CommandResult: Sendable {
     public let status: Int32
@@ -52,7 +56,11 @@ public enum Shell {
                 process.waitUntilExit()
                 throw ShellError.timedOut(arguments.joined(separator: " "))
             }
-            usleep(20_000)
+            #if os(Windows)
+                Sleep(20)  // milliseconds
+            #else
+                usleep(20_000)
+            #endif
         }
         try? outHandle.close()
         try? errHandle.close()

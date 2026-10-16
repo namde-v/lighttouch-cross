@@ -180,7 +180,7 @@ actor HostServiceWorker {
                             for await bytes in stream { _ = try await inputWriter.write(bytes) }
                             try await inputWriter.finish()
                         }
-                        group.addTask {
+                        group.addTask { [weak self, token] in
                             for try await line in output.strings(
                                 bufferingPolicy: .maxLineLength(16 * 1024 * 1024)
                             ) {
