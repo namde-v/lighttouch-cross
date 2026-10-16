@@ -225,7 +225,7 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
 }
 
 /// Just enough DER for the certificates above and for reading them back.
-nonisolated enum DER {
+public nonisolated enum DER {
     static func tlv(_ tag: UInt8, _ content: Data) -> Data {
         var length = Data()
         if content.count < 0x80 {
@@ -289,7 +289,7 @@ nonisolated enum DER {
         seq(integer(Data([0])), seq(oid("1.2.840.113549.1.1.1"), null), tlv(0x04, rsa))
     }
     /// The elements inside one constructed element: each one whole and its content.
-    static func children(_ data: Data) -> [(whole: Data, content: Data)]? {
+    public static func children(_ data: Data) -> [(whole: Data, content: Data)]? {
         let bytes = [UInt8](data)
         func element(at i: Int) -> (end: Int, contentStart: Int)? {
             guard i + 1 < bytes.count else { return nil }
