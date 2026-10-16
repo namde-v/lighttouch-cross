@@ -7,6 +7,11 @@ import Darwin
 #endif
 import Foundation
 
+#if os(Windows)
+// WinSDK declares its own UUID (rpcdce.h); pin the name to Foundation's.
+private typealias UUID = Foundation.UUID
+#endif
+
 /// Explicit private-library path policy; not imposed on caller-selected standalone stores.
 public nonisolated enum StoragePathAuthority {
     public enum Failure: Error { case invalidPath(URL) }
@@ -19,11 +24,17 @@ public nonisolated enum StoragePathAuthority {
             tail.insert(head.lastPathComponent, at: 0)
             head.deleteLastPathComponent()
         }
+        #if os(Windows)
+        // No realpath(3) on Windows; Foundation resolves the symlinks of the
+        // existing head the same way.
+        let resolved = URL(fileURLWithPath: head.path).resolvingSymlinksInPath().path
+        #else
         let resolved =
             realpath(head.path, nil).map { pointer in
                 defer { free(pointer) }
                 return String(cString: pointer)
             } ?? head.path
+        #endif
         return tail.reduce(URL(fileURLWithPath: resolved)) { $0.appendingPathComponent($1) }.path
     }
 
