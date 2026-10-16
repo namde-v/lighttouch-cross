@@ -419,7 +419,7 @@ public nonisolated enum BootRecipe {
         if let writableNOR, !fm.fileExists(atPath: writableNOR.path) {
             let source = base.appendingPathComponent("nor.bin")
             let staged = writableNOR.deletingLastPathComponent()
-                .appendingPathComponent(".\(writableNOR.lastPathComponent)-\(UUID().uuidString).tmp")
+                .appendingPathComponent(".\(writableNOR.lastPathComponent)-\(Foundation.UUID().uuidString).tmp")
             defer { try? fm.removeItem(at: staged) }
             try fm.createDirectory(at: writableNOR.deletingLastPathComponent(), withIntermediateDirectories: true)
             try cloneFile(from: source.path, to: staged.path)
