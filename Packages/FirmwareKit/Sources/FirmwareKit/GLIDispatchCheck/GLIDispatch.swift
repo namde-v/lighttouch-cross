@@ -19,7 +19,7 @@ public enum GLIDispatch {
             guard let base = b.baseAddress else { return nil }
             // Glibc's memmem takes non-optional pointers (Darwin's are IUO); unwrap for both.
             let hit: UnsafeRawPointer? = needle.withUnsafeBytes { n in
-                guard let np = n.baseAddress, let found = memmem(base, b.count, np, needle.count) else {
+                guard let np = n.baseAddress, let found = ltc_memmem(base, b.count, np, needle.count) else {
                     return nil
                 }
                 return UnsafeRawPointer(found)

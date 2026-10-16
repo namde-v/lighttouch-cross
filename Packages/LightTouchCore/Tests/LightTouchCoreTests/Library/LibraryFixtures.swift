@@ -30,8 +30,13 @@ nonisolated enum LibraryFixtures {
     }
 
     static func randomData(_ count: Int) -> Data {
+        // arc4random_buf is absent from glibc < 2.36 (Ubuntu 22.04 ships 2.35);
+        // SystemRandomNumberGenerator is portable and equally suitable here.
         var data = Data(count: count)
-        data.withUnsafeMutableBytes { arc4random_buf($0.baseAddress!, count) }
+        data.withUnsafeMutableBytes { ptr in
+            var rng = SystemRandomNumberGenerator()
+            for i in 0..<count { ptr[i] = UInt8(truncatingIfNeeded: rng.next()) }
+        }
         return data
     }
 

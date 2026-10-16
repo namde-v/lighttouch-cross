@@ -83,7 +83,7 @@ extension FitCheck {
         d.withUnsafeBytes { b in
             needle.withUnsafeBytes { n in
                 guard let base = b.baseAddress, let nb = n.baseAddress, b.count >= n.count else { return false }
-                return memmem(base, b.count, nb, n.count) != nil
+                return ltc_memmem(base, b.count, nb, n.count) != nil
             }
         }
     }

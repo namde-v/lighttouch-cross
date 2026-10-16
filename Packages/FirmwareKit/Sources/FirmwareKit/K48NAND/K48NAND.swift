@@ -553,7 +553,7 @@ public enum K48NAND {
             // Glibc's memmem takes non-optional pointers (Darwin's are IUO); unwrap for both.
             func find(_ needle: Data, _ base: UnsafeRawPointer, _ off: Int, _ count: Int) -> UnsafeRawPointer? {
                 needle.withUnsafeBytes { n in
-                    guard let np = n.baseAddress, let hit = memmem(base + off, count - off, np, needle.count) else {
+                    guard let np = n.baseAddress, let hit = ltc_memmem(base + off, count - off, np, needle.count) else {
                         return nil
                     }
                     return UnsafeRawPointer(hit)
