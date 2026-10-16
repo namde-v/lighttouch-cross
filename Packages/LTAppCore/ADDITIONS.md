@@ -147,12 +147,16 @@ thread-safe entry points:
   (+ `verboseBootDefaultsKey`/`kernelConsoleDefaultsKey`) → nonisolated;
   `BootSettings` → `nonisolated struct` (pure value reads for `currentBootSettings`).
 - `DeviceNotices.report`/`resolve`/`helperStarted`, `ReadinessWatch.start`,
-  `DeviceRotation.reset`/`startInterfaceWatch`/`startGuestWatch`,
-  `AppChangeWatch.follow`: `Thread.isMainThread` guard — run directly on the
-  main thread, otherwise hop via `Task { @MainActor in }`. Preserves
-  synchronous behavior on `@MainActor`; safe off-actor.
-- `ReadinessWatch.current` → nonisolated via a lock-guarded `_currentTask`
-  mirror (the `Task` handle itself is thread-safe).
+  `DeviceRotation.reset`/`startInterfaceWatch`/`startGuestWatch`: called
+  synchronously with no thread hop. (An earlier `Thread.isMainThread` guard
+  that hopped via `Task { @MainActor in }` off-main was reverted: it broke
+  synchronous test expectations, and on Linux the hop silently never executes
+  without a pumped main queue. `AppChangeWatch.swift` is parent-owned; the
+  parent keeps it synchronous for the same reason — do not add hops there.)
+- `ReadinessWatch.current` → nonisolated via a `bootScopeRef`
+  (`BootSessionScope` captured at init; thread-safe). An earlier lock-guarded
+  mirror was reverted because it didn't clear on retire and broke
+  `ReadinessWatchTests`.
 - `VMState` → nonisolated (pure enum).
 
 **Why:** ABI.md §4 requires commands to return in microseconds and the event
@@ -184,11 +188,84 @@ them callable from background threads.
 - `Sources/LTAppCore/LTAppCore.swift`: `@_exported import LTBridgeC` so the
   ABI C types (`LTEvent`, etc.) are visible to clients without a separate
   import.
+- `AppsHost.usbmuxSession`: reads `usbmuxSessionCached?.clientSocket` directly.
+  A temporary `_bgUsbMuxSocket` string cache (22.04 build fix) was removed
+  again after the parent made `USBMux.Session` a `nonisolated` Sendable struct
+  (commit 7b962ad) — the cache is redundant with that fix.
+- `FileOpDTO: Sendable`: explicit conformance to avoid Swift 6.4.1 compiler
+  crash ("failed to produce diagnostic") when captured in `Task { @MainActor
+  in }` (22.04 build fix).
 
 **Why:** The `DeviceSession` must satisfy 10 nonisolated host protocols while
 fronting `@MainActor` components. The session uses lock-guarded background
 caches (refreshed by `poll()` on `@MainActor`) for witness reads, and
 fire-and-forget `@MainActor` hops for witness commands.
+
+**Linux @MainActor hop warning:** The witness commands use `Task { @MainActor
+in }` hops. These ONLY execute if the Qt UI regularly calls
+`lt_pump_main_queue()` (which runs the main RunLoop). On Linux without a
+pumped main queue, they silently never run. This is by design for the Qt UI
+integration, but must not be relied upon in contexts without the pump (see
+AppChangeWatch, which the parent owns and keeps synchronous for this reason).
+
+### 2f. `LTAppCore`: @MainActor-hop audit (background-thread paths) — 2026-10-16
+
+**Status: FLAGGED FOR PARENT DISCUSSION — not fixed unilaterally.** Empirically
+proven: `Task { @MainActor in }` from a background thread NEVER executes on
+Linux without a pumped main queue (CLI/test processes have none; the Qt app's
+main thread runs Qt's event loop, not Swift's MainActor drain). Full inventory
+of LTAppCore's background-path hops and their failure modes on Linux:
+
+**A. Fire-and-forget (silently dropped without pump):**
+- `BootCycleHost.startBootWatch()` → `bootWatch.start()` never runs.
+- `ShutdownHost.willStop()` / `EraseHost.discardInstalls()` →
+  `AppInstaller.discard(for:)` never runs (stale installs linger).
+- `EraseHost.stopGuestWatches()` → `rotation.stopWatching()` never runs.
+- `ReadinessHost.pressHome()` → `input.tap(.home)` never runs.
+- `SessionDeviceHelper.terminate()` / `.kill()` → helper process never
+  signaled (BootCycle's restart path stalls).
+- `DeviceSession.keyboardControl` → `bootScope.control` never runs.
+- `lt_display_set_tilt`, `lt_files_*` (2 sites), `lt_catalog_*`/`lt_jobs_*`
+  (8 sites), `lt_device_delete` (whole command body), capture teardown sites
+  — command effects dropped.
+- `DeviceSession` lifecycle notifications (`sessionStateChanged`,
+  `sessionBootEnded`, `postDisplayLinkClosed`, spawn/death handling) —
+  snapshots/events stop updating.
+
+**B. `await` on the hop (HANGS the caller without pump — worse than a drop):**
+- `BootCycleHost.halt()` returns `Task<Bool, Never>` that hops to `@MainActor`
+  to run `ladder.halt()`; BootCycle awaits it from its background state
+  machine → boot/shutdown sequencing hangs.
+- `SessionDeviceHelper.waitForExit` does `await MainActor.run` to read
+  `session?.process` (the read itself needs no hop — `process` is already a
+  lock-guarded nonisolated property) and then awaits the `@MainActor`
+  `DeviceProcess.waitForExit` → hangs.
+
+**C. Verified SAFE (no change needed):**
+- `MainActor.assumeIsolated` in `AppCore.startObservers`:
+  `NotificationCenter.addObserver(..., queue: .main)` dispatches onto the main
+  thread, so the block always runs on the main thread — no trap.
+- `MainActor.assumeIsolated` in `storageWork.onChange` and
+  `recording.onChange`/`onCompleted`: `DeviceStorageWork` and
+  `ScreenRecordingSession` are `@MainActor` classes; the closures are only
+  invoked from `@MainActor` methods (the recording producer `Task` inherits
+  actor context via `@_inheritActorContext`). No trap — but note the producer
+  task itself also needs the pump to run on Linux (LightTouchCore's design,
+  same systemic issue).
+
+**Why not fixed here:** every hop target (`ShutdownLadder`, `BootWatch`,
+`DeviceRotation`, `DeviceInput`, `AppInstaller`, `DeviceProcess`,
+`ScreenRecordingSession`, `CarrierModem`) is a `@MainActor` LightTouchCore
+component. Making the commands synchronous requires either (a) a real
+thread-safety redesign of those components (parent's area — they are mid-fix
+on AppChangeWatch/USBMux and own that call), or (b) an ABI contract change
+(e.g. "exports must be called on the main thread" + `assumeIsolated`, or a
+dedicated LTAppCore serial queue whose blocks still can't touch `@MainActor`
+state). Neither is a unilateral call; this inventory is the basis for that
+discussion. Until then, `lt_pump_main_queue()` remains the documented
+mechanism, and `swift test` covers the pump-independent paths
+(queries, pure functions, event pump, string ownership) — command *effects*
+are not asserted in tests for exactly this reason.
 
 ## ABI.md §6 gap coverage
 

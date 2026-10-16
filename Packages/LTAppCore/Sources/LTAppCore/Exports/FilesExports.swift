@@ -168,7 +168,7 @@ public func lt_files_list(
 
 /// lt_files_transfer: opJson = {op: upload|download|delete|move|mkdir, src, dst}.
 /// File transfer operation (lt_files_transfer opJson).
-private struct FileOpDTO: Codable {
+private struct FileOpDTO: Codable, Sendable {
     var op: String
     var src: String
     var dst: String?

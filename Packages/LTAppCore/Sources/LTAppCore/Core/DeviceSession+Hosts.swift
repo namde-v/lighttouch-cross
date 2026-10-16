@@ -186,8 +186,10 @@ extension DeviceSession: BootWatchHost {
 }
 
 extension DeviceSession: AppsHost {
-    /// Nonisolated: AppChangeWatch reads these from background threads. usbmuxSessionCached
-    /// is lock-guarded; instance is set once at init and never mutated.
+    /// Nonisolated: AppChangeWatch reads these from background threads.
+    /// usbmuxSessionCached is lock-guarded and USBMux.Session is a nonisolated
+    /// Sendable struct (all fields immutable); instance is set once at init
+    /// and never mutated.
     nonisolated var usbmuxSession: String? { usbmuxSessionCached?.clientSocket }
     nonisolated var guestUDID: String? { instance.identity?.udid }
     /// Cached by poll() on @MainActor (AppInstaller is actor-bound).

@@ -202,8 +202,8 @@ public func lt_device_delete(_ device: lt_device_t) -> LTResult {
                 // (DeviceLibrary.remove is @MainActor; this is its file half,
                 // DeviceStateStorage being nonisolated.)
                 try DeviceStateStorage.removeDevice(uuid, state: stateDir)
-            }
-            await MainActor.run { core.library.reload() }
+            }.value
+            core.library.reload()
             HandleRegistry.shared.unregister(uuid)
             core.refreshLibrarySnapshots()
             EventPump.shared.postDeviceListChanged()
