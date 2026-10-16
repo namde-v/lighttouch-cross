@@ -22,7 +22,9 @@ let package = Package(
         .target(
             name: "HostRuntime",
             dependencies: [
-                "CZlibHost",
+                // CZlibHost only on Linux: its modulemap links "z", and there is
+                // no zlib on Windows (imports are already gated out there).
+                .target(name: "CZlibHost", condition: .when(platforms: [.linux])),
                 .product(name: "Crypto", package: "swift-crypto"),
             ]
         ),

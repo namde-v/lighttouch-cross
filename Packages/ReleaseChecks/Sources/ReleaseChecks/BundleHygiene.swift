@@ -1,5 +1,7 @@
 import Foundation
+#if !os(Windows)
 import RCZlib
+#endif
 
 /// What a shipped bundle may not contain and what it must carry for what it ships: every Mach-O attributed to a
 /// component with its license (and its source named, for copyleft), every Swift package licensed, Help.txt naming

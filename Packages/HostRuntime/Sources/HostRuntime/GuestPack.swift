@@ -6,7 +6,7 @@ import Foundation
 
 #if canImport(Compression)
 import Compression
-#else
+#elseif !os(Windows)
 import CZlibHost
 #endif
 

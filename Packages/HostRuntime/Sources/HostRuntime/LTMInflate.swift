@@ -15,7 +15,7 @@ func inflateRawDeflate(_ data: Data) throws -> Data {
 
 #elseif os(Windows)
 // zlib is not available on Windows; GuestPack reading is not supported there.
-import CZlibHost
+// (No CZlibHost import: the stub module is a no-op and its link would fail.)
 
 func inflateRawDeflate(_ data: Data) throws -> Data {
     throw CocoaError(.fileReadCorruptFile)
