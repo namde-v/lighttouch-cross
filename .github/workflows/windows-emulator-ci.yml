@@ -168,12 +168,148 @@ jobs:
         run: |
           cd qemu-src
           cat > win32-portability.patch <<'PATCH_EOF'
-          --- a/hw/misc/ios_baseband_core.c
-          +++ b/hw/misc/ios_baseband_core.c
-          @@ -1042,6 +1042,27 @@
+          diff --git a/hw/arm/ipod_touch_1g.c b/hw/arm/ipod_touch_1g.c
+          index 31fa6c7..07e72ec 100644
+          --- a/hw/arm/ipod_touch_1g.c
+          +++ b/hw/arm/ipod_touch_1g.c
+          @@ -363,6 +363,33 @@ static void n45_write32(IPodTouch1GMachineState *s, hwaddr addr, uint32_t v)
+            * Whether this iBoot has the check at all: iBoot-159 (1.0) predates the
+            * epoch, so finding none in it is no warning. Its panic string is the test.
+            */
+          +/*
+          + * Windows portability: memmem() is a GNU extension missing from MS UCRT.
+          + * Tiny local replacement, only compiled on Windows.
+          + */
+          +#ifdef _WIN32
+          +static void *portable_memmem(const void *haystack, size_t haystacklen,
+          +                             const void *needle, size_t needlelen)
+          +{
+          +    const unsigned char *h = haystack, *n = needle;
+          +    size_t i;
+          +
+          +    if (needlelen == 0) {
+          +        return (void *)haystack;
+          +    }
+          +    if (haystacklen < needlelen) {
+          +        return NULL;
+          +    }
+          +    for (i = 0; i + needlelen <= haystacklen; i++) {
+          +        if (h[i] == n[0] && memcmp(h + i, n, needlelen) == 0) {
+          +            return (void *)(h + i);
+          +        }
+          +    }
+          +    return NULL;
+          +}
+          +#define memmem portable_memmem
+          +#endif
+          +
+           static bool n45_iboot_checks_epoch(IPodTouch1GMachineState *s, size_t size)
+           {
+               static const char needle[] = "Epoch Mismatch";
+          diff --git a/hw/arm/it_iboot.c b/hw/arm/it_iboot.c
+          index aed0c70..73c5b28 100644
+          --- a/hw/arm/it_iboot.c
+          +++ b/hw/arm/it_iboot.c
+          @@ -21,6 +21,33 @@ static uint32_t iboot_u32(const uint8_t *p)
+            * beq ok` on POWER_ID, and the fall-through loads "miu_init: Epoch
+            * Mismatch" for panic() (M is 2 in 3A101a, 3 in 4B1).
+            */
+          +/*
+          + * Windows portability: memmem() is a GNU extension missing from MS UCRT.
+          + * Tiny local replacement, only compiled on Windows.
+          + */
+          +#ifdef _WIN32
+          +static void *portable_memmem(const void *haystack, size_t haystacklen,
+          +                             const void *needle, size_t needlelen)
+          +{
+          +    const unsigned char *h = haystack, *n = needle;
+          +    size_t i;
+          +
+          +    if (needlelen == 0) {
+          +        return (void *)haystack;
+          +    }
+          +    if (haystacklen < needlelen) {
+          +        return NULL;
+          +    }
+          +    for (i = 0; i + needlelen <= haystacklen; i++) {
+          +        if (h[i] == n[0] && memcmp(h + i, n, needlelen) == 0) {
+          +            return (void *)(h + i);
+          +        }
+          +    }
+          +    return NULL;
+          +}
+          +#define memmem portable_memmem
+          +#endif
+          +
+           static uint32_t iboot_inline_epoch(const uint8_t *image, size_t size)
+           {
+               static const char panic_text[] = "Epoch Mismatch";
+          diff --git a/hw/arm/s5l8930_iop.c b/hw/arm/s5l8930_iop.c
+          index eade907..859a762 100644
+          --- a/hw/arm/s5l8930_iop.c
+          +++ b/hw/arm/s5l8930_iop.c
+          @@ -1091,6 +1091,33 @@ static void iop_control_message(S5L8930IOPState *s, hwaddr item)
+ 
+           /* ---- rings ------------------------------------------------------------- */
+ 
+          +/*
+          + * Windows portability: memmem() is a GNU extension missing from MS UCRT.
+          + * Tiny local replacement, only compiled on Windows.
+          + */
+          +#ifdef _WIN32
+          +static void *portable_memmem(const void *haystack, size_t haystacklen,
+          +                             const void *needle, size_t needlelen)
+          +{
+          +    const unsigned char *h = haystack, *n = needle;
+          +    size_t i;
+          +
+          +    if (needlelen == 0) {
+          +        return (void *)haystack;
+          +    }
+          +    if (haystacklen < needlelen) {
+          +        return NULL;
+          +    }
+          +    for (i = 0; i + needlelen <= haystacklen; i++) {
+          +        if (h[i] == n[0] && memcmp(h + i, n, needlelen) == 0) {
+          +            return (void *)(h + i);
+          +        }
+          +    }
+          +    return NULL;
+          +}
+          +#define memmem portable_memmem
+          +#endif
+          +
+           /* Whether the loaded firmware speaks FMI v2 (see FMI_V2_MARKER). */
+           static bool iop_fmi_v2(S5L8930IOPState *s)
+           {
+          @@ -1709,6 +1736,7 @@ static void s5l8930_iop_realize(DeviceState *dev, Error **errp)
+               /* Make the fixed filenames/format marker durable before any ownership
+                * can reference them. Operations never create new entries afterward. */
+               const char *write_dir = s->overlay_dir ? s->overlay_dir : s->nand_dir;
+          +#ifndef _WIN32
+               int dirfd = open(write_dir, O_RDONLY | O_DIRECTORY);
+               if (dirfd < 0 || fsync(dirfd) < 0) {
+                   error_setg_errno(errp, errno, "cannot sync NAND directory %s", write_dir);
+          @@ -1718,6 +1746,10 @@ static void s5l8930_iop_realize(DeviceState *dev, Error **errp)
+                   return;
+               }
+               close(dirfd);
+          +#else
+          +    /* Windows has no directory-fsync equivalent; skip the durability sync. */
+          +    (void)write_dir;
+          +#endif
+               s->vm_state_entry = qemu_add_vm_change_state_handler(iop_vm_state, s);
            }
  
-           /*
+          diff --git a/hw/misc/ios_baseband_core.c b/hw/misc/ios_baseband_core.c
+          index 17fc118..b42838e 100644
+          --- a/hw/misc/ios_baseband_core.c
+          +++ b/hw/misc/ios_baseband_core.c
+          @@ -1041,6 +1041,27 @@ static void scts_from_ms(int64_t now_ms, uint8_t out[7])
+               }
+           }
+ 
+          +/*
           + * Portable replacement for the BSD/glibc struct tm member tm_gmtoff
           + * (seconds east of UTC, DST included): MS UCRT's struct tm has no such
           + * member, so on Windows derive the offset from _get_timezone/_get_dstbias.
@@ -194,11 +330,10 @@ jobs:
           +#endif
           +}
           +
-          +/*
+           /*
             * NITZ, as a network sends it on registration: +CTZV: <tz>,"yy/MM/dd,hh:mm:ss", tz the host's offset
             * from UTC in quarter hours (DST included), the time UTC. 1.0's CommCenter (0x2a6e0) reads tz as
-            * field 0 (x15 minutes) and the time as field 1 at offsets 0,3,6,9,12,15, then points /var/db/localtime
-          @@ -1058,7 +1079,7 @@
+          @@ -1058,7 +1079,7 @@ static void nitz_report(IosBbCore *bb)
                gmtime_r(&secs, &utc);
                localtime_r(&secs, &local);
                chan_printf(bb, bb->ctzr_ch, "\r\n+CTZV: %ld,\"%02d/%02d/%02d,%02d:%02d:%02d\"\r\n",
