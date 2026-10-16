@@ -114,12 +114,30 @@ The helper is a separate package, but the contract it must implement is:
 4. `WebProxyLeafIdentity` documents what its WebProxy's TLS termination
    consumes per host (DER certificate + private key).
 
-## Windows shape (not implemented)
+## Windows shape (implemented in C; Swift call sites pending)
+
+The C transport layer (`Sources/LTMShm/ltm_shm.{h,c}`) implements the Windows
+half; the Swift `#if os(Windows)` call sites are still stubbed
+(`fatalError`) for the Windows wave.
 
 - `ShmSurface`: named file mappings (`CreateFileMapping`/`MapViewOfFile`)
-  replacing `shm_open`/`mmap`; the hello's fds become mapping handles, which
-  cannot ride SCM_RIGHTS — the likely shape is a handle exchange over a
-  loopback socket or inherited handles, TBD in the Windows wave.
-- `ltm_shm.h` `#error`s on `_WIN32` today so the gap is loud, not silent.
-- Swift `#if os(Windows)` stubs (`fatalError`) mark every site; `ltmSockStream`
-  notes Winsock has no `socketpair`.
+  replacing `shm_open`/`mmap`. Each segment is a NAMED mapping
+  `"LTMShm_<token>_<index>"` (token = the one-time hello token, index 0..3);
+  the name scheme is part of the C contract (see `ltm_shm.h`).
+- The hello cannot carry handles (Winsock has no SCM_RIGHTS): the helper
+  sends the same `ltm_shm_hello_hdr` over a loopback TCP socket (Winsock has
+  no `socketpair`), and the app re-opens each segment by name with
+  `OpenFileMapping` inside `ltm_recv_hello` (new `-ENOENT` error if a mapping
+  is missing). The fds[] parameter to `ltm_send_hello` is ignored on Windows.
+- `ltm_spawn`: `CreateProcess` with `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` so
+  only the stdio handles and the link socket are inherited; the link socket
+  HANDLE's numeric value is passed to the helper via the `LTM_LINK_SOCKET`
+  environment variable; stdin NUL, stdout/stderr on out_fd. Returns the pid
+  (a DWORD truncated to the API's int); CreateProcess failures map to
+  -ENOENT/-EACCES/-EIO.
+- No pid check in `ltm_recv_hello`: there is no SCM_CREDENTIALS equivalent
+  for loopback sockets, so the one-time token is the authentication (the
+  socket is still private to this spawn).
+- `ltm_monotonic_ns`: `QueryPerformanceCounter`.
+- `ltm_recv_hello` treats the caller's timeout as a total deadline for the
+  whole header (select re-armed around each recv).
