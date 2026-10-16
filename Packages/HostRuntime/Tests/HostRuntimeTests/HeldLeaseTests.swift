@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 
-@testable import HostRuntime
+import HostRuntime
 
 /// The helper's lease hold against a stopped device's edit intent (was tests/offline/check-storage-edit-lease.py).
 struct HeldLeaseTests {

@@ -37,7 +37,8 @@ public nonisolated enum DebugPort {
             }
         }
         return bound ? Int(UInt16(bigEndian: addr.sin_port)) : nil
-        #elseif os(Linux)
+        #else
+        #if os(Linux)
         // Glibc imports SOCK_STREAM as __socket_type, not Int32.
         let fd = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
         #else
@@ -59,6 +60,7 @@ public nonisolated enum DebugPort {
             }
         }
         return bound ? Int(UInt16(bigEndian: addr.sin_port)) : nil
+        #endif
     }
 
     /// What to paste into Terminal. KERNELCACHE stays a placeholder: the decrypted kernel lives in the firmware,

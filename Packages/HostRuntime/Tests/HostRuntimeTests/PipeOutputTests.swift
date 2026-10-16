@@ -8,7 +8,7 @@ import Darwin
 import Foundation
 import Testing
 
-@testable import HostRuntime
+import HostRuntime
 
 struct PipeOutputTests {
     #if os(Windows)
