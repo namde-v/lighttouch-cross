@@ -206,11 +206,60 @@ jobs:
            static bool n45_iboot_checks_epoch(IPodTouch1GMachineState *s, size_t size)
            {
                static const char needle[] = "Epoch Mismatch";
+          diff --git a/hw/arm/ipod_touch_fmss.c b/hw/arm/ipod_touch_fmss.c
+          index 9b1802b..e0af3d8 100644
+          --- a/hw/arm/ipod_touch_fmss.c
+          +++ b/hw/arm/ipod_touch_fmss.c
+          @@ -6,7 +6,44 @@
+           #include "qemu/error-report.h"
+           #include "system/runstate.h"
+           #include "system/address-spaces.h"
+          +#ifdef _WIN32
+          +#include <io.h>
+          +#include <fcntl.h>
+          +/*
+          + * Windows has no sys/mman.h. This file's only mapping is a read-only,
+          + * private, whole-file mapping (PROT_READ|MAP_PRIVATE, offset 0) consumed
+          + * read-only, so emulate it with a malloc'd buffer filled via read().
+          + * Binary mode is forced: mingw open() defaults to text mode, which would
+          + * corrupt the image.
+          + */
+          +#ifndef MAP_FAILED
+          +#define MAP_FAILED ((void *)-1)
+          +#endif
+          +#define PROT_READ 0
+          +#define MAP_PRIVATE 0
+          +static void *portable_mmap_ro(int fd, size_t length)
+          +{
+          +    uint8_t *buf = (uint8_t *)malloc(length ? length : 1);
+          +    size_t got = 0;
+          +    if (!buf) {
+          +        return MAP_FAILED;
+          +    }
+          +    _setmode(fd, _O_BINARY);
+          +    while (got < length) {
+          +        int r = read(fd, buf + got, (unsigned)(length - got));
+          +        if (r <= 0) {
+          +            free(buf);
+          +            return MAP_FAILED;
+          +        }
+          +        got += (size_t)r;
+          +    }
+          +    return buf;
+          +}
+          +#define mmap(a, l, p, f, fd, o) portable_mmap_ro((fd), (l))
+          +#define munmap(p, l) (free((void *)(p)), 0)
+          +#else
+           #include <sys/mman.h>
+          +#endif
+           #include <sys/stat.h>
+           #include "trace.h"
+           #include "hw/trace-printf.h"
           diff --git a/hw/arm/ipod_touch_tcp_usb.c b/hw/arm/ipod_touch_tcp_usb.c
-          index a1a91b2..b6bc07c 100644
+          index a1a91b2..aad9d85 100644
           --- a/hw/arm/ipod_touch_tcp_usb.c
           +++ b/hw/arm/ipod_touch_tcp_usb.c
-          @@ -34,12 +34,25 @@
+          @@ -34,12 +34,28 @@
             */
            #include "hw/arm/ipod_touch_tcp_usb.h"
  
@@ -219,12 +268,15 @@ jobs:
           +#include <ws2tcpip.h>
           +/*
           + * Windows has no POSIX sockets and no AF_UNIX bridge: tcp_usb_connect()
-          + * (below) always fails there, so the socket stays -1 and these shims only
-          + * need to compile, never run.
+          + * (below) always fails there, so the socket stays -1 and the I/O paths
+          + * never run. QEMU's os-win32.h already maps socket/close/connect/send/recv
+          + * to Winsock; these two macros route this file's read()/write() calls to
+          + * the same wrappers so the state machine still compiles.
           + */
-          +#define close(s) closesocket((SOCKET)(intptr_t)(s))
-          +#define read(s, b, n) recv((SOCKET)(intptr_t)(s), (char *)(b), (int)(n), 0)
-          +#define write(s, b, n) send((SOCKET)(intptr_t)(s), (const char *)(b), (int)(n), 0)
+          +#undef read
+          +#define read(s, b, n) recv((s), (b), (n), 0)
+          +#undef write
+          +#define write(s, b, n) send((s), (b), (n), 0)
           +#else
            #include <sys/types.h>
            #include <sys/socket.h>
@@ -236,7 +288,7 @@ jobs:
            #include "trace.h"
            #include "hw/trace-printf.h"
  
-          @@ -459,6 +472,14 @@ static void tcp_usb_write_callback(void *_arg)
+          @@ -459,6 +475,14 @@ static void tcp_usb_write_callback(void *_arg)
  
            int tcp_usb_connect(tcp_usb_state_t *_state, const char *_host, uint32_t _port)
            {
@@ -251,10 +303,11 @@ jobs:
            	struct addrinfo hints = {
            		.ai_family = AF_INET,
            		.ai_socktype = SOCK_STREAM,
-          @@ -519,6 +540,7 @@ connected:
+          @@ -519,6 +543,8 @@ connected:
            	 * tcp_usb_callback) only while a write is pending, or the loop spins. */
            	qemu_set_fd_handler(fd, tcp_usb_read_callback, NULL, _state);
            	return 0;
+          +	return 0;
           +#endif
            }
  
