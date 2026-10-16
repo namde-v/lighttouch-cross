@@ -48,7 +48,7 @@ let package = Package(
     ] + executableProducts,
     dependencies: [
         .package(path: "../HostRuntime"),
-        .package(url: "https://github.com/weichsel/ZIPFoundation.git", exact: "0.9.20"),
+        .package(url: "https://github.com/namde-v/ZIPFoundation.git", branch: "windows-msvc-fix"),
         .package(url: "https://github.com/p-x9/MachOKit.git", exact: "0.53.0"),
         .package(url: "https://github.com/swiftlang/swift-subprocess.git", exact: "1.0.0"),
         .package(url: "https://github.com/namde-v/Unrar.swift.git", branch: "windows-msvc-fix"),
@@ -56,6 +56,19 @@ let package = Package(
         // CryptoKit is Apple-only; swift-crypto's Crypto module is API-compatible
         // for the SHA256 / Insecure.SHA1 uses, and _CryptoExtras provides AES._CBC
         // (replacing CommonCrypto's CCCrypt AES-CBC and CCHmac-SHA1).
+        // NOTE (swift-crypto identity): MachOKit 0.53.0 also depends on
+        // swift-crypto, but via github.com/apple/swift-crypto, while we pin
+        // github.com/namde-v/swift-crypto (Windows MSVC fixes). SwiftPM derives
+        // the same package identity ("swift-crypto") from both URLs and warns
+        // "Conflicting identity" (escalates to an error in a future SwiftPM).
+        // Benign today: the branch requirement wins, so SwiftPM resolves ONE
+        // checkout (this fork, windows-msvc-fix) that both consumers link
+        // against -- Linux and Windows builds prove it. SwiftPM has no
+        // dependency-override/alias API for source-control deps, so the only
+        // Package.swift-level cure is a namde-v/MachOKit fork whose
+        // swift-crypto URL points at namde-v/swift-crypto (or upstreaming the
+        // Windows fixes to apple/swift-crypto). Deferred: zero functional gain
+        // today, and a fourth fork adds sync maintenance.
         .package(url: "https://github.com/namde-v/swift-crypto.git", branch: "windows-msvc-fix"),
         // Apple's `import System` is SDK-only; swift-system's SystemPackage
         // provides FilePath/FilePermissions/Arguments on Linux.
