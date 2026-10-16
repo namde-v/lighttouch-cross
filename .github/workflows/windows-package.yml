@@ -21,6 +21,13 @@
 name: Windows package
 
 on:
+  # The paths push trigger exists so the workflow is registered with GitHub
+  # (a workflow_dispatch-only file that has never run cannot be dispatched
+  # by name) and self-validates when edited. It only fires on this file.
+  push:
+    branches: [main, port/**, win/**]
+    paths:
+      - '.github/workflows/windows-package.yml'
   workflow_dispatch:
     inputs:
       windows_ci_run_id:
