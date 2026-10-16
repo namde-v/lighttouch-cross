@@ -49,6 +49,9 @@ jobs:
         with:
           msystem: MINGW64
           update: true
+          # Explicit even though true is the default: caches the pacman package
+          # dir between runs so `update` + `install` below skip re-downloading.
+          cache: true
           install: >-
             base-devel
             git
@@ -74,12 +77,34 @@ jobs:
           restore-keys: |
             qemu-ios-win-ccache-
 
+      # The qemu-ios clone (~1 GB history) + 4 meson subproject clones cost
+      # several minutes per run. Cache the source tree keyed on the pinned
+      # commit; the combined actions/cache step saves it at job end ONLY on a
+      # cache miss. A "Prune build outputs" step at the end of the job keeps
+      # build/ and dist/ out of the cache so it stays a source-only cache.
+      - name: Restore qemu-ios source cache
+        id: qemu-src-cache
+        uses: actions/cache@v4
+        with:
+          path: qemu-src
+          key: qemu-ios-win-src-${{ env.QEMU_PIN }}
+
       - name: Clone qemu-ios at pinned commit
+        if: steps.qemu-src-cache.outputs.cache-hit != 'true'
         run: |
           git clone https://github.com/samhenrigold/qemu-ios qemu-src
           cd qemu-src
           git fetch --depth 1 origin "$QEMU_PIN"
           git checkout "$QEMU_PIN"
+
+      # Runs on both paths: on a cache hit the tree may still carry patches
+      # from the previous run, so force-checkout the pin (reverts tracked-file
+      # modifications) and make sure the pinned commit object is present.
+      - name: Ensure pinned qemu-ios commit
+        run: |
+          cd qemu-src
+          git rev-parse --verify --quiet "$QEMU_PIN^{commit}" >/dev/null || git fetch --depth 1 origin "$QEMU_PIN"
+          git checkout -f "$QEMU_PIN"
 
       - name: Apply no-FFmpeg link fix
         run: |
@@ -670,8 +695,12 @@ jobs:
         run: |
           cd qemu-src
           seed_subproject() {
-            rm -rf "subprojects/$1"
-            git clone --quiet "$2" "subprojects/$1"
+            # The subproject clones live inside qemu-src/, so a source-cache
+            # hit already has them; just re-pin to the recorded commit.
+            if [ ! -d "subprojects/$1/.git" ]; then
+              rm -rf "subprojects/$1"
+              git clone --quiet "$2" "subprojects/$1"
+            fi
             git -C "subprojects/$1" fetch --depth 1 origin "$3"
             git -C "subprojects/$1" checkout --quiet "$3"
           }
@@ -723,3 +752,12 @@ jobs:
         with:
           name: qemu-system-arm-windows-x86_64
           path: qemu-src/dist/
+          retention-days: 30
+
+      # Runs before the post-job cache save, so the qemu-src cache entry stays
+      # a lean source tree (no GBs of build objects or the dist/ staging dir).
+      # `always()` keeps it lean even when the build fails.
+      - name: Prune build outputs (keep source cache lean)
+        if: always()
+        run: |
+          rm -rf qemu-src/build qemu-src/dist
