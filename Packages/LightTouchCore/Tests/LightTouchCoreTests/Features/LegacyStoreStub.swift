@@ -55,13 +55,19 @@ nonisolated final class LegacyStoreStub: URLProtocol, @unchecked Sendable {
             seen = []
         }
         URLProtocol.registerClass(LegacyStoreStub.self)
-        let before = (CatalogClient.baseURL, CatalogClient.scratchDirectory, CatalogClient.log, IPALibrary.stateRoot)
+        // URLSession.shared snapshots the registered protocols at creation; a stub registered after any session
+        // was made is shadowed by the native HTTP protocol on Linux. Give the client a session with the stub first.
+        let configuration = URLSessionConfiguration.default
+        configuration.protocolClasses = [LegacyStoreStub.self]
+        let stubSession = URLSession(configuration: configuration)
+        let before = (CatalogClient.baseURL, CatalogClient.scratchDirectory, CatalogClient.log, IPALibrary.stateRoot, CatalogClient.session)
         CatalogClient.baseURL = URL(string: "http://catalog.test")!
         CatalogClient.scratchDirectory = state.appendingPathComponent("work", isDirectory: true)
         CatalogClient.log = log
+        CatalogClient.session = stubSession
         IPALibrary.stateRoot = state
         defer {
-            (CatalogClient.baseURL, CatalogClient.scratchDirectory, CatalogClient.log, IPALibrary.stateRoot) = before
+            (CatalogClient.baseURL, CatalogClient.scratchDirectory, CatalogClient.log, IPALibrary.stateRoot, CatalogClient.session) = before
             URLProtocol.unregisterClass(LegacyStoreStub.self)
             lock.withLock { self.respond = nil }
         }
