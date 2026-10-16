@@ -9,7 +9,7 @@ import Darwin
 #endif
 
 /// close(2). (DeviceLink.close shadows the global; LinkChannel needs it too.)
-func ltmClose(_ fd: Int32) {
+public func ltmClose(_ fd: Int32) {
     #if os(Linux)
     Glibc.close(fd)
     #elseif os(Windows)
@@ -20,7 +20,7 @@ func ltmClose(_ fd: Int32) {
 }
 
 /// SOCK_STREAM as Int32 (Glibc types it as __socket_type, not Int32).
-var ltmSockStream: Int32 {
+public var ltmSockStream: Int32 {
     #if os(Linux)
     Int32(SOCK_STREAM.rawValue)
     #elseif os(Windows)
@@ -34,7 +34,7 @@ var ltmSockStream: Int32 {
 
 /// kill(2), spelled per platform.
 @discardableResult
-func ltmKill(_ pid: Int32, _ signal: Int32) -> Int32 {
+public func ltmKill(_ pid: Int32, _ signal: Int32) -> Int32 {
     #if os(Linux)
     Glibc.kill(pid, signal)
     #elseif os(Windows)
