@@ -13,6 +13,14 @@ func inflateRawDeflate(_ data: Data) throws -> Data {
     try (data as NSData).decompressed(using: .zlib) as Data
 }
 
+#elseif os(Windows)
+// zlib is not available on Windows; GuestPack reading is not supported there.
+import CZlibHost
+
+func inflateRawDeflate(_ data: Data) throws -> Data {
+    throw CocoaError(.fileReadCorruptFile)
+}
+
 #else
 import CZlibHost
 
