@@ -119,6 +119,13 @@ public protocol RotationHost: AnyObject {
         }
     }
 
+    /// Absolute orientation for the C bridge (lt_input_rotate): `target` is
+    /// degrees clockwise from portrait (0/90/180/270). Added for LTAppCore;
+    /// fronts the internal rotate(toward:).
+    public func rotate(toDegrees target: Int) {
+        rotate(toward: ((target % 360) + 360) % 360)
+    }
+
     // MARK: Auto-rotation
 
     /// Off switch, for anyone who would rather the device never move on its own. Per device

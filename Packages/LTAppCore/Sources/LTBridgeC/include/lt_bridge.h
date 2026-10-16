@@ -329,6 +329,8 @@ LTResult lt_input_motion_pose(lt_device_t d, int32_t pose);                     
 LTResult lt_input_rotate(lt_device_t d, int32_t degrees);                                   /* command */
 LTResult lt_input_compass(lt_device_t d, int32_t heading);                                  /* command */
 LTResult lt_input_keyboard_pointer_key(lt_device_t d, uint16_t code, int32_t down, int32_t modifiers); /* command */
+/* Additive (gap 8): evdev keycode -> Mac USB HID keycode for lt_input_key. */
+uint16_t lt_key_mac_from_evdev(int32_t evdevCode); /* pure */
 LTResult lt_display_set_zoom(lt_device_t d, const char* mode);      /* command */
 LTResult lt_display_get_zoom(lt_device_t d, const char** out);      /* query */
 LTResult lt_zoom_stops_json(double fit, double physical, double backing, const char** out); /* pure; physical < 0 = none */

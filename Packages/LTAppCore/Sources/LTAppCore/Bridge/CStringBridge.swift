@@ -101,8 +101,8 @@ enum LTLastError {
 /// an alloc; lt_free_string records a free. Test-only readers live below.
 enum LTStringStats {
     private static let lock = NSLock()
-    private static var allocs: UInt64 = 0
-    private static var frees: UInt64 = 0
+    nonisolated(unsafe) private static var allocs: UInt64 = 0
+    nonisolated(unsafe) private static var frees: UInt64 = 0
 
     static func recordAlloc() { lock.withLock { allocs &+= 1 } }
     static func recordFree() { lock.withLock { frees &+= 1 } }
@@ -174,4 +174,9 @@ func ltFreeEventStrings(_ event: inout LTEvent) {
     default:
         break // no string payload
     }
+}
+
+/// Resolves a device handle to its UUID (nil: unknown handle).
+func ltResolveDevice(_ device: lt_device_t) -> UUID? {
+    HandleRegistry.shared.uuid(for: device)
 }

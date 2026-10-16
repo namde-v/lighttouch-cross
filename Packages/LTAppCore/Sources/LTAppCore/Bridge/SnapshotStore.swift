@@ -8,8 +8,9 @@
 /// Keys are namespaced strings: global snapshots live in one map, per-device
 /// snapshots in another keyed by lt_device_t.
 import Foundation
+import LTBridgeC
 
-final class SnapshotStore: Sendable {
+final class SnapshotStore: @unchecked Sendable {
     static let shared = SnapshotStore()
 
     private let lock = NSLock()

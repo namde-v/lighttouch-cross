@@ -1,3 +1,4 @@
+import LTBridgeC
 /// The portable per-device session (ui/ABI.md §6 gap 1).
 ///
 /// Mirrors `upstream/LightTouchMac/Device/EmulatorController.swift` (the
@@ -5,6 +6,14 @@
 /// session per library device, owning its boot, its helper process and every
 /// Session component through its host protocol (the extension in
 /// DeviceSession+Hosts.swift).
+///
+/// Concurrency: the session is **nonisolated**. The Session state machines
+/// (BootCycle, ShutdownLadder, DeviceErase, …) are nonisolated classes that
+/// call their host's protocol requirements synchronously — including from
+/// background Tasks — so the host side must be callable off @MainActor.
+/// Mutable state is guarded by `lock`; the only @MainActor pieces are the
+/// CarrierBackend witnesses and the carrier-panel entry points (CarrierPanelModel
+/// is @MainActor), which run from @MainActor command tasks.
 ///
 /// What this wires for real: the VM lifecycle (MachineState), restart/power-on
 /// (BootCycle), stop/shut-down (ShutdownLadder), erase (DeviceErase), notices
@@ -35,139 +44,334 @@ struct LTBootOptions: Decodable {
     var bootArgs: String?
 }
 
-@MainActor
 final class DeviceSession {
+    /// Guards every mutable field below. Never held across a call into a
+    /// component, AppCore, or the event pump (reentrancy would deadlock).
+    private let lock = NSLock()
+
     /// The library record this session runs.
     var instance: DeviceInstance
     let profile: Board
+    /// The firmware version (from the catalog at creation; drives tweaks).
+    let firmwareVersion: String
     /// Directories from lt_init's config (app-owned on Linux/Windows).
     let directories: LTAppDirectories
     /// The helper executable URL (resourceDir/LightTouchDevice), if present.
     let helperURL: URL?
 
-    // MARK: - Bookkeeping
+    // MARK: - Bookkeeping (lock-guarded)
 
     let bootScope = BootSessionScope()
     let workers = WorkerRetirement()
-    private(set) var state: VMState = .notStarted
-    var isErasing = false
-    var started = false
-    var isReleased = false
-    var expectsSetup = false
-    var inRecovery = false
-    var storageFailedReported = false
+    private var _state: VMState = .notStarted
+    var state: VMState {
+        get { lock.withLock { _state } }
+    }
+    private var _isErasing = false
+    var isErasing: Bool {
+        get { lock.withLock { _isErasing } }
+        set { lock.withLock { _isErasing = newValue } }
+    }
+    private var _started = false
+    var started: Bool {
+        get { lock.withLock { _started } }
+        set { lock.withLock { _started = newValue } }
+    }
+    private var _isReleased = false
+    var isReleased: Bool {
+        get { lock.withLock { _isReleased } }
+        set { lock.withLock { _isReleased = newValue } }
+    }
+    private var _expectsSetup = false
+    var expectsSetup: Bool {
+        get { lock.withLock { _expectsSetup } }
+        set { lock.withLock { _expectsSetup = newValue } }
+    }
+    private var _inRecovery = false
+    var inRecovery: Bool {
+        get { lock.withLock { _inRecovery } }
+        set { lock.withLock { _inRecovery = newValue } }
+    }
+    private var _storageFailedReported = false
+    var storageFailedReported: Bool {
+        get { lock.withLock { _storageFailedReported } }
+        set { lock.withLock { _storageFailedReported = newValue } }
+    }
     /// Set while lt_device_erase / DeviceErase runs; ShutdownHost reads it.
-    var filesMeddled = false
+    private var _filesMeddled = false
+    var filesMeddled: Bool {
+        get { lock.withLock { _filesMeddled } }
+        set { lock.withLock { _filesMeddled = newValue } }
+    }
 
     /// This helper's process, from restart() until its death.
-    var process: DeviceProcess?
+    private var _process: DeviceProcess?
+    var process: DeviceProcess? {
+        get { lock.withLock { _process } }
+        set { lock.withLock { _process = newValue } }
+    }
+    /// The current helper link, mirrored for the input fast path (ui/ABI.md
+    /// §4: input commands return in microseconds). `HelperLink.send` is
+    /// thread-safe and ordered (DeviceLink writes on its own queue), and a
+    /// stale link is harmless: sends to a dead helper are dropped by the link.
+    nonisolated(unsafe) var fastLink: HelperLink?
     var link: DeviceLink? { process?.link }
     var status: SharedStatus? { process?.status }
     /// What this helper's boot was built with (BootSettings); a Start after
     /// Shut Down compares it with the next (BootCycleHost.nextStartChanged).
-    var bootSettings: BootSettings?
-    var lastFrameSerial: UInt64 = 0
+    private var _bootSettings: BootSettings?
+    var bootSettings: BootSettings? {
+        get { lock.withLock { _bootSettings } }
+        set { lock.withLock { _bootSettings = newValue } }
+    }
+    private var _lastFrameSerial: UInt64 = 0
+    var lastFrameSerial: UInt64 {
+        get { lock.withLock { _lastFrameSerial } }
+        set { lock.withLock { _lastFrameSerial = newValue } }
+    }
 
-    // MARK: - Settings, notices, watches
+    // MARK: - Settings, notices, watches (immutable after init)
 
-    private(set) lazy var settingsFile = DeviceSettingsFile(directory: paths.directory)
-    private(set) lazy var notices = DeviceNotices(
-        settings: settingsFile,
-        shortName: profile.shortName
-    ) { [weak self] in self?.storageFailed ?? false }
-    private(set) lazy var readiness = ReadinessWatch(host: self, notices: notices)
-    private(set) lazy var bootWatch = BootWatch(host: self)
+    let settingsFile: DeviceSettingsFile
+    let notices: DeviceNotices
+    let readiness: ReadinessWatch
+    let bootWatch: BootWatch
 
-    // MARK: - Machine control
+    // MARK: - Machine control (immutable after init)
 
-    private(set) lazy var cycle = BootCycle(host: self)
-    private(set) lazy var ladder = ShutdownLadder(host: self)
-    private(set) lazy var eraser = DeviceErase(host: self)
+    let cycle: BootCycle
+    let ladder: ShutdownLadder
+    let eraser: DeviceErase
 
-    // MARK: - Input
+    // MARK: - Input (immutable after init)
 
-    private(set) lazy var input = DeviceInput(host: self, settings: settingsFile)
-    private(set) lazy var keyboard = KeyboardInput(
-        settings: settingsFile,
-        canToggleHardwareKeyboard: profile.canToggleHardwareKeyboard,
-        control: { [weak self] request, done in self?.keyboardControl(request, done: done) },
-        send: { [weak self] command in self?.link?.send(command) },
-        canPress: { [weak self] in self.map { $0.acceptsInput && !$0.isSleeping } ?? false }
-    )
-    private(set) lazy var rotation = DeviceRotation(
-        host: self,
-        settings: settingsFile,
-        setsAccelerometer: profile.orientationSource == .springBoard
-    )
-    var compassHeading: Int?
+    let input: DeviceInput
+    let keyboard: KeyboardInput
+    let rotation: DeviceRotation
+    private var _compassHeading: Int?
+    var compassHeading: Int? {
+        get { lock.withLock { _compassHeading } }
+        set { lock.withLock { _compassHeading = newValue } }
+    }
 
-    // MARK: - Panels
+    // MARK: - Panels (immutable after init)
 
-    private(set) lazy var tweaks = DeviceTweaks(
-        settings: settingsFile,
-        version: iosVersion,
-        guestTools: hasGuestTools,
-        clockPinned: false,
-        guestRoot: directories.resourceDir
-    )
-    private(set) lazy var tweaksPanel = TweaksPanelModel(tweaks: tweaks, guest: nil)
-    private(set) lazy var carrierModem = CarrierModem(
-        hasCellular: profile.hasCellular,
-        settings: settingsFile,
-        scope: bootScope
-    ) { [weak self] in self?.link }
-    private(set) lazy var carrierPanel = CarrierPanelModel(backend: self)
+    let tweaks: DeviceTweaks
+    let tweaksPanel: TweaksPanelModel
+    let carrierModem: CarrierModem
+    /// @MainActor (CarrierPanelModel is); only touched from @MainActor methods.
+    let carrierPanel: CarrierPanelModel
 
-    // MARK: - App management, options, proxy
+    // MARK: - App management, options, proxy (immutable after init)
 
-    private(set) lazy var apps = DeviceApps(host: self)
-    private(set) lazy var options = DeviceOptions(
-        settings: settingsFile,
-        board: instance.board,
-        link: { [weak self] in self?.link }
-    )
-    private(set) lazy var proxy = DeviceWebProxy(
-        directory: { [weak self] in
-            guard let self else { return URL(fileURLWithPath: "/tmp") }
-            return WebProxyConfiguration.directory(for: instance)
-        },
-        shortName: profile.shortName
-    )
-    let usbmux = USBMux()
+    let apps: DeviceApps
+    let options: DeviceOptions
+    let proxy: DeviceWebProxy
+    /// @MainActor (USBMux is); only touched from @MainActor methods.
+    private var _usbmux: USBMux?
+    @MainActor var usbmux: USBMux {
+        if let _usbmux { return _usbmux }
+        let u = USBMux()
+        _usbmux = u
+        return u
+    }
+    /// The usbmux session, cached for the nonisolated AppsHost witness and
+    /// bootConfiguration (USBMux itself is @MainActor; started in restart()).
+    private var _usbmuxSession: USBMux.Session?
+    var usbmuxSessionCached: USBMux.Session? {
+        get { lock.withLock { _usbmuxSession } }
+        set { lock.withLock { _usbmuxSession = newValue } }
+    }
     let agentCache = GuestAgentCache()
     var guestAgent: GuestAgent { GuestAgent(link: nil, cache: agentCache) }
     var guest: GuestServices { GuestServices(agent: guestAgent) }
 
-    // MARK: - Capture
+    // MARK: - Capture (lock-guarded)
 
     /// This device's screen recording (one at a time; Swift owns the session).
-    private(set) lazy var recording = ScreenRecordingSession()
+    /// @MainActor (ScreenRecordingSession is); only touched from @MainActor methods.
+    private var _recording: ScreenRecordingSession?
+    @MainActor var recording: ScreenRecordingSession {
+        if let _recording { return _recording }
+        let r = ScreenRecordingSession()
+        _recording = r
+        return r
+    }
     /// Screenshot in flight (CaptureAvailability.screenshotBusy).
-    var screenshotBusy = false
+    private var _screenshotBusy = false
+    var screenshotBusy: Bool {
+        get { lock.withLock { _screenshotBusy } }
+        set { lock.withLock { _screenshotBusy = newValue } }
+    }
     /// The Qt-facing display-link mirror (created on hello, see ShmCapture.swift).
-    var displayMirror: QtFrameMirror?
+    private var _displayMirror: QtFrameMirror?
+    var displayMirror: QtFrameMirror? {
+        get { lock.withLock { _displayMirror } }
+        set { lock.withLock { _displayMirror = newValue } }
+    }
+    /// The recording save handshake's state (gap 11; see DeviceSession+Capture.swift).
+    let captureHandshake = CaptureHandshakeState()
 
-    // MARK: - Status poll
+    // MARK: - Status poll (driven by lt_pump_main_queue; see DeviceSession+Poll.swift)
 
-    private var statusTimer: Timer?
-    private var lastPolledFrameSerial: UInt64 = 0
+    private var _lastPolledFrameSerial: UInt64 = 0
+    var lastPolledFrameSerial: UInt64 {
+        get { lock.withLock { _lastPolledFrameSerial } }
+        set { lock.withLock { _lastPolledFrameSerial = newValue } }
+    }
+    private var _lastRecordingTickSecond: Int = -1
+    var lastRecordingTickSecond: Int {
+        get { lock.withLock { _lastRecordingTickSecond } }
+        set { lock.withLock { _lastRecordingTickSecond = newValue } }
+    }
+    private var _wasErasing = false
+    var wasErasing: Bool {
+        get { lock.withLock { _wasErasing } }
+        set { lock.withLock { _wasErasing = newValue } }
+    }
+
+    /// Display zoom, in percent (ui/ABI.md §3.4). Qt renders the frame scaled;
+    /// the bridge only tracks the value and notifies.
+    private var _zoomPercent: Double = 100
+    var zoomPercent: Double {
+        get { lock.withLock { _zoomPercent } }
+        set { lock.withLock { _zoomPercent = newValue } }
+    }
+    /// Latest published frame size, for zoom-to-fit.
+    private var _frameWidth: Int = 0
+    var frameWidth: Int {
+        get { lock.withLock { _frameWidth } }
+        set { lock.withLock { _frameWidth = newValue } }
+    }
+    private var _frameHeight: Int = 0
+    var frameHeight: Int {
+        get { lock.withLock { _frameHeight } }
+        set { lock.withLock { _frameHeight = newValue } }
+    }
+
+    /// The window's finger-dots toggle (Qt renders the overlay; ui/ABI.md §2.3).
+    private var _fingerDotsShown = false
+    var fingerDotsShown: Bool {
+        get { lock.withLock { _fingerDotsShown } }
+        set { lock.withLock { _fingerDotsShown = newValue } }
+    }
+    private var _deviceReachable: Bool?
+    var deviceReachable: Bool? {
+        get { lock.withLock { _deviceReachable } }
+        set { lock.withLock { _deviceReachable = newValue } }
+    }
+    /// Whether the carrier panel is visible (drives its poll from the session poll).
+    private var _carrierVisible = false
+    var carrierVisible: Bool {
+        get { lock.withLock { _carrierVisible } }
+        set { lock.withLock { _carrierVisible = newValue } }
+    }
+    /// The last installed-apps read (lt_apps_refresh / snapshot builder).
+    private var _cachedInstalledApps: [InstalledApp] = []
+    var cachedInstalledApps: [InstalledApp] {
+        get { lock.withLock { _cachedInstalledApps } }
+        set { lock.withLock { _cachedInstalledApps = newValue } }
+    }
 
     // MARK: - Init
 
-    init(instance: DeviceInstance, profile: Board, directories: LTAppDirectories, helperURL: URL?) {
+    init(instance: DeviceInstance, profile: Board, firmwareVersion: String, directories: LTAppDirectories, helperURL: URL?) {
         self.instance = instance
         self.profile = profile
+        self.firmwareVersion = firmwareVersion
         self.directories = directories
         self.helperURL = helperURL
+
+        let settingsFile = DeviceSettingsFile(directory: instance.paths(
+            state: directories.stateDir, logs: directories.logDir
+        ).directory)
+        self.settingsFile = settingsFile
+        let notices = DeviceNotices(
+            settings: settingsFile,
+            shortName: profile.shortName
+        ) { [weak self] in self?.storageFailed ?? false }
+        self.notices = notices
+        // The components below take the session as an unowned host; all
+        // stored properties are initialized before any of them is created.
+        self.readiness = ReadinessWatch(host: self, notices: notices)
+        self.bootWatch = BootWatch(host: self)
+        self.cycle = BootCycle(host: self)
+        self.ladder = ShutdownLadder(host: self)
+        self.eraser = DeviceErase(host: self)
+        self.input = DeviceInput(host: self, settings: settingsFile)
+        self.keyboard = KeyboardInput(
+            settings: settingsFile,
+            canToggleHardwareKeyboard: profile.canToggleHardwareKeyboard,
+            control: { [weak self] request, done in self?.keyboardControl(request, done: done) },
+            send: { [weak self] command in self?.link?.send(command) },
+            canPress: { [weak self] in self.map { $0.acceptsInput && !$0.isSleeping } ?? false }
+        )
+        self.rotation = DeviceRotation(
+            host: self,
+            settings: settingsFile,
+            setsAccelerometer: profile.orientationSource == .springBoard
+        )
+        let tweaks = DeviceTweaks(
+            settings: settingsFile,
+            version: firmwareVersion,
+            guestTools: profile.hasGuestTools,
+            clockPinned: false,
+            guestRoot: directories.resourceDir
+        )
+        self.tweaks = tweaks
+        let tweaksPanel = TweaksPanelModel(tweaks: tweaks, guest: nil)
+        self.tweaksPanel = tweaksPanel
+        self.carrierModem = CarrierModem(
+            hasCellular: profile.hasCellular,
+            settings: settingsFile,
+            scope: bootScope
+        ) { [weak self] in self?.link }
+        self.carrierPanel = CarrierPanelModel(backend: self)
+        self.apps = DeviceApps(host: self)
+        self.options = DeviceOptions(
+            settings: settingsFile,
+            board: instance.board,
+            link: { [weak self] in self?.link }
+        )
+        self.proxy = DeviceWebProxy(
+            directory: { [weak self] in
+                guard let self else { return URL(fileURLWithPath: "/tmp") }
+                return WebProxyConfiguration.directory(for: instance)
+            },
+            shortName: profile.shortName
+        )
+        // The Tweaks panel's finger-dots get/set drives the window toggle
+        // through the bridge (lt_display_set_finger_dots + event).
+        tweaksPanel.fingerDots = (
+            get: { [weak self] in self?.fingerDotsShown ?? false },
+            set: { [weak self] in self?.setFingerDots($0) }
+        )
+    }
+
+    /// Sets the finger-dots toggle: snapshot refresh + event for Qt.
+    func setFingerDots(_ shown: Bool) {
+        let changed = lock.withLock { () -> Bool in
+            guard _fingerDotsShown != shown else { return false }
+            _fingerDotsShown = shown
+            return true
+        }
+        guard changed else { return }
+        Task { @MainActor in
+            guard let core = AppCore.shared, let handle = core.handle(for: self.instance.id) else { return }
+            if let data = ltEncodeJSON(FingerDotsDTO(shown: shown)) {
+                SnapshotStore.shared.setDevice(handle, key: "fingerDots", json: data)
+            }
+            EventPump.shared.post(kind: kLTEventFingerDotsChanged, device: handle) { e in
+                e.u.fingerDotsChanged.shown = shown ? 1 : 0
+            }
+        }
     }
 
     var paths: DeviceInstance.Paths {
         instance.paths(state: directories.stateDir, logs: directories.logDir)
     }
 
-    var iosVersion: String {
-        AppCore.shared?.catalog.entry(id: instance.firmware)?.version ?? ""
-    }
+    var iosVersion: String { firmwareVersion }
 
     var hasGuestTools: Bool { profile.hasGuestTools }
     var isDead: Bool { state.isDead }
@@ -182,16 +386,19 @@ final class DeviceSession {
     var acceptsInput: Bool {
         isRunning && !isSleeping && deviceReachable == true
     }
-    var deviceReachable: Bool?
     var canReachDevice: Bool { deviceReachable == true }
     var halting: Bool { ladder.halting }
 
     /// The one way `state` changes (VMState.transition(to:)).
     func transition(to next: VMState) {
-        let old = state
-        state.transition(to: next)
-        if state != old {
-            AppCore.shared?.sessionStateChanged(self)
+        let (old, new) = lock.withLock { () -> (VMState, VMState) in
+            let old = _state
+            _state.transition(to: next)
+            return (old, _state)
+        }
+        if new != old {
+            let session = self
+            Task { @MainActor in AppCore.shared?.sessionStateChanged(session) }
         }
     }
 
@@ -204,7 +411,7 @@ final class DeviceSession {
         bootSettings = BootSettings(
             panel: options?.panel ?? instance.panel,
             network: options?.network ?? NetworkAccessPreference.decided(defaults: ltPrefs()) ?? true,
-            debugPort: options?.debugPort ?? options.debugPortEnabled,
+            debugPort: options?.debugPort ?? self.options.debugPortEnabled,
             bootArgs: options?.bootArgs ?? DeviceOptions.bootArgs(ltPrefs())
         )
         restart()
@@ -225,15 +432,25 @@ final class DeviceSession {
             helper: helperURL
         )
         self.process = process
+        fastLink = process.link
         lastFrameSerial = 0
         lastPolledFrameSerial = 0
+        // Start usbmuxd on @MainActor (USBMux is @MainActor); the session is
+        // cached for bootConfiguration and the AppsHost witness.
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let session = self.usbmux.start(paths: self.paths)
+            self.usbmuxSessionCached = session
+            self.apps.host = self  // refresh usbmux session if DeviceApps was created earlier
+        }
         process.onDeath = { [weak self, weak process] reason in
             guard let self, let process, self.process === process else { return }
             Task { @MainActor in self.helperDied(reason: reason) }
         }
         transition(to: .booting)
         notices.helperStarted()
-        startStatusPoll()
+        // The status poll runs from lt_pump_main_queue() (no Timer: Qt's event
+        // loop doesn't run the main CFRunLoop on Linux).
         process.start(
             { [weak self] info in self?.bootConfiguration(hardware: info.deviceInfo) },
             preparation: nil
@@ -273,7 +490,7 @@ final class DeviceSession {
             failBoot(error)
             return nil
         }
-        let usbSession = usbmux.start(paths: paths)
+        let usbSession = usbmuxSessionCached
         do {
             var config = try prepared.configuration(
                 hardware: hardware,
@@ -327,7 +544,8 @@ final class DeviceSession {
             // anything else is a crash: dead.
             if !isPoweredOff && !isDead { transition(to: .dead(nil)) }
         }
-        AppCore.shared?.sessionBootEnded(self, end: end)
+        let session = self
+        Task { @MainActor in AppCore.shared?.sessionBootEnded(session, end: end) }
     }
 
     func retireBoot() {
@@ -335,16 +553,21 @@ final class DeviceSession {
         bootScope.retire()
     }
 
-    /// The helper is gone: the status poll, mirror ring and usbmuxd end with it.
+    /// The helper is gone: the mirror ring and usbmuxd end with it.
     func releaseBootResources() {
-        stopStatusPoll()
         if let mirror = displayMirror {
             displayMirror = nil
             mirror.close()
-            AppCore.shared?.postDisplayLinkClosed(self)
+            let session = self
+            Task { @MainActor in AppCore.shared?.postDisplayLinkClosed(session) }
         }
-        usbmux.stop()
+        // USBMux is @MainActor; stop it there.
+        Task { @MainActor [weak self] in
+            self?.usbmux.stop()
+            self?.usbmuxSessionCached = nil
+        }
         process = nil
+        fastLink = nil
         rotation.stopWatching()
     }
 
@@ -355,6 +578,6 @@ final class DeviceSession {
         isReleased = true
         retireBoot()
         releaseBootResources()
-        recording.dismiss()
+        Task { @MainActor [weak self] in self?.recording.dismiss() }
     }
 }

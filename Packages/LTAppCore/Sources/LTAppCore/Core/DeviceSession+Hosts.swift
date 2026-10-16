@@ -1,3 +1,4 @@
+import LTBridgeC
 /// DeviceSession's host-protocol conformances: the Session components run
 /// against the session through these (mirrors the extension at the end of
 /// upstream's EmulatorController.swift).
@@ -18,6 +19,7 @@ struct SessionUnavailable: Error, LocalizedError {
 }
 
 extension DeviceSession: MachineHost {
+    var helperLink: (any HelperLink)? { fastLink }
     func resyncTimeZone() {
         // TimeZoneSync is not wired in this pass (ADDITIONS.md); the clock is
         // set at boot from Tweaks' bootClock via the machine options.
@@ -157,7 +159,7 @@ extension DeviceSession: BootWatchHost {
 }
 
 extension DeviceSession: AppsHost {
-    var usbmuxSession: String? { usbmux.session?.clientSocket }
+    var usbmuxSession: String? { usbmuxSessionCached?.clientSocket }
     var guestUDID: String? { instance.identity?.udid }
     var installerUsesDevice: Bool { AppInstaller.isUsingDevice(instance.id) }
 }
@@ -165,17 +167,20 @@ extension DeviceSession: AppsHost {
 // MARK: - CarrierBackend (@MainActor protocol)
 
 extension DeviceSession: CarrierBackend {
-    var carrierSettings: CarrierSettings { carrierModem.carrierSettings }
+    @MainActor var carrierSettings: CarrierSettings { carrierModem.carrierSettings }
 
+    @MainActor
     @discardableResult
     func setCarrierSettings(_ settings: CarrierSettings) -> Bool {
         carrierModem.setCarrierSettings(settings)
     }
 
+    @MainActor
     func modem(_ property: String, _ value: String, done: @escaping @MainActor (Bool) -> Void) {
         carrierModem.modem(property, value, done: done)
     }
 
+    @MainActor
     func modemStatus(_ done: @escaping @MainActor (ModemStatus?) -> Void) {
         carrierModem.modemStatus(done)
     }

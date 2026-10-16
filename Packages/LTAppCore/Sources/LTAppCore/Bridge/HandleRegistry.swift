@@ -4,8 +4,9 @@
 /// process lifetime; 0 is never valid. The registry maps both ways
 /// (lt_device_find / lt_device_uuid) under one lock.
 import Foundation
+import LTBridgeC
 
-final class HandleRegistry: Sendable {
+final class HandleRegistry: @unchecked Sendable {
     static let shared = HandleRegistry()
 
     private let lock = NSLock()

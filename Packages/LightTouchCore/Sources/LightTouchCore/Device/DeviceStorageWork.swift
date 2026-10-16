@@ -34,6 +34,28 @@ import Foundation
             try await Task.detached(priority: .userInitiated) { try work() }.value
         }
     }
+
+    /// Marks `id` busy after `release` agrees, without running work: the
+    /// caller drives the operation itself (the session's DeviceErase) and
+    /// calls `unclaim(_:)` when it ends. Returns whether the claim was granted.
+    /// Added for the C bridge's erase flow (lt_device_erase), where the erase
+    /// is driven by the session's own DeviceErase rather than a work closure.
+    @discardableResult public func claim(
+        _ id: String,
+        as kind: DeviceRow.Busy = .erasing,
+        release: @escaping @MainActor () async -> Bool = { true }
+    ) async -> Bool {
+        guard await release() else { return false }
+        busy[id] = kind
+        onChange()
+        return true
+    }
+
+    /// Releases a claim made with `claim(_:as:release:)`.
+    public func unclaim(_ id: String) {
+        busy[id] = nil
+        onChange()
+    }
 }
 
 /// A device started again before its storage could change.

@@ -42,6 +42,12 @@ import Observation
         let enabled = !debugPortEnabled
         settings.change { $0.debugPort = enabled }
     }
+
+    /// Sets the debug-port option outright (the C bridge's lt_debugport_set).
+    /// Added for LTAppCore; the toggle above fronts this same write.
+    public func setDebugPort(_ enabled: Bool) {
+        settings.change { $0.debugPort = enabled }
+    }
     public private(set) var debugPort: Int?
     /// This boot's port: a free one when the option is on and the boot is built, else none.
     public func chooseDebugPort(booting: Bool) -> Int? {

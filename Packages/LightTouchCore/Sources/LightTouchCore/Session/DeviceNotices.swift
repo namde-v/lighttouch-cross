@@ -82,6 +82,10 @@ public final class DeviceNotices {
     }
     public var message: String? { shown?.message }
 
+    /// The shown notice's operation, for the C bridge's notice snapshot/event
+    /// (lt_notice_get, kLTEventNoticeChanged). Additive: no behavior change.
+    public var shownOperation: Operation? { shown.flatMap { Operation(rawValue: $0.operation ?? "") } }
+
     private func update(_ change: (inout [DeviceSettings.Notice]) -> Void) {
         var notices = notices
         change(&notices)

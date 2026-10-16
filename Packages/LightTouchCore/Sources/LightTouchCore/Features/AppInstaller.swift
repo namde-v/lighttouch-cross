@@ -159,6 +159,16 @@ public enum AppInstaller {
         NotificationCenter.default.post(name: .ltmAppsChanged, object: device)
     }
 
+    /// Cancels a queued install for a bundle id (the C bridge's
+    /// lt_apps_cancel_install). Added for LTAppCore.
+    public static func cancel(deviceID: UUID, bundleID: String) {
+        for job in allRows where job.deviceID == deviceID && job.bundleID == bundleID {
+            job.task?.cancel()
+            job.dismissed = true
+        }
+        NotificationCenter.default.post(name: .ltmAppsChanged, object: deviceID)
+    }
+
     /// One ready queue per device; a queue outlives its jobs (it is tiny).
     private static var queues: [UUID: InstallationQueue] = [:]
     /// Internal so the queue checks (tests/offline) can hold a device's slot.

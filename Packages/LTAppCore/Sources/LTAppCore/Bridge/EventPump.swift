@@ -12,7 +12,7 @@
 import Foundation
 import LTBridgeC
 
-final class EventPump: Sendable {
+final class EventPump: @unchecked Sendable {
     static let shared = EventPump()
 
     private let lock = NSLock()

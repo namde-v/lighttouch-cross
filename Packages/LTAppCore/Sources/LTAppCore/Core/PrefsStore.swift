@@ -16,6 +16,7 @@
 /// Platform notes: pure Foundation, no Darwin/Glibc/WinSDK imports — the same
 /// file builds on Linux and Windows.
 import Foundation
+import LTBridgeC
 
 /// A `UserDefaults` whose storage is a JSON dictionary in a single file.
 final class LTFileDefaults: UserDefaults {

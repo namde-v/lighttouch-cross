@@ -3,8 +3,10 @@
 # On every push/PR: builds and unit-tests each portable Swift package under
 # Packages/ on Ubuntu 24.04, keeping Linux in lockstep with the Windows CI.
 #
-# Toolchain is pinned to the same Swift version used for local development
-# (see docs/SWIFT_TOOLCHAIN.md).
+# Toolchain: official swift.org tarball, pinned to SWIFT_VERSION (same version
+# used for local development; see docs/SWIFT_TOOLCHAIN.md in the project notes).
+# NOTE: swift-actions/setup-swift is intentionally NOT used — its hardcoded
+# version list lags behind swift.org releases.
 name: Linux CI
 
 on:
@@ -13,7 +15,7 @@ on:
   pull_request:
 
 env:
-  SWIFT_VERSION: "6.2.1"
+  SWIFT_VERSION: "6.4.1"
 
 jobs:
   build-and-test:
@@ -44,9 +46,11 @@ jobs:
           sudo apt-get install -y -qq libsqlite3-dev zlib1g-dev pkg-config
 
       - name: Install Swift
-        uses: swift-actions/setup-swift@v2
-        with:
-          swift-version: ${{ env.SWIFT_VERSION }}
+        run: |
+          curl -fsSL -o /tmp/swift.tar.gz \
+            "https://download.swift.org/swift-${SWIFT_VERSION}-release/ubuntu2404/swift-${SWIFT_VERSION}-RELEASE/swift-${SWIFT_VERSION}-RELEASE-ubuntu24.04.tar.gz"
+          sudo tar xzf /tmp/swift.tar.gz --directory / --strip-components=1
+          rm /tmp/swift.tar.gz
 
       - name: Show toolchain
         run: swift --version

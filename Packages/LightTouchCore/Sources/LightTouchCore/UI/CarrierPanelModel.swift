@@ -116,6 +116,12 @@ import Observation
         }
     }
 
+    /// Replaces the whole carrier settings (the C bridge's lt_carrier_set).
+    /// Added for LTAppCore; fronts the same save path as the panel's setters.
+    public func apply(settings: CarrierSettings) {
+        save(settings)
+    }
+
     public var callNumberValid: Bool { CarrierSettings.numberOK(callNumber) }
     public var smsValid: Bool { CarrierSettings.numberOK(smsNumber) && CarrierSettings.smsTextOK(smsText) }
     public var callState: String { status?.callState ?? "idle" }
