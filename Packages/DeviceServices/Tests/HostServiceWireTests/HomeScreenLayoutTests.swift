@@ -1,6 +1,6 @@
 import Testing
 
-@testable import HostServiceWire
+import HostServiceWire
 
 /// Flatten and rebuild are exact inverses, and a rebuild keeps every page and the dock at the size it already
 /// was: getting this wrong scrambles somebody's Home screen.

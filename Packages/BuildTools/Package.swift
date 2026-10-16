@@ -4,13 +4,31 @@
 // sources (fetch, stage-git, note) with the native and static build records.
 import PackageDescription
 
+#if os(Windows)
+// The ltm-build executable is excluded on Windows: it depends on the
+// BuildTools library, which would force SwiftPM to build BuildTools without
+// -enable-testing, breaking the @testable imports in BuildToolsTests
+// (SwiftPM builds each target once per configuration). The library and its
+// tests are what CI exercises.
+let executableTargets: [Target] = []
+let executableProducts: [Product] = []
+#else
+let executableTargets: [Target] = [
+    .executableTarget(
+        name: "ltm-build",
+        dependencies: ["BuildTools", .product(name: "ArgumentParser", package: "swift-argument-parser")]
+    ),
+]
+let executableProducts: [Product] = [.executable(name: "ltm-build", targets: ["ltm-build"])]
+#endif
+
 let package = Package(
     name: "BuildTools",
-    products: [.executable(name: "ltm-build", targets: ["ltm-build"])],
+    products: executableProducts,
     dependencies: [
         .package(path: "../ReleaseChecks"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", exact: "1.8.2"),
-        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.15.1"),
+        .package(url: "https://github.com/namde-v/swift-crypto.git", branch: "windows-msvc-fix"),
     ],
     targets: [
         .target(
@@ -20,13 +38,9 @@ let package = Package(
                 .product(name: "Crypto", package: "swift-crypto"),
             ]
         ),
-        .executableTarget(
-            name: "ltm-build",
-            dependencies: ["BuildTools", .product(name: "ArgumentParser", package: "swift-argument-parser")]
-        ),
         .testTarget(
             name: "BuildToolsTests",
             dependencies: ["BuildTools", .product(name: "ReleaseChecks", package: "ReleaseChecks")]
         ),
-    ]
+    ] + executableTargets
 )

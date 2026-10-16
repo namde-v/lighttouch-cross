@@ -23,7 +23,7 @@ let package = Package(
         .package(url: "https://github.com/swiftlang/swift-subprocess.git", exact: "1.0.0"),
         .package(url: "https://github.com/weichsel/ZIPFoundation.git", exact: "0.9.20"),
         // CryptoKit is Apple-only; swift-crypto's Crypto module is API-compatible.
-        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.15.1"),
+        .package(url: "https://github.com/namde-v/swift-crypto.git", branch: "windows-msvc-fix"),
         // OSLog is Apple-only; swift-log carries the log calls.
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.0"),
         // Apple's `import System` is SDK-only; swift-system's SystemPackage is API-compatible.

@@ -11,7 +11,7 @@ import Foundation
 import LTMShm
 import Testing
 
-@testable import DeviceRuntime
+import DeviceRuntime
 
 private final class BundleAnchor {}
 

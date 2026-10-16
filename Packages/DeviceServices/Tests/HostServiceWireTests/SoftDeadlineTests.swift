@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 
-@testable import HostServiceWire
+import HostServiceWire
 
 /// withSoftDeadline and ResumeOnce, which check-deadlines' gate and cancellation races are measured with: the work's
 /// result when it is in time, nil (and the work cancelled) when it isn't or the caller stops waiting, and the first

@@ -7,7 +7,7 @@ let package = Package(
     dependencies: [
         .package(path: "../HostRuntime"),
         // WebProxyCA's RSA-2048 keygen and SHA-1 signing (Security.framework is Apple-only).
-        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.15.1"),
+        .package(url: "https://github.com/namde-v/swift-crypto.git", branch: "windows-msvc-fix"),
     ],
     targets: [
         // POSIX shm hello (SCM_RIGHTS), status-block atomics, posix_spawn.

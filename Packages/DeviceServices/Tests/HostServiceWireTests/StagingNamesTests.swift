@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 
-@testable import HostServiceWire
+import HostServiceWire
 
 /// The staging names an upload uses and which of them a late startup sweep may remove: another session's
 /// leftovers only, never this session's uploads in flight, never a path that escapes the directory.

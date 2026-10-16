@@ -7,7 +7,7 @@ let package = Package(
     dependencies: [
         // CryptoKit is Apple-only; swift-crypto's Crypto module is API-compatible
         // for the SHA256 / Insecure.SHA1 uses in IPhoneIdentity.
-        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.15.1"),
+        .package(url: "https://github.com/namde-v/swift-crypto.git", branch: "windows-msvc-fix"),
     ],
     targets: [
         // The platform's zlib (NSData.decompressed(using: .zlib) is

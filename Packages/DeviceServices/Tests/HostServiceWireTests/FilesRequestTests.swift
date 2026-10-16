@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 
-@testable import HostServiceWire
+import HostServiceWire
 
 /// Which AFC the Files browser's requests name (an app's container over the device's media folder or afc2), and the
 /// edit and copy requests on the wire, each keeping its root.

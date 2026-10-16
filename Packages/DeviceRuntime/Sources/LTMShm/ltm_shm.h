@@ -1,15 +1,14 @@
-// C glue for the app <-> LightTouchDevice link (Linux redesign).
+// C glue for the app <-> LightTouchDevice link.
 //
-// The macOS version of this file (LTMLinkC/ltm_link.h upstream) did three
-// things: atomics on the shared status block, the Mach rendezvous that moved
-// IOSurface ports, and posix_spawn with the link socket as fd 3. Mach and
-// IOSurface do not exist on Linux, so this file keeps the atomics and the
-// spawn helper and replaces the rendezvous: the helper's first bytes on the
-// private link socket are a small header, with the POSIX-shm file descriptors
-// attached as SCM_RIGHTS ancillary data (DeviceRendezvous.swift).
+// Linux: POSIX shm segments + an SCM_RIGHTS hello over a socketpair
+// (see TRANSPORT_REDESIGN.md).
 //
-// Windows: the whole transport is a named file mapping + a loopback socket
-// (TRANSPORT_REDESIGN.md); this file deliberately refuses to compile there.
+// Windows: named file mappings + a loopback TCP socket (Winsock has no
+// socketpair). The hello carries the mapping NAMES (derived from the one-time
+// token), not handles — the app re-opens each segment by name with
+// OpenFileMapping. The link socket HANDLE is passed to the helper via the
+// LTM_LINK_SOCKET environment variable (see ltm_spawn); the helper's first
+// bytes on it are the hello, same as Linux.
 
 #ifndef LTM_SHM_H
 #define LTM_SHM_H
@@ -18,7 +17,17 @@
 #include <sys/types.h>
 
 #ifdef _WIN32
-#error "LTMShm: the Windows transport (named file mappings) is not implemented yet; see TRANSPORT_REDESIGN.md"
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <windows.h>
+// Windows has no pid_t; use int so the -1 "unknown pid" sentinel keeps working.
+// (Windows PIDs are DWORDs, which always fit in an int.)
+typedef int pid_t;
 #endif
 
 // Atomics on the shared status block (Swift cannot put an atomic at an
@@ -26,17 +35,23 @@
 // acquire/release for slots, seq-cst for the frameSerial/held handshake
 // (writer: store serial, load held; reader: store held, load serial;
 // acquire/release alone would let both sides miss).
+// (Clang, which SwiftPM uses even on Windows, supports the __atomic_*
+// builtins on all platforms.)
 static inline uint64_t ltm_load(const volatile uint64_t *p) { return __atomic_load_n(p, __ATOMIC_ACQUIRE); }
 static inline void ltm_store(volatile uint64_t *p, uint64_t v) { __atomic_store_n(p, v, __ATOMIC_RELEASE); }
 static inline uint64_t ltm_load_seq(const volatile uint64_t *p) { return __atomic_load_n(p, __ATOMIC_SEQ_CST); }
 static inline void ltm_store_seq(volatile uint64_t *p, uint64_t v) { __atomic_store_n(p, v, __ATOMIC_SEQ_CST); }
 static inline uint64_t ltm_add(volatile uint64_t *p, uint64_t v) { return __atomic_add_fetch(p, v, __ATOMIC_RELEASE); }
 
-// One hello per link, helper -> app, over the private link socket (fd 3 in
-// the helper): a fixed-size header describing the segments, with the shm fds
-// attached as SCM_RIGHTS. nsegments is 1 (the status block alone) or 4
-// (status block + the 3-surface frame ring); generation 0 means status only.
-// The header must be the first bytes the helper writes on the socket.
+// One hello per link, helper -> app.
+// Linux: a fixed-size header describing the segments, with the shm fds
+// attached as SCM_RIGHTS ancillary data. nsegments is 1 (the status block
+// alone) or 4 (status block + the 3-surface frame ring); generation 0 means
+// status only. The header must be the first bytes the helper writes.
+// Windows: the same header sent over the loopback socket, but WITHOUT fd
+// passing (Winsock cannot do SCM_RIGHTS). Instead each segment is a NAMED
+// file mapping ("LTMShm_<token>_<index>"); the app re-opens them by name.
+// The fds[] parameter to ltm_send_hello is ignored on Windows.
 #define LTM_SHM_MAX_SEGMENTS 4  // status block + 3-surface frame ring
 
 typedef struct {
@@ -50,11 +65,13 @@ typedef struct {
 typedef struct {
     uint64_t generation;
     int nsegments;                             // 1 or 4
-    int fds[LTM_SHM_MAX_SEGMENTS];             // received fds; the caller owns (closes) them
-    uint64_t byte_counts[LTM_SHM_MAX_SEGMENTS]; // shm size per segment, in fd order
+    int fds[LTM_SHM_MAX_SEGMENTS];             // received fds (POSIX); on Windows,
+                                               // the named-mapping HANDLEs truncated
+                                               // to int (see ltm_recv_hello)
+    uint64_t byte_counts[LTM_SHM_MAX_SEGMENTS]; // shm size per segment, in order
 } ltm_shm_hello;
 
-// Helper: send the header + fds in one sendmsg. 0 on success, -errno on failure.
+// Helper: send the header (plus fds on POSIX). 0 on success, -errno on failure.
 int ltm_send_hello(int sock, const char *token, uint32_t protocol_version,
                    uint64_t generation, const int *fds, const uint64_t *byte_counts, int nsegments);
 
@@ -63,22 +80,28 @@ int ltm_send_hello(int sock, const char *token, uint32_t protocol_version,
 //   -ECONNRESET EOF before any hello (the helper died first)
 //   -EACCES     the token did not match
 //   -EPROTOTYPE protocol_version mismatch
-//   -ESRCH      the hello's SCM_CREDENTIALS pid is not expected_pid
-//   -EBADMSG    malformed header or control data
-// A failed call owns nothing (any received fds are closed inside).
+//   -ESRCH      (POSIX only) the hello's SCM_CREDENTIALS pid is not expected_pid
+//   -EBADMSG    malformed header
+//   -ENOENT     (Windows only) a named mapping could not be opened
+// A failed call owns nothing (any received fds/handles are closed inside).
+// On Windows the pid check is skipped: there is no SCM_CREDENTIALS equivalent
+// for loopback sockets, so the one-time token is the authentication (the
+// socket is still private to this spawn).
 int ltm_recv_hello(int sock, int timeout_ms, const char *expected_token,
                    uint32_t expected_protocol, pid_t expected_pid,
                    ltm_shm_hello *out);
 
-// Spawn with stdin /dev/null, stdout+stderr on out_fd, the link socket on fd 3
-// and nothing else inherited (default signal dispositions). The macOS build
-// used POSIX_SPAWN_CLOEXEC_DEFAULT for the "nothing else"; glibc has no such
-// flag, so this closes every other fd via file actions (see the .c).
+// Spawn with stdin NUL, stdout+stderr on out_fd, the link socket available to
+// the child, and nothing else inherited (default signal dispositions).
+// POSIX: the link socket is dup'd to fd 3; every other fd is closed.
+// Windows: the link socket HANDLE is inherited and its value passed via the
+// LTM_LINK_SOCKET environment variable; only out_fd/link handles are inherited
+// (PROC_THREAD_ATTRIBUTE_HANDLE_LIST).
 // Returns the pid, or -errno.
 pid_t ltm_spawn(const char *path, char *const argv[], char *const envp[], int out_fd, int link_fd);
 
-// CLOCK_MONOTONIC in nanoseconds: the publish tick (mach_absolute_time's
-// replacement; not wall time, so NTP steps never confuse the stall detector).
+// CLOCK_MONOTONIC in nanoseconds (QueryPerformanceCounter on Windows):
+// the publish tick; not wall time, so NTP steps never confuse the stall detector.
 uint64_t ltm_monotonic_ns(void);
 
 #endif

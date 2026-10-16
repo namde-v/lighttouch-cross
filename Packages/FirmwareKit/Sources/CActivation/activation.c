@@ -14,7 +14,18 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#ifdef _WIN32
+#include <io.h>
+#include <BaseTsd.h>
+typedef SSIZE_T ssize_t;
+// Windows' open() has no O_NOFOLLOW; the symlink-refusal check is
+// POSIX-only (documented where O_NOFOLLOW is used).
+#ifndef O_NOFOLLOW
+#define O_NOFOLLOW 0
+#endif
+#else
 #include <unistd.h>
+#endif
 
 #define LIMIT (128u * 1024u * 1024u)
 #define NO_OFF SIZE_MAX

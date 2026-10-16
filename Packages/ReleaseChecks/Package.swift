@@ -11,7 +11,7 @@ let package = Package(
     // HostRuntime (local, no dependencies of its own): the tests start the bundled helper with its HelperLaunch.
     dependencies: [
         .package(path: "../HostRuntime"),
-        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.15.1"),
+        .package(url: "https://github.com/namde-v/swift-crypto.git", branch: "windows-msvc-fix"),
     ],
     targets: [
         .systemLibrary(name: "RCZlib", pkgConfig: "zlib"),

@@ -1,5 +1,334 @@
+#ifndef _WIN32
 #define _GNU_SOURCE
+#endif
 #include "ltm_shm.h"
+
+#ifdef _WIN32
+// ================= Windows transport =================
+// Named file mappings + loopback TCP socket. See ltm_shm.h.
+
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+// The API uses int for sockets/fds; on 64-bit Windows SOCKET and HANDLE are
+// 64-bit. Callers (the future Windows Swift wave) pass values that fit.
+static SOCKET to_socket(int fd) { return (SOCKET)(uintptr_t)fd; }
+static HANDLE to_handle(int fd) { return (HANDLE)(uintptr_t)fd; }
+static int from_handle(HANDLE h) { return (int)(uintptr_t)h; }
+
+// Map a Winsock error to an errno for the API's -errno convention.
+static int wsa_to_errno(int wsa) {
+    switch (wsa) {
+    case WSAEWOULDBLOCK: return EAGAIN;
+    case WSAETIMEDOUT: return ETIMEDOUT;
+    case WSAECONNRESET:
+    case WSAECONNABORTED:
+    case WSAESHUTDOWN: return ECONNRESET;
+    case WSAEACCES: return EACCES;
+    case WSAEINVAL: return EINVAL;
+    case WSAENOTSOCK: return EBADF;
+    default: return EIO;
+    }
+}
+
+// "LTMShm_<token>_<index>" — the token is NUL-terminated, max 63 chars.
+static void mapping_name(const char *token, int index, char *out, size_t outlen) {
+    snprintf(out, outlen, "LTMShm_%s_%d", token, index);
+}
+
+int ltm_send_hello(int sock, const char *token, uint32_t protocol_version,
+                   uint64_t generation, const int *fds, const uint64_t *byte_counts, int nsegments) {
+    if (nsegments != 1 && nsegments != LTM_SHM_MAX_SEGMENTS)
+        return -EINVAL;
+    if (!byte_counts)
+        return -EINVAL;
+    (void)fds; // Windows: named mappings re-opened by name; nothing to pass.
+
+    ltm_shm_hello_hdr hdr;
+    memset(&hdr, 0, sizeof hdr);
+    strncpy(hdr.token, token, sizeof(hdr.token) - 1);
+    hdr.protocol_version = protocol_version;
+    hdr.nsegments = (uint32_t)nsegments;
+    hdr.generation = generation;
+    for (int i = 0; i < nsegments; i++)
+        hdr.byte_counts[i] = byte_counts[i];
+
+    SOCKET s = to_socket(sock);
+    const char *p = (const char *)&hdr;
+    size_t left = sizeof hdr;
+    while (left > 0) {
+        int n = send(s, p, (int)left, 0);
+        if (n == SOCKET_ERROR)
+            return -wsa_to_errno(WSAGetLastError());
+        p += n;
+        left -= (size_t)n;
+    }
+    return 0;
+}
+
+int ltm_recv_hello(int sock, int timeout_ms, const char *expected_token,
+                   uint32_t expected_protocol, pid_t expected_pid,
+                   ltm_shm_hello *out) {
+    (void)expected_pid; // No SCM_CREDENTIALS on Windows; the token authenticates.
+    memset(out, 0, sizeof *out);
+    for (int i = 0; i < LTM_SHM_MAX_SEGMENTS; i++)
+        out->fds[i] = -1;
+
+    SOCKET s = to_socket(sock);
+
+    fd_set rfds;
+    FD_ZERO(&rfds);
+    FD_SET(s, &rfds);
+    struct timeval tv, *tvp = NULL;
+    if (timeout_ms >= 0) {
+        tv.tv_sec = timeout_ms / 1000;
+        tv.tv_usec = (long)(timeout_ms % 1000) * 1000L;
+        tvp = &tv;
+    }
+    int pr = select(0, &rfds, NULL, NULL, tvp);
+    if (pr == SOCKET_ERROR)
+        return -wsa_to_errno(WSAGetLastError());
+    if (pr == 0)
+        return -ETIMEDOUT;
+
+    ltm_shm_hello_hdr hdr;
+    char *p = (char *)&hdr;
+    size_t left = sizeof hdr;
+    while (left > 0) {
+        int n = recv(s, p, (int)left, 0);
+        if (n == SOCKET_ERROR)
+            return -wsa_to_errno(WSAGetLastError());
+        if (n == 0)
+            return -ECONNRESET; // EOF before any hello: the helper died first
+        p += n;
+        left -= (size_t)n;
+    }
+    hdr.token[sizeof(hdr.token) - 1] = '\0';
+
+    if (hdr.nsegments != 1 && hdr.nsegments != LTM_SHM_MAX_SEGMENTS)
+        return -EBADMSG;
+    if ((hdr.generation == 0) != (hdr.nsegments == 1))
+        return -EBADMSG;
+    if (strncmp(hdr.token, expected_token, sizeof(hdr.token)) != 0)
+        return -EACCES;
+    if (hdr.protocol_version != expected_protocol)
+        return -EPROTOTYPE;
+
+    // Re-open each named mapping. The helper created them before sending.
+    int nfds = 0;
+    for (uint32_t i = 0; i < hdr.nsegments; i++) {
+        char name[128];
+        mapping_name(hdr.token, (int)i, name, sizeof name);
+        HANDLE h = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, name);
+        if (h == NULL) {
+            for (int j = 0; j < nfds; j++)
+                CloseHandle(to_handle(out->fds[j]));
+            return -ENOENT;
+        }
+        out->fds[nfds++] = from_handle(h);
+    }
+
+    out->generation = hdr.generation;
+    out->nsegments = nfds;
+    memcpy(out->byte_counts, hdr.byte_counts, sizeof hdr.byte_counts);
+    return 0;
+}
+
+// Quote one argv element for CreateProcess' command line.
+static char *quote_arg(const char *a) {
+    int need = 0;
+    for (const char *p = a; *p; p++) {
+        if (*p == ' ' || *p == '\t' || *p == '"' || *p == '\n')
+            need = 1;
+    }
+    if (!need) {
+        char *r = (char *)malloc(strlen(a) + 1);
+        if (r)
+            strcpy(r, a);
+        return r;
+    }
+    size_t n = strlen(a);
+    char *r = (char *)malloc(n * 2 + 3);
+    if (!r)
+        return NULL;
+    char *d = r;
+    *d++ = '"';
+    for (const char *p = a; *p; p++) {
+        if (*p == '"') {
+            *d++ = '\\';
+            *d++ = '"';
+        } else if (*p == '\\') {
+            // Count trailing backslashes before a quote or end.
+            const char *q = p;
+            while (*q == '\\')
+                q++;
+            if (*q == '"' || *q == '\0') {
+                while (p < q) {
+                    *d++ = '\\';
+                    *d++ = '\\';
+                    p++;
+                }
+                p--; // the for loop's p++ moves past the run
+            } else {
+                *d++ = '\\';
+            }
+        } else {
+            *d++ = *p;
+        }
+    }
+    *d++ = '"';
+    *d = '\0';
+    return r;
+}
+
+pid_t ltm_spawn(const char *path, char *const argv[], char *const envp[], int out_fd, int link_fd) {
+    if (!path || !argv || !argv[0])
+        return -EINVAL;
+
+    // Command line from argv.
+    size_t cmdlen = 1;
+    int argc = 0;
+    for (; argv[argc]; argc++)
+        cmdlen += strlen(argv[argc]) * 2 + 4;
+    char *cmd = (char *)malloc(cmdlen);
+    if (!cmd)
+        return -ENOMEM;
+    cmd[0] = '\0';
+    for (int i = 0; i < argc; i++) {
+        char *q = quote_arg(argv[i]);
+        if (!q) {
+            free(cmd);
+            return -ENOMEM;
+        }
+        if (i > 0)
+            strcat(cmd, " ");
+        strcat(cmd, q);
+        free(q);
+    }
+
+    // Environment block: envp[] plus LTM_LINK_SOCKET=<handle value>.
+    // The helper reads LTM_LINK_SOCKET to find the link socket.
+    size_t envlen = 1; // final double NUL
+    int envc = 0;
+    if (envp) {
+        for (; envp[envc]; envc++)
+            envlen += strlen(envp[envc]) + 1;
+    }
+    char linkvar[64];
+    int linkvar_len = 0;
+    HANDLE link_handle = INVALID_HANDLE_VALUE;
+    if (link_fd >= 0) {
+        link_handle = to_handle(link_fd);
+        linkvar_len = snprintf(linkvar, sizeof linkvar, "LTM_LINK_SOCKET=%llu",
+                               (unsigned long long)(uintptr_t)link_handle);
+        envlen += (size_t)linkvar_len + 1;
+    }
+    char *envblock = (char *)malloc(envlen);
+    if (!envblock) {
+        free(cmd);
+        return -ENOMEM;
+    }
+    char *e = envblock;
+    if (envp) {
+        for (int i = 0; i < envc; i++) {
+            size_t n = strlen(envp[i]) + 1;
+            memcpy(e, envp[i], n);
+            e += n;
+        }
+    }
+    if (link_fd >= 0) {
+        memcpy(e, linkvar, (size_t)linkvar_len + 1);
+        e += linkvar_len + 1;
+    }
+    *e = '\0';
+
+    // Inherit exactly the handles the child needs.
+    HANDLE inherit[2];
+    int n_inherit = 0;
+    HANDLE out_handle = INVALID_HANDLE_VALUE;
+    if (out_fd >= 0) {
+        out_handle = to_handle(out_fd);
+        inherit[n_inherit++] = out_handle;
+    }
+    if (link_fd >= 0)
+        inherit[n_inherit++] = link_handle;
+    for (int i = 0; i < n_inherit; i++)
+        SetHandleInformation(inherit[i], HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+
+    STARTUPINFOEXA siex;
+    ZeroMemory(&siex, sizeof siex);
+    siex.StartupInfo.cb = sizeof siex;
+    SIZE_T attrlen = 0;
+    InitializeProcThreadAttributeList(NULL, 1, 0, &attrlen);
+    siex.lpAttributeList = (LPPROC_THREAD_ATTRIBUTE_LIST)malloc(attrlen);
+    pid_t ret = -ENOMEM;
+    int attr_ok = 0;
+    if (!siex.lpAttributeList)
+        goto out;
+    if (!InitializeProcThreadAttributeList(siex.lpAttributeList, 1, 0, &attrlen))
+        goto out;
+    attr_ok = 1;
+    if (n_inherit > 0) {
+        if (!UpdateProcThreadAttribute(siex.lpAttributeList, 0,
+                                       PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                       inherit, (SIZE_T)n_inherit * sizeof(HANDLE),
+                                       NULL, NULL))
+            goto out;
+    }
+    siex.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
+    {
+        // stdin: NUL. stdout/stderr: out_fd or NUL.
+        HANDLE nul = CreateFileA("NUL", GENERIC_READ | GENERIC_WRITE,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                 NULL, OPEN_EXISTING, 0, NULL);
+        siex.StartupInfo.hStdInput = nul;
+        if (out_handle != INVALID_HANDLE_VALUE) {
+            siex.StartupInfo.hStdOutput = out_handle;
+            siex.StartupInfo.hStdError = out_handle;
+        } else {
+            siex.StartupInfo.hStdOutput = nul;
+            siex.StartupInfo.hStdError = nul;
+        }
+        // NUL handle must be inheritable too.
+        if (nul != INVALID_HANDLE_VALUE)
+            SetHandleInformation(nul, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    }
+
+    PROCESS_INFORMATION pi;
+    ZeroMemory(&pi, sizeof pi);
+    BOOL ok = CreateProcessA(path, cmd, NULL, NULL, TRUE,
+                             EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
+                             envblock, NULL, &siex.StartupInfo, &pi);
+    if (siex.StartupInfo.hStdInput != INVALID_HANDLE_VALUE &&
+        siex.StartupInfo.hStdInput != out_handle)
+        CloseHandle(siex.StartupInfo.hStdInput);
+    if (!ok) {
+        ret = -EIO;
+        goto out;
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    ret = (pid_t)pi.dwProcessId;
+
+out:
+    if (attr_ok)
+        DeleteProcThreadAttributeList(siex.lpAttributeList);
+    free(siex.lpAttributeList);
+    free(envblock);
+    free(cmd);
+    return ret;
+}
+
+uint64_t ltm_monotonic_ns(void) {
+    LARGE_INTEGER freq, ctr;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&ctr);
+    return (uint64_t)((ctr.QuadPart * 1000000000ull) / (uint64_t)freq.QuadPart);
+}
+
+#else // ================= POSIX =================
 
 #include <dirent.h>
 #include <errno.h>
@@ -235,3 +564,5 @@ uint64_t ltm_monotonic_ns(void) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
 }
+
+#endif // _WIN32

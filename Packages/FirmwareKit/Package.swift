@@ -16,24 +16,47 @@
 // `import SQLite3` -> CZlib / CSQLite3 system-library targets below.
 import PackageDescription
 
+#if os(Windows)
+// The firmwarekit executable is excluded on Windows: it depends on the
+// FirmwareKit library, which would force SwiftPM to build FirmwareKit without
+// -enable-testing, breaking the @testable imports in FirmwareKitTests
+// (SwiftPM builds each target once per configuration). The library and its
+// tests are what CI exercises.
+let executableTargets: [Target] = []
+let executableProducts: [Product] = []
+#else
+let executableTargets: [Target] = [
+    .executableTarget(
+        name: "FirmwareKitCLI",
+        dependencies: [
+            "FirmwareKit",
+            .product(name: "HostRuntime", package: "HostRuntime"),
+            .product(name: "ArgumentParser", package: "swift-argument-parser"),
+        ]
+    ),
+]
+let executableProducts: [Product] = [
+    .executable(name: "firmwarekit", targets: ["FirmwareKitCLI"]),
+]
+#endif
+
 let package = Package(
     name: "FirmwareKit",
     products: [
         .library(name: "FirmwareKit", targets: ["FirmwareKit"]),
         .library(name: "FirmwareSchema", type: .static, targets: ["FirmwareSchema"]),
-        .executable(name: "firmwarekit", targets: ["FirmwareKitCLI"]),
-    ],
+    ] + executableProducts,
     dependencies: [
         .package(path: "../HostRuntime"),
         .package(url: "https://github.com/weichsel/ZIPFoundation.git", exact: "0.9.20"),
         .package(url: "https://github.com/p-x9/MachOKit.git", exact: "0.53.0"),
         .package(url: "https://github.com/swiftlang/swift-subprocess.git", exact: "1.0.0"),
-        .package(url: "https://github.com/mtgto/Unrar.swift.git", exact: "0.5.4"),
+        .package(url: "https://github.com/namde-v/Unrar.swift.git", branch: "windows-msvc-fix"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", exact: "1.8.2"),
         // CryptoKit is Apple-only; swift-crypto's Crypto module is API-compatible
         // for the SHA256 / Insecure.SHA1 uses, and _CryptoExtras provides AES._CBC
         // (replacing CommonCrypto's CCCrypt AES-CBC and CCHmac-SHA1).
-        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.15.1"),
+        .package(url: "https://github.com/namde-v/swift-crypto.git", branch: "windows-msvc-fix"),
         // Apple's `import System` is SDK-only; swift-system's SystemPackage
         // provides FilePath/FilePermissions/Arguments on Linux.
         .package(url: "https://github.com/apple/swift-system.git", from: "1.8.1"),
@@ -76,14 +99,6 @@ let package = Package(
                 .product(name: "SystemPackage", package: "swift-system"),
             ]
         ),
-        .executableTarget(
-            name: "FirmwareKitCLI",
-            dependencies: [
-                "FirmwareKit",
-                .product(name: "HostRuntime", package: "HostRuntime"),
-                .product(name: "ArgumentParser", package: "swift-argument-parser"),
-            ]
-        ),
         .testTarget(
             name: "FirmwareKitTests",
             dependencies: [
@@ -92,5 +107,5 @@ let package = Package(
                 .product(name: "Crypto", package: "swift-crypto"),
             ]
         ),
-    ]
+    ] + executableTargets
 )
