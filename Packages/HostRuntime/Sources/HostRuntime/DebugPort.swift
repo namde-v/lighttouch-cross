@@ -17,6 +17,27 @@ public nonisolated enum DebugPort {
     /// A loopback port free right now (the kernel's pick for port 0). Racy by nature; QEMU fails to start on the
     /// rare collision and the next start picks again.
     public static func freePort() -> Int? {
+        #if os(Windows)
+        // Winsock: socket() returns a SOCKET (UInt64), closed with
+        // closesocket(); sockaddr_in has no sin_len and no sa_family_t, and
+        // IN_ADDR's s_addr is the S_un.S_addr union member.
+        var wsaData = WSADATA()
+        guard WSAStartup(0x0202, &wsaData) == 0 else { return nil }
+        defer { WSACleanup() }
+        let fd: SOCKET = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd != INVALID_SOCKET else { return nil }
+        defer { closesocket(fd) }
+        var addr = sockaddr_in()
+        addr.sin_family = UInt16(AF_INET)
+        addr.sin_addr.S_un.S_addr = inet_addr("127.0.0.1")
+        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let bound = withUnsafeMutablePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(fd, $0, len) == 0 && getsockname(fd, $0, &len) == 0
+            }
+        }
+        return bound ? Int(UInt16(bigEndian: addr.sin_port)) : nil
+        #else
         #if os(Linux)
         // Glibc imports SOCK_STREAM as __socket_type, not Int32.
         let fd = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
@@ -39,6 +60,7 @@ public nonisolated enum DebugPort {
             }
         }
         return bound ? Int(UInt16(bigEndian: addr.sin_port)) : nil
+        #endif
     }
 
     /// What to paste into Terminal. KERNELCACHE stays a placeholder: the decrypted kernel lives in the firmware,

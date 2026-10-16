@@ -281,11 +281,42 @@ public nonisolated enum BootRecipe {
     public static func iPod1G(_ d: IPod1G, hardware: DeviceInfo, serial: String, audio: [String], netdev: String?)
         -> BootConfig
     {
+        #if os(Windows)
+        // The Windows type checker times out on the single long concatenation
+        // below; the same string, built piece by piece.
+        var machine = "\(hardware.machine),bootrom=\(escape(d.bootrom)),iboot=\(escape(d.iBoot))"
+        machine += ",nand=\(escape(d.nand)),nand-overlay=\(escape(d.overlay))"
+        if let usb = d.usbAddress { machine += ",usb-tcp-addr=\(usb)" }
+        if !d.wifi { machine += ",wifi=off" }
+        if let package = d.guestPackage { machine += ",guest-package=\(escape(package))" }
+        machine += options(d.machineOptions)
+        #else
         let machine =
             "\(hardware.machine),bootrom=\(escape(d.bootrom)),iboot=\(escape(d.iBoot))"
             + ",nand=\(escape(d.nand)),nand-overlay=\(escape(d.overlay))"
             + (d.usbAddress.map { ",usb-tcp-addr=\($0)" } ?? "") + (d.wifi ? "" : ",wifi=off")
             + (d.guestPackage.map { ",guest-package=\(escape($0))" } ?? "") + options(d.machineOptions)
+        #endif
+        #if os(Windows)
+        // As above: the single chained expression times out the Windows type
+        // checker; the same argv, appended piece by piece.
+        var argv = [
+            "LightTouchMac", "-M", machine, "-drive", "if=pflash,format=raw,file=\(escape(d.writableNOR))",
+            "-display", "none", "-no-shutdown",
+        ]
+        argv += audio
+        argv += ["-serial", serial]
+        argv += netdev.map { ["-netdev", $0] } ?? []
+        // The iPhone's modem carries its EDGE data (raw IP over a mux DLCI) to its own slirp, cell0, with the web
+        // proxy's guestfwd as Wi-Fi's (the image routes cellular through the proxy too) and its lan= setting; with
+        // no wifi0 given, off the LAN like the machine's own default wifi0.
+        if hardware.hasCellular {
+            argv += [
+                "-netdev",
+                netdev.map { $0.replacingOccurrences(of: "id=wifi0", with: "id=cell0") } ?? "user,id=cell0,lan=off",
+            ]
+        }
+        #else
         let argv =
             [
                 "LightTouchMac", "-M", machine, "-drive", "if=pflash,format=raw,file=\(escape(d.writableNOR))",
@@ -299,6 +330,7 @@ public nonisolated enum BootRecipe {
                     "-netdev",
                     netdev.map { $0.replacingOccurrences(of: "id=wifi0", with: "id=cell0") } ?? "user,id=cell0,lan=off",
                 ] : [])
+        #endif
         return BootConfig(argv: argv, machine: hardware.machine)
     }
 
@@ -343,12 +375,25 @@ public nonisolated enum BootRecipe {
                 + d.cellular.globals : []
         // usb-kbd on the always-on EHCI becomes the active keyboard for key_mac. 20 mA: 4.x gives the
         // dock's host side AAPL,power-supply 50 and refuses the default 100 mA device ("not enough power").
+        #if os(Windows)
+        // As above: the single chained expression times out the Windows type
+        // checker; the same argv, appended piece by piece.
+        var argv = ["LightTouchMac", "-M", machine, "-display", "none"]
+        argv += d.oneShot ? ["-monitor", "none", "-no-reboot"] : ["-no-shutdown"]
+        argv += audio
+        argv += ["-serial", serial]
+        if hardware.hasUSBHost && !d.oneShot { argv += ["-device", "usb-kbd,bus=usb-bus.0,max-power=20"] }
+        argv += netdev.map { ["-netdev", $0] } ?? []
+        argv += cellular
+        argv += restore
+        #else
         let argv =
             ["LightTouchMac", "-M", machine, "-display", "none"]
             + (d.oneShot ? ["-monitor", "none", "-no-reboot"] : ["-no-shutdown"])
             + audio + ["-serial", serial]
             + (hardware.hasUSBHost && !d.oneShot ? ["-device", "usb-kbd,bus=usb-bus.0,max-power=20"] : [])
             + (netdev.map { ["-netdev", $0] } ?? []) + cellular + restore
+        #endif
         return BootConfig(argv: argv, machine: board)
     }
 
@@ -374,7 +419,7 @@ public nonisolated enum BootRecipe {
         if let writableNOR, !fm.fileExists(atPath: writableNOR.path) {
             let source = base.appendingPathComponent("nor.bin")
             let staged = writableNOR.deletingLastPathComponent()
-                .appendingPathComponent(".\(writableNOR.lastPathComponent)-\(UUID().uuidString).tmp")
+                .appendingPathComponent(".\(writableNOR.lastPathComponent)-\(Foundation.UUID().uuidString).tmp")
             defer { try? fm.removeItem(at: staged) }
             try fm.createDirectory(at: writableNOR.deletingLastPathComponent(), withIntermediateDirectories: true)
             try cloneFile(from: source.path, to: staged.path)
@@ -400,6 +445,17 @@ public nonisolated enum BootRecipe {
         }
         #if canImport(Darwin)
         guard copyfile(source, destination, nil, copyfile_flags_t(COPYFILE_CLONE)) == 0 else {
+            throw writeFailed()
+        }
+        #elseif os(Windows)
+        // No FICLONE ioctl on Windows: a plain copy, like the Linux fallback
+        // below. Either way the destination exists afterwards, as the caller
+        // requires.
+        do {
+            let fm = FileManager.default
+            if fm.fileExists(atPath: destination) { try fm.removeItem(atPath: destination) }
+            try fm.copyItem(atPath: source, toPath: destination)
+        } catch {
             throw writeFailed()
         }
         #else

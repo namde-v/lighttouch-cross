@@ -46,7 +46,13 @@ public final class PipeOutput: Sendable {
         // signal dispositions inherited by unrelated subprocess descriptors.
         let signalError: Int32 = fcntl(fileDescriptor, F_SETNOSIGPIPE, 1) == -1 ? errno : 0
         #endif
+        #if os(Windows)
+        // dispatch_fd_t is a HANDLE on Windows, not a CRT descriptor.
+        let handle = _get_osfhandle(fileDescriptor)
+        channel = DispatchIO(type: .stream, fileDescriptor: handle, queue: queue) { _ in }
+        #else
         channel = DispatchIO(type: .stream, fileDescriptor: fileDescriptor, queue: queue) { _ in }
+        #endif
         if signalError != 0 { state.withLock { $0.failure = signalError } }
     }
     public func stop() {

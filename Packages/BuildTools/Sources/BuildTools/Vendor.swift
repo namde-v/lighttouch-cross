@@ -1,6 +1,10 @@
 import Foundation
 import ReleaseChecks
 
+#if os(Windows)
+import WinSDK
+#endif
+
 /// scripts/vendor: what Xcode can't build, from the pins, into a cached vendor directory that Archive copies into the
 /// app (see `usage`).
 public struct Vendor {
@@ -219,6 +223,29 @@ public struct Vendor {
     static func lock(_ directory: URL, waiting: () -> Void) throws -> Int32 {
         try files.createDirectory(at: directory, withIntermediateDirectories: true)
         let path = directory.appendingPathComponent(".lock").path
+        #if os(Windows)
+        // No flock(2) or O_CLOEXEC on Windows: an exclusive LockFileEx on the
+        // CRT descriptor's HANDLE. Closing the descriptor (or process exit)
+        // releases the lock, matching the flock contract below.
+        let fd = open(path, O_RDWR | O_CREAT, 0o644)
+        guard fd >= 0 else { throw ToolError("vendor: cannot open \(path): \(String(cString: strerror(errno)))") }
+        if !windowsTryLock(fd) {
+            waiting()
+            guard let handle = windowsLockHandle(fd) else {
+                close(fd)
+                throw ToolError("vendor: cannot lock \(path)")
+            }
+            var overlapped = OVERLAPPED()
+            while !LockFileEx(handle, DWORD(LOCKFILE_EXCLUSIVE_LOCK), 0, 1, 0, &overlapped) {
+                guard GetLastError() == DWORD(ERROR_LOCK_VIOLATION) else {
+                    close(fd)
+                    throw ToolError("vendor: cannot lock \(path)")
+                }
+                Sleep(20)
+            }
+        }
+        return fd
+        #else
         let fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0o644)
         guard fd >= 0 else { throw ToolError("vendor: cannot open \(path): \(String(cString: strerror(errno)))") }
         if flock(fd, LOCK_EX | LOCK_NB) != 0 {
@@ -231,7 +258,26 @@ public struct Vendor {
             }
         }
         return fd
+        #endif
     }
+
+    #if os(Windows)
+    /// LockFileEx-based flock(2) replacement for lock(_:waiting:), over the
+    /// CRT descriptor's HANDLE.
+    private static func windowsTryLock(_ fd: Int32) -> Bool {
+        guard let handle = windowsLockHandle(fd) else { return false }
+        var overlapped = OVERLAPPED()
+        // LockFileEx returns BOOL (Swift Bool); the flag #defines import as
+        // Int32 and need a DWORD conversion for the DWORD parameters.
+        return LockFileEx(handle, DWORD(LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY), 0, 1, 0, &overlapped)
+    }
+
+    private static func windowsLockHandle(_ fd: Int32) -> UnsafeMutableRawPointer? {
+        let raw = _get_osfhandle(fd)
+        guard raw != -1 else { return nil }
+        return UnsafeMutableRawPointer(bitPattern: raw)
+    }
+    #endif
 
     /// qemu-ios's guest export (build-guest-tools.sh), checked for what the app and firmwarekit read.
     func guest(_ work: URL, qemu: URL) throws -> (URL, [String: Any]) {
