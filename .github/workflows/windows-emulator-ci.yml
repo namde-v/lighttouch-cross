@@ -1,0 +1,219 @@
+name: Windows emulator CI
+
+# Builds qemu-ios (LightTouchMac's QEMU fork — the emulation engine) for
+# Windows x86-64 using MSYS2/MINGW64, and uploads qemu-system-arm.exe plus
+# its MinGW runtime DLLs as a workflow artifact.
+#
+# The qemu-ios source itself is NOT in this repo: it is cloned fresh from
+# https://github.com/samhenrigold/qemu-ios at the pinned commit below
+# (the exact commit LightTouchMac pins in build-support/sources.json).
+# A minimal link fix (amc-nonavcodec-fix.patch, documented in
+# emulator/BUILD_LOG.md) is applied because we build without FFmpeg dev
+# libraries; meson subprojects are pre-seeded from github.com/qemu mirrors
+# so the build never touches gitlab.com.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: windows-emulator-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CC: "ccache gcc"
+  CXX: "ccache g++"
+  CCACHE_DIR: "C:/Users/runneradmin/.cache/ccache"
+  CCACHE_MAXSIZE: "2G"
+  QEMU_PIN: cb3595e8add3d9a3a55807186c6b8ff0ba338abe
+
+jobs:
+  build:
+    name: Build qemu-system-arm (Windows x86-64)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up MSYS2 MINGW64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            git
+            bison
+            flex
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-meson
+            mingw-w64-x86_64-python
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-glib2
+            mingw-w64-x86_64-pixman
+            mingw-w64-x86_64-SDL2
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-ccache
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: C:/Users/runneradmin/.cache/ccache
+          key: qemu-ios-win-ccache-${{ github.sha }}
+          restore-keys: |
+            qemu-ios-win-ccache-
+
+      - name: Clone qemu-ios at pinned commit
+        run: |
+          git clone https://github.com/samhenrigold/qemu-ios qemu-src
+          cd qemu-src
+          git fetch --depth 1 origin "$QEMU_PIN"
+          git checkout "$QEMU_PIN"
+
+      - name: Apply no-FFmpeg link fix
+        run: |
+          cd qemu-src
+          cat > amc-nonavcodec-fix.patch <<'PATCH_EOF'
+          diff --git a/hw/arm/ipod_touch_amc.c b/hw/arm/ipod_touch_amc.c
+          index d833085..1776a09 100644
+          --- a/hw/arm/ipod_touch_amc.c
+          +++ b/hw/arm/ipod_touch_amc.c
+          @@ -144,6 +144,35 @@ static bool amc_trace(void)
+           #define AMCT(fmt, ...) do { if (amc_trace()) { \
+               TRACE_PRINTF(trace_ipod_touch_amc_log, "[AMC] " fmt, ##__VA_ARGS__); } } while (0)
+ 
+          +/* DMA address helpers: pure range checks, no FFmpeg dependency, so they live
+          + * outside the IT_HAVE_AVCODEC guard — amc_engine0() calls them unconditionally. */
+          +static bool amc_dram(IPodTouchAMCState *s, uint32_t addr, size_t size)
+          +{
+          +    return addr >= s->dram_base && addr - s->dram_base < s->dram_size &&
+          +           size <= s->dram_size - (addr - s->dram_base);
+          +}
+          +
+          +/* The engine's own memory, the aperture: AMC 2.1's DMA reads only this. */
+          +static bool amc_local(IPodTouchAMCState *s, uint32_t addr, size_t size)
+          +{
+          +    uint32_t limit = s->rev21 ? AMC_APERTURE_21 : AMC_BUF_SIZE;
+          +    return addr < limit && size <= limit - addr;
+          +}
+          +
+          +/*
+          + * A bank 4 DMA address: bits 1:0 of a descriptor pointer tag its space,
+          + * 1 = system memory, 2 = engine-local (7B500 c06e99f8). Returns the physical
+          + * address, or -1 when it is not inside that space.
+          + */
+          +static hwaddr amc_dma_addr(IPodTouchAMCState *s, bool local, uint32_t addr,
+          +                           size_t size)
+          +{
+          +    if (local) {
+          +        return amc_local(s, addr, size) ? s->buf_base + addr : -1;
+          +    }
+          +    return amc_dram(s, addr, size) ? addr : -1;
+          +}
+          +
+           #ifdef IT_HAVE_AVCODEC
+           /* ponytail: HLE of the 7E18 AAC-LC/HE-AAC, MP3 and ALAC decoder programs, and of any
+            * other program whose stream parameters are AAC's (amc_aac_rate). Other DE programs
+          @@ -322,33 +351,6 @@ static void amc_decoder_close(IPodTouchAMCState *s)
+               }
+           }
+ 
+          -static bool amc_dram(IPodTouchAMCState *s, uint32_t addr, size_t size)
+          -{
+          -    return addr >= s->dram_base && addr - s->dram_base < s->dram_size &&
+          -           size <= s->dram_size - (addr - s->dram_base);
+          -}
+          -
+          -/* The engine's own memory, the aperture: AMC 2.1's DMA reads only this. */
+          -static bool amc_local(IPodTouchAMCState *s, uint32_t addr, size_t size)
+          -{
+          -    uint32_t limit = s->rev21 ? AMC_APERTURE_21 : AMC_BUF_SIZE;
+          -    return addr < limit && size <= limit - addr;
+          -}
+          -
+          -/*
+          - * A bank 4 DMA address: bits 1:0 of a descriptor pointer tag its space,
+          - * 1 = system memory, 2 = engine-local (7B500 c06e99f8). Returns the physical
+          - * address, or -1 when it is not inside that space.
+          - */
+          -static hwaddr amc_dma_addr(IPodTouchAMCState *s, bool local, uint32_t addr,
+          -                           size_t size)
+          -{
+          -    if (local) {
+          -        return amc_local(s, addr, size) ? s->buf_base + addr : -1;
+          -    }
+          -    return amc_dram(s, addr, size) ? addr : -1;
+          -}
+          -
+           static void amc_decode_fail(IPodTouchAMCState *s)
+           {
+               AMCDecoder *d = s->decoder;
+          PATCH_EOF
+          sed -i 's/\r$//' amc-nonavcodec-fix.patch
+          git apply --check amc-nonavcodec-fix.patch
+          git apply amc-nonavcodec-fix.patch
+
+      - name: Pre-seed meson subprojects from GitHub mirrors
+        run: |
+          cd qemu-src
+          seed_subproject() {
+            rm -rf "subprojects/$1"
+            git clone --quiet "$2" "subprojects/$1"
+            git -C "subprojects/$1" fetch --depth 1 origin "$3"
+            git -C "subprojects/$1" checkout --quiet "$3"
+          }
+          seed_subproject keycodemapdb https://github.com/qemu/keycodemapdb.git f5772a62ec52591ff6870b7e8ef32482371f22c6
+          seed_subproject dtc https://github.com/qemu/dtc.git b6910bec11614980a21e46fbccc35934b671bd81
+          seed_subproject berkeley-softfloat-3 https://github.com/qemu/berkeley-softfloat-3.git b64af41c3276f97f0e181920400ee056b9c88037
+          seed_subproject berkeley-testfloat-3 https://github.com/qemu/berkeley-testfloat-3.git e7af9751d9f9fd3b47911f51a5cfd08af256a9ab
+          cp subprojects/packagefiles/berkeley-softfloat-3/meson.build \
+             subprojects/packagefiles/berkeley-softfloat-3/meson_options.txt \
+             subprojects/berkeley-softfloat-3/
+          cp subprojects/packagefiles/berkeley-testfloat-3/meson.build \
+             subprojects/packagefiles/berkeley-testfloat-3/meson_options.txt \
+             subprojects/berkeley-testfloat-3/
+
+      - name: Configure
+        run: |
+          cd qemu-src
+          mkdir -p build && cd build
+          ../configure --target-list=arm-softmmu \
+            --disable-capstone \
+            --disable-slirp \
+            --disable-werror \
+            --enable-sdl \
+            --extra-ldflags='-lcrypto'
+
+      - name: Build
+        run: |
+          cd qemu-src/build
+          make -j"$(nproc)"
+
+      - name: Smoke test
+        run: |
+          cd qemu-src/build
+          ./qemu-system-arm.exe --version
+          ./qemu-system-arm.exe -M ? | grep -iE 'ipod|iphone|ipad'
+
+      - name: Bundle binary and MinGW DLLs
+        run: |
+          cd qemu-src
+          mkdir -p dist
+          cp build/qemu-system-arm.exe dist/
+          for dll in $(x86_64-w64-mingw32-objdump -p build/qemu-system-arm.exe | awk '/DLL Name:/{print $3}'); do
+            if [ -f "/mingw64/bin/$dll" ]; then cp "/mingw64/bin/$dll" dist/; fi
+          done
+          ls -la dist/
+
+      - name: Upload emulator artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-system-arm-windows-x86_64
+          path: qemu-src/dist/
