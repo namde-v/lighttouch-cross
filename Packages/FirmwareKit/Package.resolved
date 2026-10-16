@@ -97,16 +97,16 @@
       "location" : "https://github.com/namde-v/Unrar.swift.git",
       "state" : {
         "branch" : "windows-msvc-fix",
-        "revision" : "739376cedd006c73f0933d85f083076cfe03a112"
+        "revision" : "7d20caecd3049546a308188eb095407c64a9a415"
       }
     },
     {
       "identity" : "zipfoundation",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/weichsel/ZIPFoundation.git",
+      "location" : "https://github.com/namde-v/ZIPFoundation.git",
       "state" : {
-        "revision" : "22787ffb59de99e5dc1fbfe80b19c97a904ad48d",
-        "version" : "0.9.20"
+        "branch" : "windows-msvc-fix",
+        "revision" : "53218090873dcbdc0cebe3efcdad85882222f1aa"
       }
     }
   ],
