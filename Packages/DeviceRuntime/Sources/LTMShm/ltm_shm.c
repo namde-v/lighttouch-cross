@@ -1,5 +1,7 @@
 #ifndef _WIN32
 #define _GNU_SOURCE
+#else
+#define _CRT_SECURE_NO_WARNINGS // silence UCRT deprecation warnings (strncpy, ...)
 #endif
 #include "ltm_shm.h"
 
@@ -11,6 +13,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+uint64_t ltm_monotonic_ns(void); // defined below; used for the recv deadline
 
 // The API uses int for sockets/fds; on 64-bit Windows SOCKET and HANDLE are
 // 64-bit. Callers (the future Windows Swift wave) pass values that fit.
@@ -78,25 +82,34 @@ int ltm_recv_hello(int sock, int timeout_ms, const char *expected_token,
 
     SOCKET s = to_socket(sock);
 
-    fd_set rfds;
-    FD_ZERO(&rfds);
-    FD_SET(s, &rfds);
-    struct timeval tv, *tvp = NULL;
-    if (timeout_ms >= 0) {
-        tv.tv_sec = timeout_ms / 1000;
-        tv.tv_usec = (long)(timeout_ms % 1000) * 1000L;
-        tvp = &tv;
-    }
-    int pr = select(0, &rfds, NULL, NULL, tvp);
-    if (pr == SOCKET_ERROR)
-        return -wsa_to_errno(WSAGetLastError());
-    if (pr == 0)
-        return -ETIMEDOUT;
-
     ltm_shm_hello_hdr hdr;
     char *p = (char *)&hdr;
     size_t left = sizeof hdr;
+    // The caller's timeout is a total deadline for the whole header: select()
+    // is re-armed around every recv so a helper that stalls mid-header cannot
+    // hang us past it.
+    uint64_t deadline_ns = 0;
+    if (timeout_ms >= 0)
+        deadline_ns = ltm_monotonic_ns() + (uint64_t)timeout_ms * 1000000ull;
     while (left > 0) {
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(s, &rfds);
+        struct timeval tv, *tvp = NULL;
+        if (timeout_ms >= 0) {
+            uint64_t now = ltm_monotonic_ns();
+            if (now >= deadline_ns)
+                return -ETIMEDOUT;
+            uint64_t remain_ms = (deadline_ns - now) / 1000000ull;
+            tv.tv_sec = (long)(remain_ms / 1000);
+            tv.tv_usec = (long)(remain_ms % 1000) * 1000L;
+            tvp = &tv;
+        }
+        int pr = select(0, &rfds, NULL, NULL, tvp);
+        if (pr == SOCKET_ERROR)
+            return -wsa_to_errno(WSAGetLastError());
+        if (pr == 0)
+            return -ETIMEDOUT;
         int n = recv(s, p, (int)left, 0);
         if (n == SOCKET_ERROR)
             return -wsa_to_errno(WSAGetLastError());
@@ -244,15 +257,25 @@ pid_t ltm_spawn(const char *path, char *const argv[], char *const envp[], int ou
     }
     *e = '\0';
 
-    // Inherit exactly the handles the child needs.
-    HANDLE inherit[2];
-    int n_inherit = 0;
-    HANDLE out_handle = INVALID_HANDLE_VALUE;
-    if (out_fd >= 0) {
-        out_handle = to_handle(out_fd);
-        inherit[n_inherit++] = out_handle;
+    // Inherit exactly the handles the child needs: the stdio handles and the
+    // link socket. With PROC_THREAD_ATTRIBUTE_HANDLE_LIST present, ONLY the
+    // listed handles are inherited — the NUL handle backing stdio must be in
+    // the list too, or the child's std handles are invalid.
+    HANDLE nul = CreateFileA("NUL", GENERIC_READ | GENERIC_WRITE,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE,
+                             NULL, OPEN_EXISTING, 0, NULL);
+    if (nul == INVALID_HANDLE_VALUE) {
+        free(envblock);
+        free(cmd);
+        return -EIO;
     }
-    if (link_fd >= 0)
+    HANDLE out_handle = out_fd >= 0 ? to_handle(out_fd) : nul;
+    HANDLE inherit[3];
+    int n_inherit = 0;
+    inherit[n_inherit++] = nul;
+    if (out_handle != nul)
+        inherit[n_inherit++] = out_handle;
+    if (link_fd >= 0 && link_handle != nul && link_handle != out_handle)
         inherit[n_inherit++] = link_handle;
     for (int i = 0; i < n_inherit; i++)
         SetHandleInformation(inherit[i], HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
@@ -278,34 +301,20 @@ pid_t ltm_spawn(const char *path, char *const argv[], char *const envp[], int ou
             goto out;
     }
     siex.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
-    {
-        // stdin: NUL. stdout/stderr: out_fd or NUL.
-        HANDLE nul = CreateFileA("NUL", GENERIC_READ | GENERIC_WRITE,
-                                 FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                 NULL, OPEN_EXISTING, 0, NULL);
-        siex.StartupInfo.hStdInput = nul;
-        if (out_handle != INVALID_HANDLE_VALUE) {
-            siex.StartupInfo.hStdOutput = out_handle;
-            siex.StartupInfo.hStdError = out_handle;
-        } else {
-            siex.StartupInfo.hStdOutput = nul;
-            siex.StartupInfo.hStdError = nul;
-        }
-        // NUL handle must be inheritable too.
-        if (nul != INVALID_HANDLE_VALUE)
-            SetHandleInformation(nul, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
-    }
+    // stdin: NUL. stdout/stderr: out_fd or NUL.
+    siex.StartupInfo.hStdInput = nul;
+    siex.StartupInfo.hStdOutput = out_handle;
+    siex.StartupInfo.hStdError = out_handle;
 
     PROCESS_INFORMATION pi;
     ZeroMemory(&pi, sizeof pi);
     BOOL ok = CreateProcessA(path, cmd, NULL, NULL, TRUE,
                              EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
                              envblock, NULL, &siex.StartupInfo, &pi);
-    if (siex.StartupInfo.hStdInput != INVALID_HANDLE_VALUE &&
-        siex.StartupInfo.hStdInput != out_handle)
-        CloseHandle(siex.StartupInfo.hStdInput);
     if (!ok) {
-        ret = -EIO;
+        DWORD le = GetLastError();
+        ret = (le == ERROR_FILE_NOT_FOUND || le == ERROR_PATH_NOT_FOUND) ? -ENOENT :
+              (le == ERROR_ACCESS_DENIED) ? -EACCES : -EIO;
         goto out;
     }
     CloseHandle(pi.hThread);
@@ -313,6 +322,7 @@ pid_t ltm_spawn(const char *path, char *const argv[], char *const envp[], int ou
     ret = (pid_t)pi.dwProcessId;
 
 out:
+    CloseHandle(nul); // the parent's copy; the child holds its own
     if (attr_ok)
         DeleteProcThreadAttributeList(siex.lpAttributeList);
     free(siex.lpAttributeList);

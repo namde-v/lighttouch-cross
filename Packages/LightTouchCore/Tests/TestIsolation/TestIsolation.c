@@ -5,9 +5,11 @@
 #ifdef _WIN32
 // Windows: no <ftw.h>, no mkdtemp/setenv/PATH_MAX. Clang (which SwiftPM uses
 // even on Windows) supports __attribute__((constructor)).
+#define _CRT_SECURE_NO_WARNINGS // silence UCRT deprecation warnings (getenv, snprintf, ...)
 #include <windows.h>
 #include <direct.h>
 #include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,13 +36,32 @@ static int win_setenv(const char *name, const char *value, int overwrite) {
     return r;
 }
 
-// mkdtemp() emulation: _mktemp_s fills the trailing XXXXXX, then mkdir.
+// mkdtemp() emulation: _mktemp_s is not declared by this toolchain's UCRT
+// headers (it is gated behind __STDC_WANT_SECURE_LIB__, which SwiftPM does
+// not define), so fill the trailing XXXXXX ourselves with a QPC/pid-seeded
+// rand() and retry _mkdir on collision.
 static char *win_mkdtemp(char *tmpl) {
-    if (_mktemp_s(tmpl, strlen(tmpl) + 1) != 0)
+    size_t len = strlen(tmpl);
+    if (len < 6 || memcmp(tmpl + len - 6, "XXXXXX", 6) != 0)
         return NULL;
-    if (_mkdir(tmpl) != 0)
-        return NULL;
-    return tmpl;
+    static int seeded = 0;
+    if (!seeded) {
+        LARGE_INTEGER ctr;
+        QueryPerformanceCounter(&ctr);
+        srand((unsigned)(ctr.QuadPart ^
+                         ((unsigned long long)(uintptr_t)&seeded << 32) ^
+                         (unsigned long long)GetCurrentProcessId()));
+        seeded = 1;
+    }
+    static const char alnum[] =
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    for (int tries = 0; tries < 64; tries++) {
+        for (int i = 0; i < 6; i++)
+            tmpl[len - 6 + i] = alnum[(unsigned)rand() % (sizeof(alnum) - 1)];
+        if (_mkdir(tmpl) == 0)
+            return tmpl;
+    }
+    return NULL;
 }
 
 static void remove_recursive(const char *path) {
