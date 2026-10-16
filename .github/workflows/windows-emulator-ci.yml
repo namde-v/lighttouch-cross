@@ -480,6 +480,155 @@ jobs:
            /* ------------------------------------------------------------------- harness */
  
            static int failures;
+          diff --git a/tests/qtest/ipad1-h2fmi-test.c b/tests/qtest/ipad1-h2fmi-test.c
+          index a443901..0152402 100644
+          --- a/tests/qtest/ipad1-h2fmi-test.c
+          +++ b/tests/qtest/ipad1-h2fmi-test.c
+          @@ -5,6 +5,37 @@
+           #include "libqtest.h"
+           #include "qobject/qdict.h"
+ 
+          +#ifdef _WIN32
+          +/* Windows has no waitpid()/kill(); implement the small subset these tests need
+          + * on top of the process HANDLE that GLib returns as GPid. */
+          +#include <windows.h>
+          +#ifndef WNOHANG
+          +#define WNOHANG 1
+          +#endif
+          +static int portable_WIFEXITED(int status) { (void)status; return 1; }
+          +#define WIFEXITED portable_WIFEXITED
+          +static int portable_WEXITSTATUS(int status) { return (status >> 8) & 0xff; }
+          +#define WEXITSTATUS portable_WEXITSTATUS
+          +static GPid portable_waitpid(GPid pid, int *status, int options)
+          +{
+          +    DWORD rc = WaitForSingleObject(pid, options == WNOHANG ? 0 : INFINITE);
+          +    if (options == WNOHANG && rc == WAIT_TIMEOUT) {
+          +        return 0;
+          +    }
+          +    DWORD code = 0;
+          +    GetExitCodeProcess(pid, &code);
+          +    *status = (int)(code << 8);
+          +    return pid;
+          +}
+          +#define waitpid portable_waitpid
+          +static int portable_kill(GPid pid, int sig)
+          +{
+          +    (void)sig;
+          +    return TerminateProcess(pid, 1) ? 0 : -1;
+          +}
+          +#define kill portable_kill
+          +#endif
+          +
+           #define FMI 0x81200000ULL
+           #define FMC (FMI + 0x40000)
+           #define PAGE_BYTES 4096
+          @@ -262,6 +293,12 @@ static void snapshot_flush(QTestState *q)
+ 
+           static void ownership_crash_reopen(void)
+           {
+          +#ifdef _WIN32
+          +    /* This crash test forks a child that SIGKILLs the guest; neither fork()
+          +     * nor POSIX signals exist on Windows. */
+          +    g_test_skip("crash-reopen test requires fork(), unavailable on Windows");
+          +    return;
+          +#else
+               g_autofree char *overlay = g_dir_make_tmp("ipad1-crash-overlay-XXXXXX", NULL);
+               g_autofree char *bitmap = g_build_filename(overlay, "bus0-ce0.dirty", NULL);
+               pid_t child = fork();
+          @@ -315,6 +352,7 @@ static void ownership_crash_reopen(void)
+               }
+               g_dir_close(dir);
+               rmdir(overlay);
+          +#endif
+           }
+ 
+           static void expect_startup_failure(char **argv, const char *error_text)
+          diff --git a/tests/qtest/ipod-fmss-test.c b/tests/qtest/ipod-fmss-test.c
+          index e6926b8..3589318 100644
+          --- a/tests/qtest/ipod-fmss-test.c
+          +++ b/tests/qtest/ipod-fmss-test.c
+          @@ -4,6 +4,37 @@
+           #include "libqtest.h"
+           #include "qobject/qdict.h"
+ 
+          +#ifdef _WIN32
+          +/* Windows has no waitpid()/kill(); implement the small subset these tests need
+          + * on top of the process HANDLE that GLib returns as GPid. */
+          +#include <windows.h>
+          +#ifndef WNOHANG
+          +#define WNOHANG 1
+          +#endif
+          +static int portable_WIFEXITED(int status) { (void)status; return 1; }
+          +#define WIFEXITED portable_WIFEXITED
+          +static int portable_WEXITSTATUS(int status) { return (status >> 8) & 0xff; }
+          +#define WEXITSTATUS portable_WEXITSTATUS
+          +static GPid portable_waitpid(GPid pid, int *status, int options)
+          +{
+          +    DWORD rc = WaitForSingleObject(pid, options == WNOHANG ? 0 : INFINITE);
+          +    if (options == WNOHANG && rc == WAIT_TIMEOUT) {
+          +        return 0;
+          +    }
+          +    DWORD code = 0;
+          +    GetExitCodeProcess(pid, &code);
+          +    *status = (int)(code << 8);
+          +    return pid;
+          +}
+          +#define waitpid portable_waitpid
+          +static int portable_kill(GPid pid, int sig)
+          +{
+          +    (void)sig;
+          +    return TerminateProcess(pid, 1) ? 0 : -1;
+          +}
+          +#define kill portable_kill
+          +#endif
+          +
+           #define FMSS 0x38a00000ULL
+           #define RAM 0x08010000ULL
+           static char *rom_path, *nor_path, *nand_path;
+          diff --git a/tests/qtest/ipod-usb-phy-test.c b/tests/qtest/ipod-usb-phy-test.c
+          index 3d8a755..c26e944 100644
+          --- a/tests/qtest/ipod-usb-phy-test.c
+          +++ b/tests/qtest/ipod-usb-phy-test.c
+          @@ -5,6 +5,25 @@
+           #include "qemu/sockets.h"
+           #include "qobject/qdict.h"
+ 
+          +#ifdef _WIN32
+          +/* Winsock has no MSG_DONTWAIT; drive the non-blocking peek by toggling the
+          + * socket's blocking mode instead. */
+          +#ifndef MSG_DONTWAIT
+          +#define MSG_DONTWAIT 0
+          +#endif
+          +static void portable_sock_nonblock(int fd, bool nonblock)
+          +{
+          +    u_long mode = nonblock ? 1 : 0;
+          +    ioctlsocket((SOCKET)fd, FIONBIO, &mode);
+          +}
+          +#else
+          +static void portable_sock_nonblock(int fd, bool nonblock)
+          +{
+          +    (void)fd;
+          +    (void)nonblock;
+          +}
+          +#endif
+          +
+           #define OTG 0x38400000ULL
+           #define PHY 0x3c400000ULL
+           #define VIC 0x38e00000ULL
+          @@ -34,11 +53,13 @@ static int accept_peer(int listener)
+               do {
+                   peer = accept(listener, NULL, NULL);
+                   g_assert_cmpint(peer, >=, 0);
+          +        portable_sock_nonblock(peer, true);
+                   /* Realize may dial before whole-machine reset closes that socket.
+                    * Consume its EOF; the model redials using its normal retry timer. */
+                   if (recv(peer, &byte, 1, MSG_PEEK | MSG_DONTWAIT) != 0) { break; }
+                   close(peer);
+               } while (true);
+          +    portable_sock_nonblock(peer, false);
+               struct timeval timeout = { .tv_sec = 3 };
+               setsockopt(peer, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+               return peer;
           PATCH_EOF
           sed -i 's/\r$//' win32-portability.patch
           git apply --check win32-portability.patch
