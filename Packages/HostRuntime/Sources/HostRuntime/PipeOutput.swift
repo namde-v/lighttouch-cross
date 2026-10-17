@@ -20,10 +20,11 @@ public final class PipeOutput: Sendable {
     private let state = Mutex(State())
     private let queue = DispatchQueue(label: "host-runtime.pipe-output")
     #if os(Windows)
-    /// Our own duplicate of the pipe's write HANDLE (from the fd via
-    /// _get_osfhandle). stop() closes the duplicate to interrupt a blocked
-    /// WriteFile, leaving the caller's fd untouched.
-    private let handle: UnsafeMutableRawPointer?
+    /// Our own duplicate of the pipe's write HANDLE, as an Int bit pattern
+    /// (raw pointers aren't Sendable). stop() closes the duplicate to
+    /// interrupt a blocked WriteFile, leaving the caller's fd untouched.
+    /// Zero means no valid handle (fd was invalid or duplication failed).
+    private let handleValue: Int
     private let handleClosed = Mutex(false)
     #else
     private let channel: DispatchIO
@@ -52,11 +53,12 @@ public final class PipeOutput: Sendable {
         if raw != -1,
            DuplicateHandle(
                GetCurrentProcess(), UnsafeMutableRawPointer(bitPattern: raw),
-               GetCurrentProcess(), &dup, 0, false, DWORD(DUPLICATE_SAME_ACCESS))
+               GetCurrentProcess(), &dup, 0, false, DWORD(DUPLICATE_SAME_ACCESS)),
+           let dup
         {
-            handle = dup
+            handleValue = Int(bitPattern: dup)
         } else {
-            handle = nil
+            handleValue = 0
         }
         // No SIGPIPE on Windows; a write to a closed pipe fails with an error.
         #else
@@ -85,7 +87,9 @@ public final class PipeOutput: Sendable {
             closed = true
             return true
         }
-        if closeIt, let handle { CloseHandle(handle) }
+        if closeIt, handleValue != 0, let handle = UnsafeMutableRawPointer(bitPattern: handleValue) {
+            CloseHandle(handle)
+        }
         #else
         channel.close(flags: .stop)
         #endif
@@ -143,7 +147,7 @@ public final class PipeOutput: Sendable {
         var error: Int32?
         let cancelled = state.withLock { $0.cancelled }
         if !cancelled {
-            if let handle {
+            if handleValue != 0, let handle = UnsafeMutableRawPointer(bitPattern: handleValue) {
                 error = writeAll(handle, bytes)
             } else {
                 error = Int32(ERROR_INVALID_HANDLE)
