@@ -295,20 +295,21 @@ public enum N72NAND {
         let tmp = dir.appendingPathComponent(".\(url.lastPathComponent).tmp")
         try data.write(to: tmp)
         #if os(Windows)
-        // winOpen: the POSIX open spelling crashes Swift 6.2.4's Windows overlay at runtime.
-        let fd = winOpen(tmp.path, read: true)
+        // winFsync: _open_osfhandle descriptors fail with EBADF on 6.2.4;
+        // flush by HANDLE instead. No directory fsync on Windows.
+        guard winFsync(path: tmp.path) == 0, rename(tmp.path, url.path) == 0 else {
+            let error = POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            try? FileManager.default.removeItem(at: tmp)
+            throw error
+        }
         #else
         let fd = open(tmp.path, O_RDONLY)
-        #endif
         defer { if fd >= 0 { close(fd) } }
         guard fd >= 0, fsync(fd) == 0, rename(tmp.path, url.path) == 0 else {
             let error = POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             try? FileManager.default.removeItem(at: tmp)
             throw error
         }
-        #if os(Windows)
-        // No directory open/fsync on Windows; the file fsync above is the durable bit.
-        #else
         let dfd = open(dir.path, O_RDONLY)
         if dfd >= 0 {
             fsync(dfd)

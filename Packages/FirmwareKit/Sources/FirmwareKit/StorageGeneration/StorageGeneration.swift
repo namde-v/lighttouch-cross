@@ -399,17 +399,14 @@ public actor StorageGeneration {
     static func hash(_ data: Data) -> String { Preparer.sha256(data) }
     static func sync(_ url: URL) throws {
         #if os(Windows)
-        // No fsync(2) or open(2) on directories: _commit files; directory entry
-        // durability is best-effort (no FlushFileBuffers handle dance).
+        // No fsync(2) on directories: winFsync flushes by HANDLE (_open_osfhandle
+        // descriptors fail with EBADF on 6.2.4); directory entry durability is
+        // best-effort. O_NOFOLLOW has no Windows equivalent; these are internal
+        // storage paths.
         var isDir: ObjCBool = false
         let isDirectory = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
         guard !isDirectory else { return }
-        // O_NOFOLLOW has no Windows equivalent; these are internal storage paths.
-        // winOpen: the POSIX open spelling crashes Swift 6.2.4's Windows overlay at runtime.
-        let fd = winOpen(url.path, read: true)
-        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
-        defer { posixClose(fd) }
-        guard fsync(fd) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        guard winFsync(path: url.path) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         #else
         let fd = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }

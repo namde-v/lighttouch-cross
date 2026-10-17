@@ -114,6 +114,29 @@ func fsync(_ fd: Int32) -> Int32 {
     _commit(fd)
 }
 
+/// fsync-by-path for Windows: flush a file's buffers via CreateFileW +
+/// FlushFileBuffers, without a CRT descriptor. _open_osfhandle returns
+/// descriptors that fail with EBADF on swift-frontend 6.2.4, so the
+/// durability call sites (writeDurably, sync) use this instead of
+/// winOpen + fsync.
+func winFsync(path: String) -> Int32 {
+    let wide = Array(path.utf16) + [0]
+    let handle: UnsafeMutableRawPointer? = wide.withUnsafeBufferPointer { buf in
+        CreateFileW(
+            buf.baseAddress,
+            DWORD(GENERIC_READ),
+            DWORD(FILE_SHARE_READ) | DWORD(FILE_SHARE_WRITE) | DWORD(FILE_SHARE_DELETE),
+            nil,
+            DWORD(OPEN_EXISTING),
+            DWORD(FILE_ATTRIBUTE_NORMAL),
+            nil
+        )
+    }
+    guard let handle, handle != INVALID_HANDLE_VALUE else { return -1 }
+    defer { CloseHandle(handle) }
+    return FlushFileBuffers(handle) ? 0 : -1
+}
+
 /// flock(LOCK_EX | LOCK_NB): non-blocking exclusive byte-range lock, the
 /// same pattern HostRuntime's StorageLease uses. Closing the descriptor
 /// releases the lock.
