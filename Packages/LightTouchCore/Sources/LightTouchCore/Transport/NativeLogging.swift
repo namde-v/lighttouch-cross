@@ -323,20 +323,15 @@ public nonisolated final class LogPipeReader: @unchecked Sendable {
     public func flush() {
         #if os(Windows)
         guard !readerState.isStopped else { return }
-        var bytes = [UInt8](repeating: 0, count: 32_768)
-        // Bounded drain: the reader thread drains concurrently, so bytes land
-        // in the log either way; this just hurries stragglers along.
-        for _ in 0..<32 {
-            // No O_NONBLOCK on Windows: only read when the pipe holds bytes.
-            guard availableBytes() > 0 else { break }
-            let count = read(descriptor, &bytes, UInt32(bytes.count))
-            guard count > 0 else { break }
-            let chunk = Data(bytes.prefix(Int(count)))
-            log.append(chunk)
-            readerState.scan(chunk)
+        // The reader thread drains continuously; wait until the pipe is empty
+        // instead of reading here. A manual read() races the reader thread:
+        // availableBytes() can report bytes that the reader consumes before
+        // read() runs, and read() then blocks forever on the empty pipe.
+        let deadline = Date().addingTimeInterval(10)
+        while availableBytes() > 0 && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
         }
-        // Settle: the reader thread may be appending a chunk it read just
-        // before this drain ran.
+        // Settle: the reader thread may be appending a chunk it read just now.
         Thread.sleep(forTimeInterval: 0.05)
         #else
         queue.sync {
