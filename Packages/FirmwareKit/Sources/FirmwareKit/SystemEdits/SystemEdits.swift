@@ -869,8 +869,8 @@ public enum SystemEdits {
         guard fd >= 0 else { throw FirmwareError(.internal, "open \(url.path): \(String(cString: strerror(errno)))") }
         defer { close(fd) }
         #if os(Windows)
-        // UCRT write takes a UInt32 count.
-        let n = data.withUnsafeBytes { data.isEmpty ? 0 : write(fd, $0.baseAddress, UInt32($0.count)) }
+        // UCRT write takes a UInt32 count and returns Int32.
+        let n = data.withUnsafeBytes { data.isEmpty ? 0 : Int(write(fd, $0.baseAddress, UInt32($0.count))) }
         #else
         let n = data.withUnsafeBytes { data.isEmpty ? 0 : write(fd, $0.baseAddress, $0.count) }
         #endif
