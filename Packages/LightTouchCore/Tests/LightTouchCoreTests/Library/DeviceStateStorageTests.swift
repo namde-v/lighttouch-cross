@@ -88,7 +88,7 @@ struct DeviceStateStorageTests {
     /// removed: one that isn't this device's storage leaves the overlay too.
     @Test func eraseRemovesThePrivateNORUnderItsLeaseOrNothing() throws {
         try withTemporaryDirectory { state in
-            let id = UUID()
+            let id = Foundation.UUID()
             let device = state.appendingPathComponent("Devices/\(id.uuidString)")
             let overlay = device.appendingPathComponent("overlay")
             let nor = device.appendingPathComponent("nor.bin")
@@ -124,7 +124,7 @@ struct DeviceStateStorageTests {
         guard DeviceStateStorage.immutableSettable() else { return }
         #endif
         try withTemporaryDirectory { state in
-            let id = UUID()
+            let id = Foundation.UUID()
             let device = state.appendingPathComponent("Devices/\(id.uuidString)")
             let overlay = device.appendingPathComponent("overlay")
             try fm.createDirectory(at: overlay, withIntermediateDirectories: true)
@@ -149,7 +149,7 @@ struct DeviceStateStorageTests {
     /// out as StorageGeneration publishes them (StoppedVolumeEditTests checks original-device.plist on a real commit).
     @Test func eraseAfterSavedEditsReturnsToThePreparedBase() throws {
         try withTemporaryDirectory { state in
-            let id = UUID()
+            let id = Foundation.UUID()
             let device = DeviceInstance.directory(id, state: state)
             let relative = "Devices/\(id.uuidString)"
             func lock(_ jailbroken: Bool) -> Data { Data(#"{"jailbroken": \#(jailbroken)}"#.utf8) }
@@ -184,7 +184,7 @@ struct DeviceStateStorageTests {
             let prepared = instance
             // Two saved edits: a file added to the data volume, then a jailbreak. Each generation keeps the record it
             // replaced and holds its own base (with the edited volumes), overlay and NOR.
-            for (generation, jailbroken) in [(UUID(), false), (UUID(), true)] {
+            for (generation, jailbroken) in [(Foundation.UUID(), false), (Foundation.UUID(), true)] {
                 let g = "generations/\(generation.uuidString)"
                 try make(g, files: [:])
                 try fm.copyItem(
@@ -238,7 +238,7 @@ struct DeviceStateStorageTests {
     /// edit (work/edit.json), and change nothing.
     @Test func eraseAndDeleteRefuseAnExternalLeaseAndAPendingEdit() throws {
         try withTemporaryDirectory { state in
-            let id = UUID()
+            let id = Foundation.UUID()
             let device = state.appendingPathComponent("Devices/\(id.uuidString)")
             let work = device.appendingPathComponent("work")
             let overlay = device.appendingPathComponent("overlay")
@@ -271,7 +271,7 @@ struct DeviceStateStorageTests {
 
     /// A record under `state`, laid out like a published device; `own` is its directory.
     struct Library {
-        let root: URL, state: URL, logs: URL, owner: UUID, other: UUID
+        let root: URL, state: URL, logs: URL, owner: Foundation.UUID, other: Foundation.UUID
         let ordinary: DeviceInstance, otherRecord: DeviceInstance, own: URL, external: URL, originalRecord: Data
 
         init(_ root: URL) throws {
@@ -279,9 +279,9 @@ struct DeviceStateStorageTests {
             self.root = root
             state = root.appendingPathComponent("state")
             logs = root.appendingPathComponent("logs")
-            owner = UUID()
-            other = UUID()
-            func record(_ id: UUID) -> DeviceInstance {
+            owner = Foundation.UUID()
+            other = Foundation.UUID()
+            func record(_ id: Foundation.UUID) -> DeviceInstance {
                 let prefix = "Devices/\(id.uuidString)"
                 return DeviceInstance(
                     id: id,
@@ -367,7 +367,7 @@ struct DeviceStateStorageTests {
             try lib.validate(absolute)
             // StorageGeneration records: relative or absolute generation descendants.
             var generation = ordinary
-            let relative = "Devices/\(lib.owner.uuidString)/generations/\(UUID().uuidString)"
+            let relative = "Devices/\(lib.owner.uuidString)/generations/\(Foundation.UUID().uuidString)"
             generation.base.path = relative + "/base"
             generation.storage.overlay = relative + "/overlay"
             generation.storage.writableNOR = relative + "/nor.bin"
@@ -442,7 +442,7 @@ struct DeviceStateStorageTests {
             #expect(throws: CocoaError.self) { try lib.validate(ordinary) }
             #expect(!fm.fileExists(atPath: lib.external.appendingPathComponent("lease").path))
             try fm.removeItem(at: work)
-            let alias = DeviceInstance.directory(UUID(), state: lib.state)
+            let alias = DeviceInstance.directory(Foundation.UUID(), state: lib.state)
             try fm.createSymbolicLink(at: alias, withDestinationURL: own)
             try lib.refused("other record directory alias", ordinary)
         }

@@ -429,7 +429,7 @@ import Testing
             !DeviceInstance.all(state: state).contains(device) && DeviceInstance.all(state: state).contains(device4)
         )
         // A delete interrupted after its rename: never listed, even with a valid record; finished by the launch sweep.
-        let tornID = UUID()
+        let tornID = Foundation.UUID()
         let torn = state.appendingPathComponent("Devices/.deleting-\(tornID.uuidString)")
         try fm.createDirectory(at: torn.appendingPathComponent("base/nand"), withIntermediateDirectories: true)
         let ghost = String(decoding: try DeviceInstance.encoder.encode(device4), as: UTF8.self)
@@ -451,10 +451,10 @@ import Testing
                 && !fm.fileExists(atPath: old.appendingPathComponent("device.json").path)
         )
         // Preparing/ leftovers, read-only ones and a torn .publish included.
-        let stale = f.preparing.appendingPathComponent("\(UUID().uuidString)/nand")
+        let stale = f.preparing.appendingPathComponent("\(Foundation.UUID().uuidString)/nand")
         try fm.createDirectory(at: stale, withIntermediateDirectories: true)
         try fm.createDirectory(
-            at: f.preparing.appendingPathComponent("\(UUID().uuidString).publish/base"),
+            at: f.preparing.appendingPathComponent("\(Foundation.UUID().uuidString).publish/base"),
             withIntermediateDirectories: true
         )
         chmod(stale.path, 0o555)

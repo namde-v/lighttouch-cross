@@ -66,8 +66,11 @@ struct KBootTests {
         func seg(_ name: String, _ vm: UInt32, _ vs: UInt32, _ fo: UInt32, _ fs: UInt32) -> Data {
             le([1, 56]) + DeviceTree.name32(name).prefix(16) + le([vm, vs, fo, fs, 7, 7, 0, 0])
         }
+        // (computed outside the literal: the Windows compiler mis-infers
+        // `base + literal` inside an array literal)
+        let threadTail = base + 0x1040
         let threadWords: [UInt32] =
-            [5, 16 + 64, 1, 16] + [UInt32](repeating: 0, count: 15) + [base + 0x1040]
+            [5, 16 + 64, 1, 16] + [UInt32](repeating: 0, count: 15) + [threadTail]
         let thread = le(threadWords)
         let cmds =
             seg("__TEXT", base + 0x1000, 0x2000, 0, 0x2000) + seg("__DATA", base + 0x3000, 0x1800, 0x2000, 0x10)

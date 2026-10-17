@@ -64,7 +64,8 @@ struct VibrationBuzzTests {
         #expect(largestStep < 0.1)
         buzz.observe(running: false, pulses: 1)
         let end = render(buzz, seconds: 0.05)
-        let joined = [start.last ?? 0] + end
+        // (explicit [Float]: the Windows compiler mis-infers the literal's element type inline)
+        let joined: [Float] = [start.last ?? 0] + end
         #expect((zip(joined, joined.dropFirst()).map { abs($1 - $0) }.max() ?? 0) < 0.1)
     }
 }

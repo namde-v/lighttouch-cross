@@ -93,7 +93,7 @@ import Testing
 
     /// A preparation's last step: its output copied into Preparing/<id>/, published.
     func publishPrepared(_ base: URL, state: URL) throws -> DeviceInstance {
-        let id = UUID()
+        let id = Foundation.UUID()
         let staging = PreparationJob.preparing(state).appendingPathComponent(id.uuidString, isDirectory: true)
         try StorageLocations.privateDirectory(staging.deletingLastPathComponent())
         try fm.copyItem(at: base, to: staging)
@@ -111,7 +111,7 @@ import Testing
                 "{", "[]", #"{"boot_strategy":null}"#, #"{"boot_strategy":17}"#, #"{"boot_strategy":false}"#,
                 #"{"boot_strategy":[]}"#, #"{"boot_strategy":{}}"#,
             ] {
-                let id = UUID()
+                let id = Foundation.UUID()
                 let staging = PreparationJob.preparing(state).appendingPathComponent(id.uuidString)
                 try StorageLocations.privateDirectory(staging.deletingLastPathComponent())
                 try fm.copyItem(at: base, to: staging)
@@ -212,6 +212,9 @@ import Testing
             // hop between pool threads, so per-thread CPU time isn't comparable
             // across ticks. Return wall time instead.
             return Date().timeIntervalSinceReferenceDate
+            #elseif os(Windows)
+            // No clock_gettime on Windows; wall time is the portable fallback.
+            return Date().timeIntervalSinceReferenceDate
             #else
             var t = timespec()
             clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t)
@@ -247,7 +250,7 @@ import Testing
 
     /// The 1.0 root and a multidevice state with an adopted (legacyBundled) iPod. `big`: a 160 MB retained IPA and
     /// 24,000 old pages (about 260 MB), so the erase takes a while. Bundle IDs carry `tag` (the IPA library is shared).
-    nonisolated static func oldLayout(support: URL, state: URL, tag: String, big: Bool) throws -> UUID {
+    nonisolated static func oldLayout(support: URL, state: URL, tag: String, big: Bool) throws -> Foundation.UUID {
         let fm = FileManager.default
         func put(_ data: Data, _ path: String, in root: URL) throws {
             let url = root.appendingPathComponent(path)
@@ -277,7 +280,7 @@ import Testing
         try put(Data("paired".utf8), "work/usbmuxd-conf/device.plist", in: state)
         try put(Data("host".utf8), "work/usbmuxd-conf/SystemConfiguration.plist", in: state)
         try put(Data("{}".utf8), "Library/IPAs/index.json", in: state)
-        let record = UUID()
+        let record = Foundation.UUID()
         try put(
             big ? LibraryFixtures.randomData(160 << 20) : Data("retained \(tag)".utf8),
             "Devices/\(record.uuidString)/IPAs/com.example.\(tag).retained.ipa",
@@ -316,7 +319,7 @@ import Testing
         try await LibraryFixtures.withScratch { root in
             let support = root.appendingPathComponent("Library/Application Support")
             let state = support.appendingPathComponent("gold.samhenri.LightTouchMac")
-            let tag = String(UUID().uuidString.prefix(8)).lowercased()
+            let tag = String(Foundation.UUID().uuidString.prefix(8)).lowercased()
             _ = try await Task.detached { try Self.oldLayout(support: support, state: state, tag: tag, big: true) }
                 .value
 
@@ -415,7 +418,7 @@ import Testing
         try await LibraryFixtures.withScratch { root in
             let support = root.appendingPathComponent("Library/Application Support")
             let state = support.appendingPathComponent("gold.samhenri.LightTouchMac")
-            let tag = String(UUID().uuidString.prefix(8)).lowercased()
+            let tag = String(Foundation.UUID().uuidString.prefix(8)).lowercased()
             let record = try Self.oldLayout(support: support, state: state, tag: tag, big: false)
             // How far the quit got: the shared IPA adopted and the record gone; the old trees and the old root still here.
             await IPALibrary.adopt(copies: state.appendingPathComponent("IPAs"))

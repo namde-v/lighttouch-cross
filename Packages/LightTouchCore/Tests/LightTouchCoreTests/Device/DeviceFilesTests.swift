@@ -1,6 +1,8 @@
 import Foundation
 #if os(Linux)
 import Glibc
+#elseif os(Windows)
+import WinSDK
 #endif
 import Testing
 
@@ -57,6 +59,33 @@ struct DeviceFilesTests {
         } else {
             try fm.setAttributes([.posixPermissions: 0o555], ofItemAtPath: nand.path)
         }
+        #elseif os(Windows)
+        // The read-only attribute is the lock primitive on Windows.
+        func setReadOnly(_ path: String, _ readOnly: Bool) {
+            var wide = Array(path.utf16)
+            wide.append(0)
+            wide.withUnsafeBufferPointer { buffer in
+                guard let wpath = buffer.baseAddress else { return }
+                var attrs = GetFileAttributesW(wpath)
+                guard attrs != INVALID_FILE_ATTRIBUTES else { return }
+                if readOnly { attrs |= DWORD(FILE_ATTRIBUTE_READONLY) }
+                else { attrs &= ~DWORD(FILE_ATTRIBUTE_READONLY) }
+                _ = SetFileAttributesW(wpath, attrs)
+            }
+        }
+        func isReadOnly(_ path: String) -> Bool {
+            var wide = Array(path.utf16)
+            wide.append(0)
+            return wide.withUnsafeBufferPointer { buffer in
+                guard let wpath = buffer.baseAddress else { return false }
+                let attrs = GetFileAttributesW(wpath)
+                return attrs != INVALID_FILE_ATTRIBUTES && attrs & DWORD(FILE_ATTRIBUTE_READONLY) != 0
+            }
+        }
+        setReadOnly(nand.path, false)
+        DeviceStateStorage.lockBase(base)
+        #expect(!isReadOnly(nand.path), "lockBase walked a locked base")
+        setReadOnly(nand.path, true)
         #else
         chflags(nand.path, 0)
         DeviceStateStorage.lockBase(base)
