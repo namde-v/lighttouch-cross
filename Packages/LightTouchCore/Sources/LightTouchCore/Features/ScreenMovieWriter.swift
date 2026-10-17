@@ -187,11 +187,13 @@ public actor ScreenMovieWriter {
             case .exited(0): break
             case .exited(let code):
                 sessionError = CaptureError.failed("The recording couldn’t be encoded (ffmpeg exited \(code)).")
+            #if !os(Windows)
             case .signaled(let code):
                 // SIGKILL on cancel() is expected; anything else is a failure.
                 if phase != .idle {
                     sessionError = CaptureError.failed("The recording couldn’t be encoded (signal \(code)).")
                 }
+            #endif
             }
         } catch is CancellationError {
             // cancel() drives this; the session is over either way.
@@ -204,7 +206,9 @@ public actor ScreenMovieWriter {
     public func append(_ image: LTMImage?, seconds: Double) async throws {
         guard phase == .recording else { return }
         if let error = sessionError { throw error }
+        #if !os(Windows)
         _ = try await drainAudio()
+        #endif
         guard let image else { return }
         let seconds = capture?.seconds ?? seconds
         let target = max(0, Int((seconds * Self.fps).rounded()))
@@ -304,6 +308,7 @@ public actor ScreenMovieWriter {
         }
         do {
             guard count > 0 else { throw CaptureError.failed("No device frames were recorded.") }
+            #if !os(Windows)
             // The helper drains what the guest had queued after the stop (<= 1 s),
             // then says so (.audioEnded).
             let deadline = ContinuousClock.now + .seconds(10)
@@ -319,6 +324,7 @@ public actor ScreenMovieWriter {
             // The audio timeline ends where the take does.
             try appendAudio(Data(), seconds: end, through: end)
             if audioFD >= 0 { close(audioFD); audioFD = -1 }
+            #endif
             frameContinuation?.finish()
             frameContinuation = nil
             frameStream = nil
