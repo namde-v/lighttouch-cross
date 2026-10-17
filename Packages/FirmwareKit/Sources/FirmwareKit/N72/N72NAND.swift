@@ -295,7 +295,8 @@ public enum N72NAND {
         let tmp = dir.appendingPathComponent(".\(url.lastPathComponent).tmp")
         try data.write(to: tmp)
         #if os(Windows)
-        let fd = open(tmp.path, O_RDONLY | _O_BINARY)
+        // winOpen: the POSIX open spelling crashes Swift 6.2.4's Windows overlay at runtime.
+        let fd = winOpen(tmp.path, read: true)
         #else
         let fd = open(tmp.path, O_RDONLY)
         #endif
@@ -305,10 +306,14 @@ public enum N72NAND {
             try? FileManager.default.removeItem(at: tmp)
             throw error
         }
+        #if os(Windows)
+        // No directory open/fsync on Windows; the file fsync above is the durable bit.
+        #else
         let dfd = open(dir.path, O_RDONLY)
         if dfd >= 0 {
             fsync(dfd)
             close(dfd)
         }
+        #endif
     }
 }

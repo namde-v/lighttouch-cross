@@ -405,7 +405,8 @@ public actor StorageGeneration {
         let isDirectory = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
         guard !isDirectory else { return }
         // O_NOFOLLOW has no Windows equivalent; these are internal storage paths.
-        let fd = open(url.path, O_RDONLY | _O_BINARY | O_CLOEXEC)
+        // winOpen: the POSIX open spelling crashes Swift 6.2.4's Windows overlay at runtime.
+        let fd = winOpen(url.path, read: true)
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         defer { posixClose(fd) }
         guard fsync(fd) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
@@ -447,8 +448,8 @@ public actor StorageGeneration {
         let temporary = destination.deletingLastPathComponent().appendingPathComponent(".\(Foundation.UUID().uuidString).tmp")
         #if os(Windows)
         // O_NOFOLLOW has no Windows equivalent; O_EXCL on a fresh temp name is the symlink defense here.
-        // _O_BINARY: the UCRT defaults to text mode (CRLF translation).
-        let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | _O_BINARY, 0o600)
+        // winOpen: the POSIX open spelling crashes Swift 6.2.4's Windows overlay at runtime.
+        let fd = winOpen(temporary.path, write: true, create: true, exclusive: true)
         #else
         let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o600)
         #endif

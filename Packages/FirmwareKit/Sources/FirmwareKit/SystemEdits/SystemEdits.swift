@@ -861,8 +861,8 @@ public enum SystemEdits {
     /// it 0666 & ~umask if absent; with `mode`, then sets the permission bits.
     static func put(_ data: Data, _ url: URL, mode: mode_t? = nil) throws {
         #if os(Windows)
-        // _O_BINARY: the UCRT defaults to text mode (CRLF translation), which corrupts binary data.
-        let fd = open(url.path, O_WRONLY | O_CREAT | O_TRUNC | _O_BINARY, 0o666)
+        // winOpen: the POSIX open spelling crashes Swift 6.2.4's Windows overlay at runtime.
+        let fd = winOpen(url.path, write: true, create: true, truncate: true)
         #else
         let fd = open(url.path, O_WRONLY | O_CREAT | O_TRUNC, 0o666)
         #endif

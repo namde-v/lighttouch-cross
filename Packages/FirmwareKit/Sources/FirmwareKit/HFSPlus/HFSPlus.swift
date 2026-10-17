@@ -84,8 +84,8 @@ public final class HFSPlusVolume {
         self.url = url
         self.writable = writable
         #if os(Windows)
-        // _O_BINARY: the UCRT defaults to text mode (CRLF translation), which corrupts image I/O.
-        fd = open(url.path, (writable ? O_RDWR : O_RDONLY) | _O_BINARY)
+        // winOpen: the POSIX open spelling crashes Swift 6.2.4's Windows overlay at runtime.
+        fd = winOpen(url.path, read: true, write: writable)
         #else
         fd = open(url.path, writable ? O_RDWR : O_RDONLY)
         #endif

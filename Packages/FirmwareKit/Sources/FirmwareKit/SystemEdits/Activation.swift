@@ -84,7 +84,8 @@ public enum Activation {
         guard chmod(file.path, 0o666) == 0 else {
             throw ActivationFailure("Cannot make activation target writable")
         }
-        let out = open(file.path, O_WRONLY | _O_BINARY)
+        // winOpen: the POSIX open spelling crashes Swift 6.2.4's Windows overlay at runtime.
+        let out = winOpen(file.path, write: true)
         guard out >= 0 else { throw ActivationFailure("Cannot open activation target") }
         defer { close(out) }
         try after.withUnsafeBytes { bytes in

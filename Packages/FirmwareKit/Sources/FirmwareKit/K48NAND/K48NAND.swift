@@ -203,7 +203,8 @@ public enum K48NAND {
                 for c in 0..<geo.cePerBus {
                     let p = dir.appendingPathComponent("bus\(b)-ce\(c).pages").path
                     #if os(Windows)
-                    let fd = open(p, O_RDWR | O_CREAT | O_TRUNC | _O_BINARY, 0o644)
+                    // winOpen: the POSIX open spelling crashes Swift 6.2.4's Windows overlay at runtime.
+                    let fd = winOpen(p, read: true, write: true, create: true, truncate: true)
                     #else
                     let fd = open(p, O_RDWR | O_CREAT | O_TRUNC, 0o644)
                     #endif
@@ -504,7 +505,8 @@ public enum K48NAND {
         var buf: [UInt8]
         init(_ url: URL, page: Int, patch: [Int: [(Int, [UInt8])]] = [:]) throws {
             #if os(Windows)
-            fd = open(url.path, O_RDONLY | _O_BINARY)
+            // winOpen: the POSIX open spelling crashes Swift 6.2.4's Windows overlay at runtime.
+            fd = winOpen(url.path, read: true)
             #else
             fd = open(url.path, O_RDONLY)
             #endif
