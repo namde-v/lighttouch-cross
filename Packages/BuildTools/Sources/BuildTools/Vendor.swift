@@ -228,8 +228,6 @@ public struct Vendor {
         // _open/open are variadic (unavailable in Swift) and the POSIX open
         // spelling crashes at runtime; use CreateFileW + _open_osfhandle to get
         // a CRT descriptor the caller can close() (closing releases the lock).
-        // DIAG: temporary crash diagnostics (stderr, unbuffered).
-        fputs("vendor-diag: lock enter\n", stderr)
         let wide = Array(path.utf16) + [0]
         let handle: UnsafeMutableRawPointer? = wide.withUnsafeBufferPointer { buf in
             CreateFileW(
@@ -237,26 +235,21 @@ public struct Vendor {
                 DWORD(FILE_SHARE_READ) | DWORD(FILE_SHARE_WRITE) | DWORD(FILE_SHARE_DELETE),
                 nil, DWORD(OPEN_ALWAYS), DWORD(FILE_ATTRIBUTE_NORMAL), nil)
         }
-        fputs("vendor-diag: CreateFileW ok=\(handle != nil && handle != INVALID_HANDLE_VALUE)\n", stderr)
         guard let handle, handle != INVALID_HANDLE_VALUE else {
             throw ToolError("vendor: cannot open \(path)")
         }
         // _open_osfhandle transfers ownership: close(fd) closes the HANDLE.
         let fd = _open_osfhandle(Int(bitPattern: handle), O_RDWR)
-        fputs("vendor-diag: _open_osfhandle -> \(fd)\n", stderr)
         guard fd >= 0 else {
             CloseHandle(handle)
             throw ToolError("vendor: cannot open \(path)")
         }
-        fputs("vendor-diag: trying lock\n", stderr)
         if !windowsTryLock(fd) {
-            fputs("vendor-diag: tryLock failed, waiting\n", stderr)
             waiting()
             guard let handle = windowsLockHandle(fd) else {
                 close(fd)
                 throw ToolError("vendor: cannot lock \(path)")
             }
-            fputs("vendor-diag: entering LockFileEx loop\n", stderr)
             var overlapped = OVERLAPPED()
             while !LockFileEx(handle, DWORD(LOCKFILE_EXCLUSIVE_LOCK), 0, 1, 0, &overlapped) {
                 guard GetLastError() == DWORD(ERROR_LOCK_VIOLATION) else {
@@ -265,9 +258,7 @@ public struct Vendor {
                 }
                 Sleep(20)
             }
-            fputs("vendor-diag: LockFileEx acquired\n", stderr)
         }
-        fputs("vendor-diag: lock returning fd\n", stderr)
         return fd
         #else
         let fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0o644)

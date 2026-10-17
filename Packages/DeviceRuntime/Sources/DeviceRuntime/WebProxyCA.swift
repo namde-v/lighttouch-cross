@@ -59,20 +59,13 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
         // No flock(2) or O_NOFOLLOW on Windows: an exclusive LockFileEx on the
         // CRT descriptor's HANDLE (see StorageLease), refusing reparse points
         // (symlinks, junctions) as O_NOFOLLOW does on POSIX.
-        // DIAG: temporary crash diagnostics (stderr, unbuffered).
-        func diag(_ s: String) { fputs("webproxyca-diag: \(s)\n", stderr) }
-        diag("enter prepare")
         let lockPath = config.path + ".ca.lock"
-        diag("lockPath=\(lockPath)")
         if isReparsePoint(lockPath) { throw Failure.unreadable("lock") }
-        diag("isReparsePoint ok")
         let lock = open(lockPath, O_RDWR | O_CREAT | _O_NOINHERIT, 0o600)
-        diag("open -> \(lock)")
         guard lock >= 0, lockExclusive(lock) else {
             if lock >= 0 { _ = WinSDK.close(lock) }
             throw Failure.unreadable("lock")
         }
-        diag("lockExclusive ok")
         defer {
             unlock(lock)
             _ = WinSDK.close(lock)
@@ -87,18 +80,9 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
         if FileManager.default.fileExists(atPath: pem.path) {
             ca = try load(config: config)
         } else {
-            #if os(Windows)
-            diag("generating key")
-            #endif
             let key = try newKey()
-            #if os(Windows)
-            diag("key ok")
-            #endif
             let name = DER.name("Light Touch Device Proxy")
             let der = try certificate(key: key, issuerKey: key, issuer: name, subject: name, days: 3650, host: nil)
-            #if os(Windows)
-            diag("certificate ok")
-            #endif
             let text =
                 "-----BEGIN PRIVATE KEY-----\n"
                 + key.pkcs8DERRepresentation.base64EncodedString(options: .lineLength64Characters)
@@ -106,13 +90,7 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
                 + der.base64EncodedString(options: .lineLength64Characters)
                 + "\n-----END CERTIFICATE-----\n"
             try save(Data(text.utf8), to: pem, mode: 0o600)
-            #if os(Windows)
-            diag("save pem ok")
-            #endif
             ca = try load(config: config)
-            #if os(Windows)
-            diag("load ok")
-            #endif
         }
         try save(ca.certificateDER, to: URL(fileURLWithPath: config.path + ".ca.der"), mode: 0o644)
         return ca
@@ -122,18 +100,15 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
     public static func load(config: URL) throws -> WebProxyCA {
         let path = config.path + ".ca.pem"
         #if os(Windows)
-        fputs("webproxyca-diag: load enter\n", stderr)
         // No POSIX ownership/mode bits on Windows: refuse reparse points and
         // require a regular file. A file the app creates in its own state
         // directory is owner-only by default ACL, which is the property the
         // POSIX checks below are after.
         guard !isReparsePoint(path), isRegularFile(path) else { throw Failure.unreadable(path) }
-        fputs("webproxyca-diag: load checks ok\n", stderr)
         // _open is variadic (unavailable in Swift); read via Foundation instead.
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
               let text = String(data: data, encoding: .utf8)
         else { throw Failure.unreadable(path) }
-        fputs("webproxyca-diag: load read ok\n", stderr)
         guard let pkcs8 = pemBlock(text, "PRIVATE KEY"),
             let certDER = pemBlock(text, "CERTIFICATE"),
             let key = try? _RSA.Signing.PrivateKey(derRepresentation: pkcs8),
@@ -168,9 +143,6 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
     /// A TLS server identity for `host` (a DNS name or an IP literal), valid for a week, under this CA:
     /// the DER certificate plus its key, for the proxy's TLS stack.
     public func identity(for host: String, key leafKey: _RSA.Signing.PrivateKey) throws -> WebProxyLeafIdentity {
-        #if os(Windows)
-        fputs("webproxyca-diag: identity for \(host)\n", stderr)
-        #endif
         let der = try Self.certificate(
             key: leafKey,
             issuerKey: key,
@@ -210,16 +182,10 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
         let spki = DER.seq(rsa, DER.bitString(try rsaPublicKeyBytes(key.publicKey.derRepresentation)))
         var extensions: [Data]
         if let host {
-            #if os(Windows)
-            fputs("webproxyca-diag: certificate host branch for \(host)\n", stderr)
-            #endif
             let ip = [AF_INET, AF_INET6].lazy.compactMap { family -> Data? in
                 var bytes = [UInt8](repeating: 0, count: 16)
                 return inet_pton(family, host, &bytes) == 1 ? Data(bytes.prefix(family == AF_INET ? 4 : 16)) : nil
             }.first
-            #if os(Windows)
-            fputs("webproxyca-diag: inet_pton done\n", stderr)
-            #endif
             guard host.utf8.count <= 253, !host.isEmpty,
                 host.unicodeScalars.allSatisfy({
                     $0.isASCII && (CharacterSet.alphanumerics.contains($0) || ".-:".unicodeScalars.contains($0))
