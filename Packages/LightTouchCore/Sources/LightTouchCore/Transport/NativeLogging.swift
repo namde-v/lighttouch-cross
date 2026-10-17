@@ -10,6 +10,9 @@ import WinSDK
 import Darwin
 #endif
 import HostServiceWire
+#if os(Windows)
+import HostRuntime  // winOpen (CreateFileW + _open_osfhandle); POSIX open() is broken on this toolchain.
+#endif
 
 
 /// Synchronous low-level writer shared by pipe readers. The lock protects the
@@ -84,7 +87,7 @@ public nonisolated final class RotatingLog: @unchecked Sendable {
         {
             throw CocoaError(.fileWriteUnknown)
         }
-        let descriptor = open(url.path, O_WRONLY | O_APPEND | O_CREAT | _O_NOINHERIT, 0o600)
+        let descriptor = winOpen(url.path, write: true, create: true, append: true)
         guard descriptor >= 0 else { throw StorageLocations.posixError() }
         let raw = _get_osfhandle(descriptor)
         guard raw != -1, let handle = UnsafeMutableRawPointer(bitPattern: raw) else {
@@ -127,7 +130,7 @@ public nonisolated final class RotatingLog: @unchecked Sendable {
         #if os(Windows)
         // The open file is still the path's file when a fresh open of the
         // path yields the same volume serial + file index.
-        let descriptor = open(url.path, O_RDONLY | _O_NOINHERIT, 0o600)
+        let descriptor = winOpen(url.path, read: true)
         guard descriptor >= 0 else { return false }
         defer { close(descriptor) }
         let raw = _get_osfhandle(descriptor)

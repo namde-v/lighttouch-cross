@@ -293,7 +293,14 @@ public final class ScreenRecordingSession {
         try FileManager.default.copyItem(at: source, to: staged)
         if replaceExisting, FileManager.default.fileExists(atPath: destination.path) {
             // NSSavePanel obtained the user's replacement decision.
+            #if os(Windows)
+            // replaceItemAt is not implemented in swift-foundation on Windows
+            // (it traps); remove-then-move replaces atomically enough here.
+            try? FileManager.default.removeItem(at: destination)
+            try FileManager.default.moveItem(at: staged, to: destination)
+            #else
             _ = try FileManager.default.replaceItemAt(destination, withItemAt: staged)
+            #endif
         } else {
             try FileManager.default.moveItem(at: staged, to: destination)
         }

@@ -47,6 +47,8 @@ struct DiagnosticsExportTests {
         let summary = DiagnosticsExport.systemSummary()
         #if os(Linux)
         #expect(summary.contains("Linux "))
+        #elseif os(Windows)
+        #expect(summary.contains("Windows "))
         #else
         #expect(summary.contains("macOS ") && summary.contains(ProcessInfo.processInfo.operatingSystemVersionString))
         #endif
@@ -198,6 +200,8 @@ struct DiagnosticsExportTests {
     /// names, the device's own identifiers and anything shaped like one are gone from the text, and a crash report
     /// loses its identifying members while its stacks and binary images stay byte for byte.
     @Test func exportIsScrubbed() async throws {
+        // Unix-only: shells out to /usr/bin/unzip (and the default archiver is ditto/zip).
+        #if !os(Windows)
         try await LibraryFixtures.withScratch { root in
             let identity = DiagnosticsExport.HostIdentity(
                 home: "/Users/jappleseed",
@@ -277,4 +281,5 @@ struct DiagnosticsExportTests {
             #expect(parts.count == 2 && parts.allSatisfy { (try? JSONSerialization.jsonObject(with: $0)) != nil })
         }
     }
+    #endif
 }

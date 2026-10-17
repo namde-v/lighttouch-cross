@@ -257,7 +257,8 @@ struct BootRecipeTests {
             contentsOf: repositoryRoot.appendingPathComponent("tests/fixtures/frontmost-9B206-setup.tsv"),
             encoding: .utf8
         )
-        let seq: [Poll] = text.split(separator: "\n").map {
+        // Windows checkouts may carry CRLF line endings.
+        let seq: [Poll] = text.replacingOccurrences(of: "\r\n", with: "\n").split(separator: "\n").map {
             let f = $0.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
             return (f[0].isEmpty ? nil : f[0], f.count > 1 && !f[1].isEmpty ? f[1] : nil)
         }

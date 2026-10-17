@@ -13,17 +13,19 @@ import WinSDK
 /// permissions are ACLs). The descriptor is always _O_BINARY (no CRLF
 /// translation) and _O_NOINHERIT (the O_CLOEXEC equivalent). Returns -1 on
 /// failure.
-func winOpen(
+public func winOpen(
     _ path: String,
     read: Bool = false,
     write: Bool = false,
     create: Bool = false,
     truncate truncateExisting: Bool = false,
-    exclusive: Bool = false
+    exclusive: Bool = false,
+    append: Bool = false
 ) -> Int32 {
     var access = DWORD(0)
     if read { access |= DWORD(GENERIC_READ) }
     if write { access |= DWORD(GENERIC_WRITE) }
+    if append { access |= DWORD(FILE_APPEND_DATA) }
     let creation: DWORD
     switch (create, truncateExisting, exclusive) {
     case (_, _, true): creation = DWORD(CREATE_NEW) // O_CREAT|O_EXCL
@@ -47,7 +49,7 @@ func winOpen(
     guard let handle, handle != INVALID_HANDLE_VALUE else { return -1 }
     // Match BuildTools' proven pattern: pass the O_* access mode directly.
     let osfFlags: Int32
-    if read, write { osfFlags = O_RDWR } else if write { osfFlags = O_WRONLY } else { osfFlags = O_RDONLY }
+    if read, write { osfFlags = O_RDWR } else if write || append { osfFlags = O_WRONLY } else { osfFlags = O_RDONLY }
     let fd = _open_osfhandle(Int(bitPattern: handle), osfFlags)
     if fd == -1 { CloseHandle(handle) }
     return fd

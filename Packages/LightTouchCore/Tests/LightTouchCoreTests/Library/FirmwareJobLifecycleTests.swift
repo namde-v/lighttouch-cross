@@ -8,6 +8,8 @@ import Testing
 /// FirmwareJobs' bookkeeping across the commands a user can mix (the state audit's B-1, B-2, B-3, B-12): Try Again
 /// right after Cancel, an IPSW dropped on a job under way, Cancel while an import is checking its IPSW, and a relaunch
 /// with a two-IPSW download half done. Each runs the real FirmwareJobs over its own state with a scripted preparer.
+// The scripted preparer is a POSIX shell script; Windows CI has no shell in the subprocess launch path.
+#if !os(Windows)
 @Suite struct FirmwareJobLifecycleTests {
     typealias Harness = FirmwareJobsTests.Harness
     init() { _ = LibraryFixtures.isolatedAppState }
@@ -277,3 +279,5 @@ import Testing
         }
     }
 }
+
+#endif

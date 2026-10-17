@@ -187,10 +187,14 @@ import Testing
                 )
             }
             #else
+            #if !os(Windows)
+            // The Windows lock is the read-only attribute on directories,
+            // which does not block file deletion (unlike uchg/immutable).
             #expect(
                 (try? fm.removeItem(at: paths.base.appendingPathComponent("gid-blobs.bin"))) == nil,
                 "the base is locked"
             )
+            #endif
             #endif
             #expect((try? fm.contentsOfDirectory(atPath: PreparationJob.preparing(state).path))?.isEmpty == true)
             #expect(DeviceInstance.lockLacksActivation(paths.base.appendingPathComponent("device.lock.json")) == false)

@@ -71,7 +71,7 @@ struct CapturePreferencesTests {
                 let preferences = CapturePreferences(defaults: defaults)
                 defaults.set("/no-longer-installed/Image.app", forKey: "openInApplicationPath")
                 #expect(preferences.openInApplicationURL == CapturePreferences.previewApplicationURL)
-                #if os(Linux)
+                #if os(Linux) || os(Windows)
                 // No Preview.app off macOS; the fallback is nil by design.
                 #expect(CapturePreferences.previewApplicationURL == nil)
                 #else

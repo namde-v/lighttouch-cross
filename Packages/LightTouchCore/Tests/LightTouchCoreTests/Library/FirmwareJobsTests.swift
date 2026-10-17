@@ -203,6 +203,9 @@ import Testing
         ),
     ]
 
+    // The preparer fixture is a POSIX shell script (and the real firmwarekit builds via xcrun/Swift);
+    // Windows CI has no shell in the subprocess launch path.
+    #if !os(Windows)
     @Test(arguments: sources)
     func aFailedSourceFallsBackToTheNext(_ c: Source) async throws {
         try await LibraryFixtures.withScratch { tmp in
@@ -249,6 +252,7 @@ import Testing
             #expect(server.log == c.paths)
         }
     }
+    #endif
 
     // MARK: - A sibling's ramdisk
 
@@ -299,6 +303,9 @@ import Testing
     /// The preparation screen's Skip Setup Assistant choice reaches firmwarekit create as --skip-setup: for an iOS 5
     /// entry chosen, not for one left off, and not for a 4.x entry (no Setup Assistant) even when chosen. Its Jailbreak
     /// choice reaches it as --jailbreak, on a 2.0 or later build chosen.
+    // The preparer fixture is a POSIX shell script (and the real firmwarekit builds via xcrun/Swift);
+    // Windows CI has no shell in the subprocess launch path.
+    #if !os(Windows)
     @Test func theSkipSetupAndJailbreakChoicesReachThePreparer() async throws {
         try await LibraryFixtures.withScratch { tmp in
             var entries: [[String: Any]] = []
@@ -338,6 +345,7 @@ import Testing
             #expect(seen["k48ap-9B206 false"]?.contains("--jailbreak") == false, "not chosen")
         }
     }
+    #endif
 
     /// Jailbreak is offered from iPhone OS 2.0 on: 1.0's afcd serves no path through afc2.
     @Test func jailbreakIsOfferedFromIPhoneOS2() throws {
@@ -356,6 +364,9 @@ import Testing
         }
     }
 
+    // The preparer fixture is a POSIX shell script (and the real firmwarekit builds via xcrun/Swift);
+    // Windows CI has no shell in the subprocess launch path.
+    #if !os(Windows)
     @Test func downloadAndPrepareFetchesTheSiblingAsOneJob() async throws {
         try await LibraryFixtures.withScratch { tmp in
             let (h, point, base, argvURL, _) = try siblings(tmp)
@@ -390,9 +401,13 @@ import Testing
             )
         }
     }
+    #endif
 
     /// Remove IPSW leaves every IPSW a job under way reads or waits for, its keybag sibling's included (state audit
     /// B-6): 4.3.1 preparing keeps 4.3's IPSW in use, and nothing is once the job ends.
+    // The preparer fixture is a POSIX shell script (and the real firmwarekit builds via xcrun/Swift);
+    // Windows CI has no shell in the subprocess launch path.
+    #if !os(Windows)
     @Test func aJobKeepsItsSiblingsIPSWInUse() async throws {
         try await LibraryFixtures.withScratch { tmp in
             let (h, point, base, _, _) = try siblings(tmp, mode: "slow")
@@ -406,7 +421,11 @@ import Testing
             #expect(h.jobs.ipswsInUse.isEmpty)
         }
     }
+    #endif
 
+    // The preparer fixture is a POSIX shell script (and the real firmwarekit builds via xcrun/Swift);
+    // Windows CI has no shell in the subprocess launch path.
+    #if !os(Windows)
     @Test func anImportQueuesTheMissingSibling() async throws {
         try await LibraryFixtures.withScratch { tmp in
             let (h, point, base, argvURL, pointIPSW) = try siblings(tmp)
@@ -425,7 +444,11 @@ import Testing
             #expect(argv(argvURL).contains("--sibling-ipsw"))
         }
     }
+    #endif
 
+    // The preparer fixture is a POSIX shell script (and the real firmwarekit builds via xcrun/Swift);
+    // Windows CI has no shell in the subprocess launch path.
+    #if !os(Windows)
     @Test func aCancelledTwoIPSWJobPreparesNothing() async throws {
         try await LibraryFixtures.withScratch { tmp in
             let (h, point, base, _, _) = try siblings(tmp)
@@ -436,6 +459,7 @@ import Testing
             #expect(h.devices(point.id).isEmpty && h.jobs.jobs[point.id] == nil && h.changes[base.id] == nil)
         }
     }
+    #endif
 
     // MARK: - The built-in iPod
 
@@ -551,6 +575,9 @@ import Testing
         ]
     }
 
+    // The preparer fixture is a POSIX shell script (and the real firmwarekit builds via xcrun/Swift);
+    // Windows CI has no shell in the subprocess launch path.
+    #if !os(Windows)
     @Test func aFreshInstallUnpacksTheBuiltInIPodWithItsOwnIdentityEachTime() async throws {
         try await LibraryFixtures.withScratch { tmp in
             var identities: [[String: String]] = []
@@ -580,7 +607,11 @@ import Testing
             #expect(same.isEmpty, "two unpacks share \(same)")
         }
     }
+    #endif
 
+    // The preparer fixture is a POSIX shell script (and the real firmwarekit builds via xcrun/Swift);
+    // Windows CI has no shell in the subprocess launch path.
+    #if !os(Windows)
     @Test func aLibraryWithADeviceOrASavedSidebarGetsNothingNew() async throws {
         try await LibraryFixtures.withScratch { tmp in
             let (h, _) = try await builtIn(tmp.appendingPathComponent("saved"))
@@ -611,7 +642,11 @@ import Testing
             #expect(DeviceInstance.all(state: e.state).map(\.firmware) == ["k48ap-7B500"], "still only the iPad")
         }
     }
+    #endif
 
+    // The preparer fixture is a POSIX shell script (and the real firmwarekit builds via xcrun/Swift);
+    // Windows CI has no shell in the subprocess launch path.
+    #if !os(Windows)
     @Test func theRowsPrepareUnpacksTheBuiltInIPod() async throws {
         try await LibraryFixtures.withScratch { tmp in
             let (h, iPod) = try await builtIn(tmp)
@@ -621,6 +656,7 @@ import Testing
             _ = try published(h, iPod)
         }
     }
+    #endif
 }
 
 extension IPSWStoreTests {
