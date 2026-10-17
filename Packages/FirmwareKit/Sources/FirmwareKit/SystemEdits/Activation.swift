@@ -67,12 +67,21 @@ public enum Activation {
         #if os(Windows)
         // No O_NOFOLLOW or fchmod(2) on Windows: open binary (no CRLF translation) and use the
         // path-based UCRT _chmod, which honors the write bit (read-only vs. writable).
-        let metadata = open(file.path, O_RDONLY | _O_BINARY)
+        let metadata = _open(file.path, O_RDONLY | _O_BINARY)
         guard metadata >= 0 else { throw ActivationFailure("Cannot open activation target") }
         var original = stat()
-        let modeBits: Int32 = Int32(original.st_mode)
-        guard fstat(metadata, &original) == 0, (modeBits & S_IFMT) == S_IFREG else {
-            close(metadata)
+        guard fstat(metadata, &original) == 0 else {
+            _ = close(metadata)
+            throw ActivationFailure("Cannot stat activation target")
+        }
+        // S_IFMT/S_IFREG bitmask confuses swift-frontend 6.2.4's Windows overlay;
+        // check the file attributes directly instead.
+        let wide = Array(file.path.utf16) + [0]
+        let attrs: DWORD = wide.withUnsafeBufferPointer { buf in
+            GetFileAttributesW(buf.baseAddress!)
+        }
+        guard attrs != 0xFFFF_FFFF, attrs & DWORD(FILE_ATTRIBUTE_DIRECTORY) == 0 else {
+            _ = close(metadata)
             throw ActivationFailure("Activation target is not a regular file")
         }
         defer {
