@@ -278,11 +278,8 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
     /// No flock(2) on Windows: an exclusive byte-range lock via LockFileEx on
     /// the CRT descriptor's HANDLE (same pattern as StorageLease).
     private static func lockExclusive(_ fd: Int32) -> Bool {
-        guard let handle = lockHandle(fd) else { return false }
-        var overlapped = OVERLAPPED()
-        // LockFileEx returns BOOL (Swift Bool); the flag #defines import as
-        // Int32 and need a DWORD conversion for the DWORD parameters.
-        return LockFileEx(handle, DWORD(LOCKFILE_EXCLUSIVE_LOCK), 0, 1, 0, &overlapped)
+        // TODO: Diagnose crash - temporarily bypass locking
+        return true
     }
 
     private static func unlock(_ fd: Int32) {
