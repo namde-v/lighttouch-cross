@@ -227,14 +227,20 @@ public struct Vendor {
         // No flock(2) or O_CLOEXEC on Windows: an exclusive LockFileEx on the
         // CRT descriptor's HANDLE. Closing the descriptor (or process exit)
         // releases the lock, matching the flock contract below.
+        // DIAG: temporary crash diagnostics (stderr, unbuffered).
+        fputs("vendor-diag: lock enter\n", stderr)
         let fd = open(path, O_RDWR | O_CREAT, 0o644)
+        fputs("vendor-diag: open -> \(fd)\n", stderr)
         guard fd >= 0 else { throw ToolError("vendor: cannot open \(path): \(String(cString: strerror(errno)))") }
+        fputs("vendor-diag: trying lock\n", stderr)
         if !windowsTryLock(fd) {
+            fputs("vendor-diag: tryLock failed, waiting\n", stderr)
             waiting()
             guard let handle = windowsLockHandle(fd) else {
                 close(fd)
                 throw ToolError("vendor: cannot lock \(path)")
             }
+            fputs("vendor-diag: entering LockFileEx loop\n", stderr)
             var overlapped = OVERLAPPED()
             while !LockFileEx(handle, DWORD(LOCKFILE_EXCLUSIVE_LOCK), 0, 1, 0, &overlapped) {
                 guard GetLastError() == DWORD(ERROR_LOCK_VIOLATION) else {
@@ -243,7 +249,9 @@ public struct Vendor {
                 }
                 Sleep(20)
             }
+            fputs("vendor-diag: LockFileEx acquired\n", stderr)
         }
+        fputs("vendor-diag: lock returning fd\n", stderr)
         return fd
         #else
         let fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0o644)
