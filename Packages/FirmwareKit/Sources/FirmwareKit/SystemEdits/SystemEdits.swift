@@ -804,9 +804,10 @@ public enum SystemEdits {
         moveFirst(dict(dict(net, "Global"), "IPv4"), "ServiceOrder", wifiService)
     }
 
-    #if os(Linux)
-        /// corelibs-foundation ignores `.mutableContainersAndLeaves`, returning Swift value types even for
-        /// dictionaries; deep-convert to the mutable Foundation containers the edit closures expect.
+    #if os(Linux) || os(Windows)
+        /// corelibs-foundation (Linux) and swift-foundation (Windows) ignore `.mutableContainersAndLeaves`,
+        /// returning Swift value types even for dictionaries; deep-convert to the mutable Foundation containers
+        /// the edit closures expect.
         static func mutablePlistValue(_ raw: Any) -> Any {
             if let dict = raw as? [AnyHashable: Any] {
                 let m = NSMutableDictionary(capacity: dict.count)
@@ -830,7 +831,7 @@ public enum SystemEdits {
             options: .mutableContainersAndLeaves,
             format: &fmt
         )
-        #if os(Linux)
+        #if os(Linux) || os(Windows)
             guard let d = mutablePlistValue(raw) as? NSMutableDictionary else {
                 throw FirmwareError(.unsupported, "\(url.lastPathComponent) is not a dictionary plist")
             }

@@ -7,6 +7,8 @@ import Testing
 @Suite struct N72Tests {
     /// Restore ramdisks are encrypted IMG3s outside all_flash. Omitting their
     /// KBAGs aborts the AES model during a stock USB restore, before bootx.
+    /// Needs /usr/bin/zip to build the fixture IPSW, which Windows doesn't have.
+    #if !os(Windows)
     @Test func restoreRamdiskKeysAreExported() throws {
         let entry = try Oracle.entry("n72ap-5F138")
         try Oracle.withTemp { dir in
@@ -56,6 +58,7 @@ import Testing
             #expect(names == ["018-4166-1.dmg", "018-4177-1.dmg"])
         }
     }
+    #endif
 
     /// ipod2g_nand.selfcheck.
     /// iBoot's first AES request encrypts the seed under the UID (mode 6, | 1, | 8 with the mode read back); the NOR

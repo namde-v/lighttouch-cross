@@ -41,7 +41,7 @@ public nonisolated struct StorageRecordPaths: Sendable {
         }
         self.relativeRoot = relativeRoot
         id = (record["id"] as? String).flatMap(UUID.init(uuidString:))
-        absoluteStyle = path.hasPrefix("/")
+        absoluteStyle = Self.isAbsolutePath(path)
         self.base = Self.resolve(path, relativeRoot: relativeRoot)
         self.overlay = Self.resolve(overlay, relativeRoot: relativeRoot)
         snapshot = (storage["snapshot"] as? String).map { Self.resolve($0, relativeRoot: relativeRoot) }
@@ -49,7 +49,22 @@ public nonisolated struct StorageRecordPaths: Sendable {
         usbmuxConf = (storage["usbmuxConf"] as? String).map { Self.resolve($0, relativeRoot: relativeRoot) }
     }
     public static func resolve(_ path: String, relativeRoot: URL) -> URL {
-        path.hasPrefix("/") ? URL(fileURLWithPath: path) : relativeRoot.appendingPathComponent(path)
+        isAbsolutePath(path) ? URL(fileURLWithPath: path) : relativeRoot.appendingPathComponent(path)
+    }
+
+    /// Whether `path` is absolute. On Windows, drive-letter (`C:/`, `C:\`) and UNC (`\\host\share`)
+    /// paths are absolute but don't start with "/".
+    static func isAbsolutePath(_ path: String) -> Bool {
+        #if os(Windows)
+        if path.hasPrefix("/") || path.hasPrefix("\\") { return true }
+        guard path.count >= 3 else { return false }
+        let drive = path[path.startIndex]
+        let colon = path[path.index(path.startIndex, offsetBy: 1)]
+        let slash = path[path.index(path.startIndex, offsetBy: 2)]
+        return drive.isLetter && colon == ":" && (slash == "/" || slash == "\\")
+        #else
+        return path.hasPrefix("/")
+        #endif
     }
     public func recordPath(_ url: URL) throws -> String {
         if absoluteStyle { return url.path }
