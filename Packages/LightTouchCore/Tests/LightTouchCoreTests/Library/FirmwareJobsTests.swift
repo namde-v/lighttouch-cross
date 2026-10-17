@@ -701,8 +701,10 @@ nonisolated final class TestHTTPServer: @unchecked Sendable {
 
     #if os(Windows)
     private static func closeSocket(_ s: SOCKET) { _ = closesocket(s) }
+    private static func isInvalidSocket(_ s: SOCKET) -> Bool { s == INVALID_SOCKET }
     #else
     private static func closeSocket(_ s: Int32) { close(s) }
+    private static func isInvalidSocket(_ s: Int32) -> Bool { s < 0 }
     #endif
 
     init(_ files: [String: Data], hanging: Set<String> = []) async throws {
@@ -799,11 +801,7 @@ nonisolated final class TestHTTPServer: @unchecked Sendable {
             let client = withUnsafeMutablePointer(to: &address) {
                 $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { accept(fd, $0, &length) }
             }
-            #if os(Windows)
-            if client == INVALID_SOCKET {
-            #else
-            if client < 0 {
-            #endif
+            if Self.isInvalidSocket(client) {
                 if lock.withLock({ stopped }) { return }
                 continue
             }

@@ -116,7 +116,10 @@ struct DeviceStateStorageTests {
     /// Erase is atomic (state audit B-8): the overlay is renamed aside before anything in it goes, so one whose removal
     /// fails part way (here a page that can't be unlinked; a crash does the same) is already gone from its path, never
     /// half there with its base identity removed; the launch sweep finishes it.
-    @Test func eraseRenamesTheOverlayAsideFirstAndTheLaunchSweepFinishesIt() throws {
+    // Simulating "a page that can't be unlinked" needs the Linux immutable flag;
+    // Windows has no equivalent (the read-only attribute doesn't stop the owner).
+    #if !os(Windows)
+        @Test func eraseRenamesTheOverlayAsideFirstAndTheLaunchSweepFinishesIt() throws {
         #if os(Linux)
         // Simulating "a page that can't be unlinked" needs the immutable flag;
         // without CAP_LINUX_IMMUTABLE (containers) nothing stops root from
@@ -142,6 +145,7 @@ struct DeviceStateStorageTests {
             #expect(!fm.fileExists(atPath: doomed.path) && fm.fileExists(atPath: device.path))
         }
     }
+    #endif
 
     /// Erase after saved file system edits (Save Changes, then Jailbreak…) returns the device to how it was prepared:
     /// the record selects Devices/<uuid>/base and fresh storage again, the generations and the storage the first edit
