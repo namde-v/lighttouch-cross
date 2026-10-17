@@ -126,8 +126,29 @@ nonisolated enum LibraryFixtures {
         // crashes corelibs-foundation's Process.run instead of throwing.
         _ = try? run("/usr/bin/chflags", ["-R", "nouchg", url.path])
         #endif
-        _ = try? run("/bin/chmod", ["-R", "u+w", url.path])
+        // u+w in-process: spawning /bin/chmod with stderr on
+        // FileHandle.nullDevice fatals on Linux (nullDevice wraps fd -1;
+        // Process.run() synchronizes the handle -> fsync(-1) -> EBADF ->
+        // try! in synchronizeFile() traps -> SIGILL kills the test runner).
+        makeWritable(url)
         try? FileManager.default.removeItem(at: url)
+    }
+
+    /// Recursively ORs owner-write into every entry's posixPermissions,
+    /// in-process (equivalent of `chmod -R u+w`, without spawning).
+    private static func makeWritable(_ url: URL) {
+        let fm = FileManager.default
+        if let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: nil) {
+            for case let item as URL in enumerator {
+                let current =
+                    (try? fm.attributesOfItem(atPath: item.path)[.posixPermissions] as? Int) ?? 0o644
+                try? fm.setAttributes(
+                    [.posixPermissions: current | 0o200], ofItemAtPath: item.path)
+            }
+        }
+        let current =
+            (try? fm.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int) ?? 0o755
+        try? fm.setAttributes([.posixPermissions: current | 0o200], ofItemAtPath: url.path)
     }
 
     /// Like withTemporaryDirectory, for trees with read-only or locked parts.
