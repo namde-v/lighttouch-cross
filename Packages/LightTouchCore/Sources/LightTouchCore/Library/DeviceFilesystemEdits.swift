@@ -37,7 +37,10 @@ public final class DeviceFilesystemEdits {
         open: @escaping (URL) -> Void,
         presentError: @escaping (any Error) -> Void,
         isMounted: @escaping (URL) -> Bool = DeviceFilesystemEdits.isMountPoint,
-        isWriting: @escaping (URL) async -> Bool = DeviceFilesystemEdits.isBeingWritten,
+        // Note: a direct `= DeviceFilesystemEdits.isBeingWritten` default crashes
+        // swift-frontend 6.2.4 on Windows (DefaultInitializerIsolation); the
+        // closure form type-checks fine.
+        isWriting: @escaping (URL) async -> Bool = { await DeviceFilesystemEdits.isBeingWritten($0) },
         poll: Duration = .seconds(1)
     ) {
         self.preparer = preparer
