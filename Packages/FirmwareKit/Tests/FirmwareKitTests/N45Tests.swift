@@ -488,7 +488,13 @@ import Testing
             let key = try #require(Data(hex: e.key(forPath: os).key))
             let dmg = dir.appendingPathComponent("rootfs.dmg")
             let raw = dir.appendingPathComponent("rootfs.hfs")
+            #if os(Windows)
+            // FileHandle.fileDescriptor is unavailable on Windows; the
+            // FileHandle overload reads through the handle instead.
+            try ipsw.stream(os) { try VFDecrypt.decrypt(from: $0, output: dmg, key: key) }
+            #else
             try ipsw.stream(os) { try VFDecrypt.decrypt(from: $0.fileDescriptor, output: dmg, key: key) }
+            #endif
             try await UDIF.extractRootfs(dmg: dmg, to: raw)
             let jobs = try HFSPlusVolume(raw).listing(under: SystemEdits.daemons, hashes: false)
                 .map { ($0.path as NSString).lastPathComponent }.filter { $0.hasSuffix(".plist") }
