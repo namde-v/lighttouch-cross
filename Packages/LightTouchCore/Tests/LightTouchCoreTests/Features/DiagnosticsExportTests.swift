@@ -199,9 +199,9 @@ struct DiagnosticsExportTests {
     /// The archive's logs, info and crash reports carry no identity: the home folder, the user's and the Mac's
     /// names, the device's own identifiers and anything shaped like one are gone from the text, and a crash report
     /// loses its identifying members while its stacks and binary images stay byte for byte.
+    // Unix-only: shells out to /usr/bin/unzip (and the default archiver is ditto/zip).
+    #if !os(Windows)
     @Test func exportIsScrubbed() async throws {
-        // Unix-only: shells out to /usr/bin/unzip (and the default archiver is ditto/zip).
-        #if !os(Windows)
         try await LibraryFixtures.withScratch { root in
             let identity = DiagnosticsExport.HostIdentity(
                 home: "/Users/jappleseed",
