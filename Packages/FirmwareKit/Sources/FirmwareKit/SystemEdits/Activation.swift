@@ -65,23 +65,15 @@ public enum Activation {
         }
         // Preserve the HFS catalog record and its metadata; this file is on a disposable staging volume.
         #if os(Windows)
-        // No O_NOFOLLOW or fchmod(2) on Windows: open binary (no CRLF translation) and use the
-        // path-based UCRT _chmod, which honors the write bit (read-only vs. writable).
-        let metadata = _open(file.path, O_RDONLY | _O_BINARY)
-        guard metadata >= 0 else { throw ActivationFailure("Cannot open activation target") }
-        var original = stat()
-        guard fstat(metadata, &original) == 0 else {
-            _ = close(metadata)
-            throw ActivationFailure("Cannot stat activation target")
-        }
-        // S_IFMT/S_IFREG bitmask confuses swift-frontend 6.2.4's Windows overlay;
-        // check the file attributes directly instead.
+        // No O_NOFOLLOW or fchmod(2) on Windows: use the path-based UCRT _chmod,
+        // which honors the write bit (read-only vs. writable). The regular-file
+        // check uses GetFileAttributesW directly (_open is variadic/unavailable
+        // in Swift, and the POSIX open spelling crashes at runtime).
         let wide = Array(file.path.utf16) + [0]
         let attrs: DWORD = wide.withUnsafeBufferPointer { buf in
             GetFileAttributesW(buf.baseAddress!)
         }
         guard attrs != 0xFFFF_FFFF, attrs & DWORD(FILE_ATTRIBUTE_DIRECTORY) == 0 else {
-            _ = close(metadata)
             throw ActivationFailure("Activation target is not a regular file")
         }
         defer {
