@@ -47,6 +47,19 @@ public nonisolated enum DiagnosticsExport {
             macOS \(ProcessInfo.processInfo.operatingSystemVersionString)
             \(arch) on \(sysctl("hw.model") ?? "?")\(sysctl("machdep.cpu.brand_string").map { ", \($0)" } ?? "")
             """
+        #elseif os(Windows)
+        // uname(2) and sysfs are POSIX-only; on Windows use the OS version string.
+        let versionString = ProcessInfo.processInfo.operatingSystemVersionString
+        #if arch(arm64)
+        let arch = "arm64"
+        #else
+        let arch = "x86_64"
+        #endif
+        return """
+            Light Touch \(version) (\(build))
+            Windows \(versionString)
+            \(arch)
+            """
         #else
         // sysctlbyname is Darwin-only: the same facts from uname(2) and sysfs.
         var uts = utsname()
