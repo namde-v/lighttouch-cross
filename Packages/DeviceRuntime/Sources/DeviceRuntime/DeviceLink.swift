@@ -319,7 +319,7 @@ nonisolated public final class DeviceLink: @unchecked Sendable {
         let (id, channel, dead): (UInt64, LinkChannel<HelperMessage, AppMessage>?, Bool) = lock.withLock {
             let id = nextID
             nextID += 1
-            return (id, channel, invalidated)
+            return (id, self.channel, invalidated)
         }
         guard let channel, !dead else { return queue.async { reply(.failure(.closed("not connected"))) } }
         let timer = DispatchWorkItem { [weak self] in
