@@ -108,7 +108,7 @@ public struct PreparedDeviceBoot {
         try fm.createDirectory(at: overlay, withIntermediateDirectories: true)
         let destination = overlay.appendingPathComponent("nor.bin")
         if !fm.fileExists(atPath: destination.path) {
-            let staged = overlay.appendingPathComponent(".nor-\(UUID().uuidString).tmp")
+            let staged = overlay.appendingPathComponent(".nor-\(Foundation.UUID().uuidString).tmp")
             defer { try? fm.removeItem(at: staged) }
             try fm.copyItem(at: base, to: staged)
             let size = try fm.attributesOfItem(atPath: staged.path)[.size] as? NSNumber

@@ -112,7 +112,7 @@ struct BootTests {
 }
 
 private final class Fixture {
-    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(Foundation.UUID().uuidString)
     var base: URL { root.appendingPathComponent("base, with spaces") }
     var overlay: URL { root.appendingPathComponent("overlay") }
     var nor: URL { root.appendingPathComponent("private-nor") }

@@ -39,13 +39,16 @@ public nonisolated final class StorageLease: Sendable {
         )
         #if os(Windows)
         // No O_NOFOLLOW in the CRT: refuse a lease through a reparse point, as
-        // O_NOFOLLOW does on POSIX. No O_CLOEXEC either: _O_NOINHERIT.
+        // O_NOFOLLOW does on POSIX. winOpen (not POSIX open): the open spelling
+        // imports but crashes swift-frontend 6.2.4's Windows overlay at runtime.
         if Self.isReparsePoint(path) { throw Failure.openFailed(Int32(ERROR_CANT_RESOLVE_FILENAME)) }
-        let fd = open(path.path, O_RDWR | O_CREAT | _O_NOINHERIT, 0o600)
+        let fd = winOpen(path.path, read: true, write: true, create: true)
+        // winOpen does not set errno; report the Win32 error instead.
+        guard fd >= 0 else { throw Failure.openFailed(Int32(GetLastError())) }
         #else
         let fd = open(path.path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
-        #endif
         guard fd >= 0 else { throw Failure.openFailed(errno) }
+        #endif
         do {
             #if os(Windows)
             guard Self.lockExclusive(fd) else { throw Failure.inUse }

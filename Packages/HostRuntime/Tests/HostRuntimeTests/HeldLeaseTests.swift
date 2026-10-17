@@ -6,7 +6,7 @@ import HostRuntime
 /// The helper's lease hold against a stopped device's edit intent (was tests/offline/check-storage-edit-lease.py).
 struct HeldLeaseTests {
     @Test func editIntentRefusesBootKeepsNothingAndResolvingItAdmits() throws {
-        let work = FileManager.default.temporaryDirectory.appendingPathComponent("held-lease-\(UUID().uuidString)/work")
+        let work = FileManager.default.temporaryDirectory.appendingPathComponent("held-lease-\(Foundation.UUID().uuidString)/work")
         try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: work.deletingLastPathComponent()) }
         let path = work.appendingPathComponent("lease").path
@@ -37,7 +37,7 @@ struct HeldLeaseTests {
     }
 
     @Test func aHeldLeaseRefusesASecondHelper() throws {
-        let work = FileManager.default.temporaryDirectory.appendingPathComponent("held-lease-\(UUID().uuidString)/work")
+        let work = FileManager.default.temporaryDirectory.appendingPathComponent("held-lease-\(Foundation.UUID().uuidString)/work")
         defer { try? FileManager.default.removeItem(at: work.deletingLastPathComponent()) }
         let path = work.appendingPathComponent("lease").path
         let first = HeldLease()

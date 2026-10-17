@@ -10,7 +10,7 @@ struct PropertyListFileTests {
     }
 
     @Test func legacyJSONBecomesThePlistOnce() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(Foundation.UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let plist = root.appendingPathComponent("index.plist")
