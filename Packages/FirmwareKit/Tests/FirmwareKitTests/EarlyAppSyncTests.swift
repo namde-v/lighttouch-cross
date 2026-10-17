@@ -95,13 +95,9 @@ struct EarlyAppSyncTests {
             put(32, 48)
             let target = root.appendingPathComponent("modern.dylib")
             try bytes.write(to: target)
-            #if os(Windows)
-            // MachOKit is macOS/Linux-only (see Package.swift); without it
-            // earlyARMProblem is a no-op returning nil.
-            #expect(MachOSignature.earlyARMProblem(target) == nil)
-            #else
+            // The Windows fallback parses the Mach-O header directly (no
+            // MachOKit); it detects the newer-dyld command like the rest.
             #expect(MachOSignature.earlyARMProblem(target)?.contains("newer dyld") == true)
-            #endif
         }
     }
 }
