@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 #if os(Linux)
 import Glibc
 // The struct stat's initializer is defined here, not in Glibc's overlay
@@ -154,15 +155,28 @@ public nonisolated final class RotatingLog: @unchecked Sendable {
 /// callback drains at most one bounded chunk; no unbounded async Data queue or
 /// per-line allocation can accumulate behind a noisy native writer.
 public nonisolated final class LogPipeReader: @unchecked Sendable {
+    #if os(Windows)
+    // DispatchSource.read never fires for Windows pipes: libdispatch is handed
+    // the CRT fd rather than a HANDLE, and pipe HANDLEs trip its known Windows
+    // bugs (read-side spin, write-side block). A dedicated thread does blocking
+    // reads instead; closing the descriptor unblocks it. `stopped` also guards
+    // the idempotent close: finish() and deinit may both run.
+    private let state = Mutex(State())
+    private struct State: Sendable {
+        var stopped = false
+        var watch: LogWatch?
+    }
+    #else
     private let source: any DispatchSourceRead
     private let queue: DispatchQueue
-    private let descriptor: Int32
-    private let cancellation = DispatchGroup()
-    private let log: RotatingLog
     // Accessed only on queue, including EOF and explicit teardown.
     private var stopped = false
     /// Phrases to report the first time they pass through (LogWatch), on the reader's queue.
     private var watch: LogWatch?
+    #endif
+    private let descriptor: Int32
+    private let cancellation = DispatchGroup()
+    private let log: RotatingLog
 
     /// Bytes in, `onMatch(phrase)` once per phrase, across chunk boundaries.
     public nonisolated final class LogWatch {
@@ -189,8 +203,7 @@ public nonisolated final class LogPipeReader: @unchecked Sendable {
         throws
     {
         #if os(Windows)
-        // No fcntl O_NONBLOCK on Windows; flush() uses PeekNamedPipe to avoid
-        // blocking reads instead.
+        // No fcntl O_NONBLOCK on Windows; the reader thread blocks in read().
         #else
         let flags = fcntl(descriptor, F_GETFL)
         guard flags >= 0, fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0 else {
@@ -199,6 +212,33 @@ public nonisolated final class LogPipeReader: @unchecked Sendable {
         #endif
         self.descriptor = descriptor
         self.log = log
+        #if os(Windows)
+        state.withLock { $0.watch = watch }
+        // Capture state piecemeal: the thread must not retain self, or a
+        // reader dropped without finish() would leak the blocked thread.
+        let state = self.state
+        let cancellation = self.cancellation
+        let log = self.log
+        cancellation.enter()
+        let thread = Thread {
+            var bytes = [UInt8](repeating: 0, count: 32_768)
+            while !state.withLock({ $0.stopped }) {
+                // UCRT read takes a UInt32 count and returns Int32; it blocks
+                // until bytes arrive or the write end closes (EOF, count 0).
+                let count = read(descriptor, &bytes, UInt32(bytes.count))
+                guard count > 0 else { break }
+                let chunk = Data(bytes.prefix(Int(count)))
+                log.append(chunk)
+                state.withLock { $0.watch?.scan(chunk) }
+            }
+            state.withLock { $0.stopped = true }
+            cleanup?()
+            cancellation.leave()
+        }
+        thread.name = "LightTouch.log.\(log.url.lastPathComponent)"
+        thread.qualityOfService = .utility
+        thread.start()
+        #else
         self.watch = watch
         self.queue = DispatchQueue(label: "LightTouch.log.\(log.url.lastPathComponent)", qos: .utility)
         source = DispatchSource.makeReadSource(fileDescriptor: descriptor, queue: queue)
@@ -211,29 +251,26 @@ public nonisolated final class LogPipeReader: @unchecked Sendable {
             cancellation.leave()
         }
         source.resume()
+        #endif
     }
 
     #if os(Windows)
-    /// Bytes waiting in the pipe: the non-blocking read check (no O_NONBLOCK
-    /// on Windows).
-    private func availableBytes() -> DWORD {
-        let raw = _get_osfhandle(descriptor)
-        guard raw != -1, let handle = UnsafeMutableRawPointer(bitPattern: raw) else { return 0 }
-        var available: DWORD = 0
-        guard PeekNamedPipe(handle, nil, 0, nil, &available, nil) else { return 0 }
-        return available
+    /// The first caller closes the descriptor, unblocking the reader thread's
+    /// read(); later callers (finish() after deinit, or vice versa) no-op.
+    private func stopReading() {
+        let first = state.withLock { state -> Bool in
+            defer { state.stopped = true }
+            return !state.stopped
+        }
+        if first { close(descriptor) }
     }
     #endif
 
+    #if !os(Windows)
     private func readChunk() {
         guard !stopped else { return }
         var bytes = [UInt8](repeating: 0, count: 32_768)
-        #if os(Windows)
-        // UCRT read takes a UInt32 count and returns Int32.
-        let count = read(descriptor, &bytes, UInt32(bytes.count))
-        #else
         let count = read(descriptor, &bytes, bytes.count)
-        #endif
         if count > 0 {
             let chunk = Data(bytes.prefix(Int(count)))
             log.append(chunk)
@@ -243,39 +280,50 @@ public nonisolated final class LogPipeReader: @unchecked Sendable {
             source.cancel()
         }
     }
+    #endif
 
     public func flush() {
+        #if os(Windows)
+        // The reader thread drains continuously, so the log is already
+        // current; no PeekNamedPipe drain needed.
+        #else
         queue.sync {
             guard !stopped else { return }
             var bytes = [UInt8](repeating: 0, count: 32_768)
             // Bounded drain: a live writer cannot hold a UI flush forever.
             for _ in 0..<32 {
-                #if os(Windows)
-                // No O_NONBLOCK on Windows: only read when the pipe holds bytes.
-                guard availableBytes() > 0 else { break }
-                let count = read(descriptor, &bytes, UInt32(bytes.count))
-                #else
                 let count = read(descriptor, &bytes, bytes.count)
-                #endif
                 guard count > 0 else { break }
                 let chunk = Data(bytes.prefix(Int(count)))
                 log.append(chunk)
                 watch?.scan(chunk)
             }
         }
+        #endif
     }
 
     public func finish() {
+        #if os(Windows)
+        stopReading()
+        #else
         flush()
         queue.sync {
             guard !stopped else { return }
             stopped = true
             source.cancel()
         }
+        #endif
         cancellation.wait()
     }
 
+    #if os(Windows)
+    deinit {
+        stopReading()
+        // Don't wait: the thread exits on its own once the read unblocks.
+    }
+    #else
     deinit { source.cancel() }
+    #endif
 }
 
 /// The owning subprocess task holds this until its child has stopped. stdout
