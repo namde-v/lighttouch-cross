@@ -427,8 +427,8 @@ struct CydiaInstallTests {
                 "\(version): \(rel) without Patcyh"
             )
         }
-    #endif
     }
+    #endif
 
     @Test func aBootstrapOfOtherBytesIsRefused() throws {
         let dir = fm.temporaryDirectory.appendingPathComponent("ltm-cydia-\(UUID().uuidString)")
