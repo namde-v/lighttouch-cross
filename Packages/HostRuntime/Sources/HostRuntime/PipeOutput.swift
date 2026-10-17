@@ -50,6 +50,8 @@ public final class PipeOutput: Sendable {
         // WriteFile) without touching the caller's fd.
         var dup: HANDLE? = nil
         let raw = _get_osfhandle(fileDescriptor)
+        // DIAGNOSTIC: trace pipe handle setup on Windows.
+        print("PipeOutput.init: fd=\(fileDescriptor) rawHandle=\(raw)")
         if raw != -1,
            DuplicateHandle(
                GetCurrentProcess(), UnsafeMutableRawPointer(bitPattern: raw),
@@ -60,6 +62,7 @@ public final class PipeOutput: Sendable {
         } else {
             handleValue = 0
         }
+        print("PipeOutput.init: handleValue=\(handleValue)")
         // No SIGPIPE on Windows; a write to a closed pipe fails with an error.
         #else
         #if os(Linux)
@@ -75,6 +78,8 @@ public final class PipeOutput: Sendable {
         #endif
     }
     public func stop() {
+        // DIAGNOSTIC.
+        print("PipeOutput.stop")
         state.withLock { $0.cancelled = true }
         #if os(Windows)
         // Interrupt a WriteFile blocked on a full pipe (no reader): closing our
@@ -88,6 +93,7 @@ public final class PipeOutput: Sendable {
             return true
         }
         if closeIt, handleValue != 0, let handle = UnsafeMutableRawPointer(bitPattern: handleValue) {
+            print("PipeOutput.stop: CloseHandle")
             CloseHandle(handle)
         }
         #else
@@ -104,6 +110,8 @@ public final class PipeOutput: Sendable {
         guard enqueue else { return }
         // Copy: the blocking write happens on the queue's thread.
         let bytes = Array(data)
+        // DIAGNOSTIC.
+        print("PipeOutput.write: enqueued \(bytes.count) bytes")
         queue.async { [self] in self.performWrite(bytes) }
         #else
         let bytes = data.withUnsafeBytes { DispatchData(bytes: $0) }
@@ -144,8 +152,11 @@ public final class PipeOutput: Sendable {
     /// stop() (ERROR_INVALID_HANDLE from the closed handle) is cancellation,
     /// not a delivery failure.
     private func performWrite(_ bytes: [UInt8]) {
+        // DIAGNOSTIC.
+        print("PipeOutput.performWrite: start \(bytes.count) bytes")
         var error: Int32?
         let cancelled = state.withLock { $0.cancelled }
+        print("PipeOutput.performWrite: cancelled=\(cancelled)")
         if !cancelled {
             if handleValue != 0, let handle = UnsafeMutableRawPointer(bitPattern: handleValue) {
                 error = writeAll(handle, bytes)
@@ -168,10 +179,13 @@ public final class PipeOutput: Sendable {
     /// A WriteFile blocked on a full pipe is interrupted by stop()'s
     /// CloseHandle, which fails it with ERROR_INVALID_HANDLE.
     private func writeAll(_ handle: UnsafeMutableRawPointer, _ bytes: [UInt8]) -> Int32? {
+        // DIAGNOSTIC.
+        print("PipeOutput.writeAll: start \(bytes.count) bytes")
         var offset = 0
         while offset < bytes.count {
             let chunk = min(bytes.count - offset, 1 << 20)
             var written = DWORD(0)
+            print("PipeOutput.writeAll: WriteFile chunk=\(chunk) offset=\(offset)")
             let ok: Bool = bytes.withUnsafeBytes { ptr in
                 WriteFile(
                     handle,
@@ -181,6 +195,7 @@ public final class PipeOutput: Sendable {
                     nil
                 )
             }
+            print("PipeOutput.writeAll: WriteFile ok=\(ok) written=\(written)")
             guard ok else { return Int32(GetLastError()) }
             // A blocking pipe WriteFile delivers all-or-fails; advance by what
             // it reports and loop defensively anyway.
