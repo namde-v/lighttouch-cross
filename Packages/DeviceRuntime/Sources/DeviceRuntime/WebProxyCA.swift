@@ -122,14 +122,18 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
     public static func load(config: URL) throws -> WebProxyCA {
         let path = config.path + ".ca.pem"
         #if os(Windows)
+        fputs("webproxyca-diag: load enter\n", stderr)
         // No POSIX ownership/mode bits on Windows: refuse reparse points and
         // require a regular file. A file the app creates in its own state
         // directory is owner-only by default ACL, which is the property the
         // POSIX checks below are after.
         guard !isReparsePoint(path), isRegularFile(path) else { throw Failure.unreadable(path) }
-        let fd = open(path, O_RDONLY | _O_NOINHERIT)
+        fputs("webproxyca-diag: load checks ok\n", stderr)
+        let fd = _open(path, O_RDONLY | _O_NOINHERIT)
+        fputs("webproxyca-diag: load open -> \(fd)\n", stderr)
         guard fd >= 0 else { throw Failure.unreadable(path) }
         let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        fputs("webproxyca-diag: load FileHandle ok\n", stderr)
         guard let text = String(data: handle.readDataToEndOfFile(), encoding: .utf8),
             let pkcs8 = pemBlock(text, "PRIVATE KEY"),
             let certDER = pemBlock(text, "CERTIFICATE"),
