@@ -273,8 +273,13 @@ extension BootTests {
         try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: source.path)
         _ = try f.prepare(.n72)
         #expect(try Data(contentsOf: f.nor) == before)
+        #if !os(Windows)
+        // Windows has no POSIX permission bits (same convention as
+        // DeviceRuntime's WebProxyCA test); the writability below is still
+        // exercised by the FileHandle write that follows.
         let mode = try FileManager.default.attributesOfItem(atPath: f.nor.path)[.posixPermissions] as? NSNumber
         #expect((mode?.intValue ?? 0) & 0o200 != 0)
+        #endif
         let handle = try FileHandle(forWritingTo: f.nor)
         try handle.seek(toOffset: 0x1200)
         try handle.write(contentsOf: Data([0xa1, 0xb2, 0xc3, 0xd4]))
