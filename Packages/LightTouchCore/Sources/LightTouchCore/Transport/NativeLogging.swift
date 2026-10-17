@@ -179,7 +179,9 @@ public nonisolated final class LogPipeReader: @unchecked Sendable {
     private let log: RotatingLog
 
     /// Bytes in, `onMatch(phrase)` once per phrase, across chunk boundaries.
-    public nonisolated final class LogWatch {
+    /// Thread-safe: on Windows the reader thread and flush() may scan concurrently.
+    public nonisolated final class LogWatch: @unchecked Sendable {
+        private let lock = NSLock()
         private var pending: [Data]
         private var tail = Data()
         private let onMatch: @Sendable (String) -> Void
@@ -188,6 +190,8 @@ public nonisolated final class LogPipeReader: @unchecked Sendable {
             self.onMatch = onMatch
         }
         public func scan(_ chunk: Data) {
+            lock.lock()
+            defer { lock.unlock() }
             guard !pending.isEmpty else { return }
             let window = tail + chunk
             for phrase in pending where window.range(of: phrase) != nil {
