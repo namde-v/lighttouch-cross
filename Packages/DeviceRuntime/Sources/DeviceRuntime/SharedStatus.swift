@@ -178,8 +178,12 @@ nonisolated public final class ShmSurface: @unchecked Sendable {
     }
 
     deinit {
+        #if os(Windows)
+        fatalError("ShmSurface: the Windows transport uses named file mappings (not implemented yet)")
+        #else
         munmap(baseAddress, byteCount)
         if fd >= 0 { ltmClose(fd) }
+        #endif
     }
 
     /// Hand the shm fd to the caller (-1: none held). The mapping stays valid;
@@ -306,7 +310,13 @@ nonisolated public struct StatusBlock: @unchecked Sendable {
         let block = StatusBlock(ShmSurface.createStatus())
         memset(block.base, 0, bytes)
         block[.layoutVersion] = layoutVersion
+        #if os(Windows)
+        // Unreachable: createStatus() is a Windows stub (named file mappings
+        // are not implemented yet). GetCurrentProcessId for the type-checker.
+        block[.helperPID] = UInt64(GetCurrentProcessId())
+        #else
         block[.helperPID] = UInt64(getpid())
+        #endif
         block[.magic] = magic
         return block
     }

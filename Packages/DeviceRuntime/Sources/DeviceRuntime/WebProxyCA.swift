@@ -55,9 +55,26 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
 
     /// Loads CONFIG.ca.pem, creating it on first use; (re)writes CONFIG.ca.der.
     public static func prepare(config: URL) throws -> WebProxyCA {
+        #if os(Windows)
+        // No flock(2) or O_NOFOLLOW on Windows: an exclusive LockFileEx on the
+        // CRT descriptor's HANDLE (see StorageLease), refusing reparse points
+        // (symlinks, junctions) as O_NOFOLLOW does on POSIX.
+        let lockPath = config.path + ".ca.lock"
+        if isReparsePoint(lockPath) { throw Failure.unreadable("lock") }
+        let lock = open(lockPath, O_RDWR | O_CREAT | _O_NOINHERIT, 0o600)
+        guard lock >= 0, lockExclusive(lock) else {
+            if lock >= 0 { _ = WinSDK.close(lock) }
+            throw Failure.unreadable("lock")
+        }
+        defer {
+            unlock(lock)
+            _ = WinSDK.close(lock)
+        }
+        #else
         let lock = open(config.path + ".ca.lock", O_RDWR | O_CREAT | O_NOFOLLOW, 0o600)
         guard lock >= 0, flock(lock, LOCK_EX) == 0 else { throw Failure.unreadable("lock") }
         defer { close(lock) }
+        #endif
         let pem = URL(fileURLWithPath: config.path + ".ca.pem")
         let ca: WebProxyCA
         if FileManager.default.fileExists(atPath: pem.path) {
@@ -82,6 +99,27 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
     /// CONFIG.ca.pem, refused unless it is a regular file of this user's that nobody else can read.
     public static func load(config: URL) throws -> WebProxyCA {
         let path = config.path + ".ca.pem"
+        #if os(Windows)
+        // No POSIX ownership/mode bits on Windows: refuse reparse points and
+        // require a regular file. A file the app creates in its own state
+        // directory is owner-only by default ACL, which is the property the
+        // POSIX checks below are after.
+        guard !isReparsePoint(path), isRegularFile(path) else { throw Failure.unreadable(path) }
+        let fd = open(path, O_RDONLY | _O_NOINHERIT)
+        guard fd >= 0 else { throw Failure.unreadable(path) }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        guard let text = String(data: handle.readDataToEndOfFile(), encoding: .utf8),
+            let pkcs8 = pemBlock(text, "PRIVATE KEY"),
+            let certDER = pemBlock(text, "CERTIFICATE"),
+            let key = try? _RSA.Signing.PrivateKey(derRepresentation: pkcs8),
+            let tbs = DER.children(certDER)?.first?.whole,
+            let fields = DER.children(tbs), fields.count > 6,
+            // The certificate really is this key's: its subjectPublicKeyInfo
+            // matches the key (what the SecKey external-representation
+            // comparison did before).
+            fields[6].whole == key.publicKey.derRepresentation
+        else { throw Failure.unreadable(path) }
+        #else
         let fd = open(path, O_RDONLY | O_NOFOLLOW)
         guard fd >= 0 else { throw Failure.unreadable(path) }
         let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
@@ -98,6 +136,7 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
             // comparison did before).
             fields[6].whole == key.publicKey.derRepresentation
         else { throw Failure.unreadable(path) }
+        #endif
         return WebProxyCA(key: key, certificateDER: certDER, subject: fields[5].whole)
     }
 
@@ -209,19 +248,80 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
         return Data(base64Encoded: String(text[start.upperBound..<end.lowerBound]), options: .ignoreUnknownCharacters)
     }
 
-    private static func save(_ data: Data, to url: URL, mode: mode_t) throws {
+    private static func save(_ data: Data, to url: URL, mode: Int32) throws {
+        #if os(Windows)
+        // Uniqueness via UUID (no getpid on Windows); no O_NOFOLLOW: the temp
+        // name is random per call, and the parent directory is the app's own.
+        let temporary = url.path + ".\(Foundation.UUID().uuidString).tmp"
+        let fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC | _O_NOINHERIT, mode)
+        #else
         let temporary = url.path + ".\(getpid()).tmp"
-        let fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, mode)
+        let fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, mode_t(mode))
+        #endif
         guard fd >= 0 else { throw Failure.unreadable(temporary) }
         let ok = data.withUnsafeBytes {
             guard let base = $0.baseAddress else { return data.isEmpty }
+            #if os(Windows)
+            // UCRT write takes a UInt32 count.
+            return $0.count <= Int(Int32.max) && write(fd, base, UInt32($0.count)) == Int32($0.count)
+            #else
             return write(fd, base, $0.count) == $0.count
+            #endif
         }
         guard close(fd) == 0, ok, rename(temporary, url.path) == 0 else {
             unlink(temporary)
             throw Failure.unreadable(url.path)
         }
     }
+
+    #if os(Windows)
+    /// No flock(2) on Windows: an exclusive byte-range lock via LockFileEx on
+    /// the CRT descriptor's HANDLE (same pattern as StorageLease).
+    private static func lockExclusive(_ fd: Int32) -> Bool {
+        guard let handle = lockHandle(fd) else { return false }
+        var overlapped = OVERLAPPED()
+        // LockFileEx returns BOOL (Swift Bool); the flag #defines import as
+        // Int32 and need a DWORD conversion for the DWORD parameters.
+        return LockFileEx(handle, DWORD(LOCKFILE_EXCLUSIVE_LOCK), 0, 1, 0, &overlapped)
+    }
+
+    private static func unlock(_ fd: Int32) {
+        guard let handle = lockHandle(fd) else { return }
+        var overlapped = OVERLAPPED()
+        UnlockFileEx(handle, 0, 1, 0, &overlapped)
+    }
+
+    private static func lockHandle(_ fd: Int32) -> UnsafeMutableRawPointer? {
+        let raw = _get_osfhandle(fd)
+        guard raw != -1 else { return nil }
+        return UnsafeMutableRawPointer(bitPattern: raw)
+    }
+
+    /// The O_NOFOLLOW equivalent: refuse to open through a reparse point
+    /// (symlink, junction).
+    private static func isReparsePoint(_ path: String) -> Bool {
+        var wide = Array(path.utf16)
+        wide.append(0)
+        return wide.withUnsafeBufferPointer { buffer in
+            guard let wpath = buffer.baseAddress else { return false }
+            let attrs = GetFileAttributesW(wpath)
+            return attrs != INVALID_FILE_ATTRIBUTES && attrs & DWORD(FILE_ATTRIBUTE_REPARSE_POINT) != 0
+        }
+    }
+
+    /// A regular file (not a directory, reparse point, or missing).
+    private static func isRegularFile(_ path: String) -> Bool {
+        var wide = Array(path.utf16)
+        wide.append(0)
+        return wide.withUnsafeBufferPointer { buffer in
+            guard let wpath = buffer.baseAddress else { return false }
+            let attrs = GetFileAttributesW(wpath)
+            return attrs != INVALID_FILE_ATTRIBUTES
+                && attrs & DWORD(FILE_ATTRIBUTE_DIRECTORY) == 0
+                && attrs & DWORD(FILE_ATTRIBUTE_REPARSE_POINT) == 0
+        }
+    }
+    #endif
 }
 
 /// Just enough DER for the certificates above and for reading them back.

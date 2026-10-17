@@ -203,8 +203,15 @@ nonisolated public final class LinkChannel<
         self.onMessage = onMessage
         writeQueue = DispatchQueue(label: "LightTouch.link.write.\(fd)")
         var size: Int32 = 1 << 20
+        #if os(Windows)
+        // WinSDK's SOCKET is UInt64; the link fd is a 32-bit socket value here.
+        let sock = SOCKET(UInt64(bitPattern: Int64(fd)))
+        setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &size, socklen_t(MemoryLayout<Int32>.size))
+        setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &size, socklen_t(MemoryLayout<Int32>.size))
+        #else
         setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &size, socklen_t(MemoryLayout<Int32>.size))
         setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, socklen_t(MemoryLayout<Int32>.size))
+        #endif
         // macOS suppresses SIGPIPE per descriptor; Linux has no SO_NOSIGPIPE,
         // so writes below use MSG_NOSIGNAL instead (Windows has no SIGPIPE).
         #if canImport(Darwin)
@@ -214,7 +221,12 @@ nonisolated public final class LinkChannel<
         source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
         source.setEventHandler { [unowned self] in
             var chunk = [UInt8](repeating: 0, count: 65536)
+            #if os(Windows)
+            // UCRT read takes a UInt32 count.
+            let n = read(fd, &chunk, UInt32(chunk.count))
+            #else
             let n = read(fd, &chunk, chunk.count)
+            #endif
             if n < 0, errno == EAGAIN || errno == EINTR { return }
             if n <= 0 {
                 finish(n == 0 ? nil : POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO))
@@ -247,6 +259,9 @@ nonisolated public final class LinkChannel<
     /// still sit in the socket, the read source not yet run) so they land before the
     /// channel closes. On `queue`; never blocks (reads only what poll reports ready).
     public func drainIncoming() {
+        #if os(Windows)
+        fatalError("LinkChannel: the Windows transport is not implemented yet (see TRANSPORT_REDESIGN.md)")
+        #else
         var chunk = [UInt8](repeating: 0, count: 65536)
         while !closed {
             var ready = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
@@ -256,6 +271,7 @@ nonisolated public final class LinkChannel<
             buffer.append(contentsOf: chunk[0..<n])
             deliverFrames()
         }
+        #endif
     }
 
     private func finish(_ error: Error?) {

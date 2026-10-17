@@ -20,6 +20,7 @@ private final class BundleAnchor {}
 /// DeviceLink spawns a real helper (socketpair, the child's end on fd 3, a
 /// one-time token on argv), and the app takes its hello over the socket.
 struct DeviceTransportTests {
+    #if !os(Windows)
     /// RendezvousTestPeer, built beside this test bundle.
     #if os(Linux)
     // The test runner sits beside the peer executable in the products
@@ -34,12 +35,14 @@ struct DeviceTransportTests {
     private let peer = Bundle(for: BundleAnchor.self).bundleURL
         .deletingLastPathComponent().appendingPathComponent("RendezvousTestPeer")
     #endif
+    #endif
 
     private struct Spawned {
         var pid: pid_t
         var socket: Int32
     }
 
+    #if !os(Windows)
     /// Spawn the peer with the link socket on fd 3, like DeviceLink does.
     private func spawnPeer(token: String, mode: String) throws -> Spawned {
         try #require(
@@ -70,7 +73,9 @@ struct DeviceTransportTests {
         } while r < 0 && errno == EINTR
         ltmClose(spawned.socket)
     }
+    #endif
 
+    #if !os(Windows)
     /// shm create (peer) -> fd pass (SCM_RIGHTS) -> map -> read status block (app).
     @Test func shmHelloRoundTrip() throws {
         let token = "test-token-\(UInt32.random(in: 0...UInt32.max))"
@@ -154,6 +159,7 @@ struct DeviceTransportTests {
         #expect(snapshot.height == 4)
         #expect(snapshot.helperPID == getpid())
     }
+    #endif
 
     /// WebProxyCA: create the CA files, reload them, mint a leaf for a host,
     /// and verify the leaf's RSA/SHA-1 signature against the CA public key.
@@ -165,8 +171,14 @@ struct DeviceTransportTests {
 
         let ca = try WebProxyCA.prepare(config: config)
         // Files exist, the key material owner-readable only.
+        #if !os(Windows)
         let pemAttributes = try FileManager.default.attributesOfItem(atPath: config.path + ".ca.pem")
         #expect((pemAttributes[.posixPermissions] as? Int) == 0o600)
+        #else
+        // Windows has no POSIX permission bits; a file the app creates in its
+        // own state directory is owner-only by default ACL (what the check
+        // above is after on POSIX).
+        #endif
         #expect(FileManager.default.fileExists(atPath: config.path + ".ca.der"))
 
         // Reload from disk: same key, same certificate.
@@ -202,6 +214,7 @@ struct DeviceTransportTests {
     }
 }
 
+#if !os(Windows)
 nonisolated private func withCStrings<R>(
     _ strings: [String],
     _ body: (UnsafePointer<UnsafeMutablePointer<CChar>?>?) -> R
@@ -214,3 +227,4 @@ nonisolated private func withCStrings<R>(
         return body(base)
     }
 }
+#endif

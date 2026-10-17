@@ -68,6 +68,12 @@ public enum FirmwareCommand {
             language: String? = nil,
             keyboards: String? = nil
         ) {
+            // Windows (Swift 6.2.4): assigning through the @Option/@Flag
+            // wrappers during init miscompiles (SIL verification failure on
+            // assign_by_wrapper with _OptionalNilComparisonType). Delegate to
+            // the empty init first so every wrapper is initialized; the
+            // assignments below then use the wrappers' setters.
+            self.init()
             self.entry = entry.path
             self.ipsw = ipsw.path
             self.out = out.path

@@ -1,5 +1,7 @@
 import Foundation
+#if !os(Windows)
 import RCZlib
+#endif
 import Testing
 
 @testable import ReleaseChecks
@@ -213,6 +215,9 @@ struct BundleHygieneTests {
     }
 
 #else
+    // The inflate checks need zlib, which is unavailable on Windows
+    // (BundleHygiene.inflate is a stub there): Linux-only.
+#if !os(Windows)
     /// The platform-free checks, exercised on Linux: inflate, the packed-device format, Package.resolved
     /// parsing, Mach-O magic detection and SHA-256 (via swift-crypto's Crypto here, CryptoKit on macOS).
     @Test func inflateRoundTripsADeflatedStream() throws {
@@ -241,6 +246,7 @@ struct BundleHygieneTests {
             #expect(!ok)
         }
     }
+#endif
 
     func itbase(_ files: [(String, Data)]) throws -> Data {
         let index = try JSONSerialization.data(withJSONObject: [
@@ -356,6 +362,7 @@ struct BundleHygieneTests {
 #endif
 }
 
+#if !os(Windows)
 /// zlib's one-shot compressor (the tests' deflate helper).
 func deflate(_ data: Data) -> Data {
     var size = compressBound(uLong(data.count))
@@ -365,4 +372,5 @@ func deflate(_ data: Data) -> Data {
     }
     return Data(out.prefix(Int(size)))
 }
+#endif
 
