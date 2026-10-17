@@ -165,6 +165,9 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
     /// A TLS server identity for `host` (a DNS name or an IP literal), valid for a week, under this CA:
     /// the DER certificate plus its key, for the proxy's TLS stack.
     public func identity(for host: String, key leafKey: _RSA.Signing.PrivateKey) throws -> WebProxyLeafIdentity {
+        #if os(Windows)
+        fputs("webproxyca-diag: identity for \(host)\n", stderr)
+        #endif
         let der = try Self.certificate(
             key: leafKey,
             issuerKey: key,
@@ -204,10 +207,16 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
         let spki = DER.seq(rsa, DER.bitString(try rsaPublicKeyBytes(key.publicKey.derRepresentation)))
         var extensions: [Data]
         if let host {
+            #if os(Windows)
+            fputs("webproxyca-diag: certificate host branch for \(host)\n", stderr)
+            #endif
             let ip = [AF_INET, AF_INET6].lazy.compactMap { family -> Data? in
                 var bytes = [UInt8](repeating: 0, count: 16)
                 return inet_pton(family, host, &bytes) == 1 ? Data(bytes.prefix(family == AF_INET ? 4 : 16)) : nil
             }.first
+            #if os(Windows)
+            fputs("webproxyca-diag: inet_pton done\n", stderr)
+            #endif
             guard host.utf8.count <= 253, !host.isEmpty,
                 host.unicodeScalars.allSatisfy({
                     $0.isASCII && (CharacterSet.alphanumerics.contains($0) || ".-:".unicodeScalars.contains($0))
