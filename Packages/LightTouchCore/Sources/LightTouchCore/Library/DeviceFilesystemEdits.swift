@@ -69,7 +69,7 @@ public final class DeviceFilesystemEdits {
         public let phase: String
     }
     public struct Mounted: Decodable {
-        let id: UUID
+        let id: Foundation.UUID
         let mountPoint: String?
     }
     private func paths(_ instance: DeviceInstance) -> DeviceInstance.Paths { instance.paths(state: state, logs: logs) }
@@ -296,7 +296,7 @@ public final class DeviceFilesystemEdits {
             }
         }
     }
-    private var watching: Set<UUID> = []
+    private var watching: Set<Foundation.UUID> = []
 
     /// Before a save of a mounted edit: until nothing is writing into the volume (a Finder copy in progress).
     private func waitForCopies(_ instance: DeviceInstance) async throws {

@@ -236,7 +236,7 @@ public enum FirmwareCommand {
 
         public init() {}
         #if os(Windows)
-        static func arguments(
+        public static func arguments(
             device: URL,
             action: Action,
             session: UUID? = nil,
