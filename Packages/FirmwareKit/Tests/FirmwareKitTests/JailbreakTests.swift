@@ -153,11 +153,15 @@ struct JailbreakTests {
         let hash = ActivationTests.cd + 52
         #expect(Array(copy[hash..<(hash + 20)]) == Array(Insecure.SHA1.hash(data: Data(copy[0..<256]))))
         #expect(try Data(contentsOf: root.appendingPathComponent(SystemEdits.afcd)) == Data(afcd), "afcd is untouched")
+        #if os(Windows)
+        // No executable bit on Windows; the content checks above are the coverage.
+        #else
         let mode =
             try FileManager.default.attributesOfItem(atPath: root.appendingPathComponent(SystemEdits.afc2d).path)[
                 .posixPermissions
             ] as? Int
         #expect(mode == 0o755)
+        #endif
     }
 
     /// An afcd with neither --lockdown nor the 7.1 strings is refused rather than given an entry that cannot run.
