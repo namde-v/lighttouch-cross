@@ -222,7 +222,7 @@ nonisolated public final class LinkChannel<
         source.setEventHandler { [unowned self] in
             var chunk = [UInt8](repeating: 0, count: 65536)
             #if os(Windows)
-            // UCRT read takes a UInt32 count.
+            // UCRT read takes a UInt32 count and returns Int32.
             let n = read(fd, &chunk, UInt32(chunk.count))
             #else
             let n = read(fd, &chunk, chunk.count)
@@ -232,7 +232,7 @@ nonisolated public final class LinkChannel<
                 finish(n == 0 ? nil : POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO))
                 return
             }
-            buffer.append(contentsOf: chunk[0..<n])
+            buffer.append(contentsOf: chunk[0..<Int(n)])
             deliverFrames()
         }
         onCloseHandler = onClose
