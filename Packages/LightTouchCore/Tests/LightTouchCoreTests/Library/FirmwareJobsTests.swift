@@ -463,6 +463,17 @@ import Testing
             "inputs": ["ipsw": ["path": NSHomeDirectory() + "/Library/Caches/x.ipsw"], "guest_tools": template.path],
             "tool": ["helper": template.appendingPathComponent("LightTouchDevice").path],
         ]).write(to: template.appendingPathComponent("device.lock.json"))
+        #if os(Windows)
+        // No /bin/chmod on Windows: _chmod honors only the write bit, which
+        // is what read-only needs. (The -R below is covered: pack-base reads
+        // the files, so the files' bits are what matter.)
+        if let enumerator = fm.enumerator(atPath: template.appendingPathComponent("nand").path) {
+            for case let file as String in enumerator {
+                template.appendingPathComponent("nand/\(file)").path.withCString { _ = _chmod($0, 0o444) }
+            }
+        }
+        template.appendingPathComponent("nor.bin").path.withCString { _ = _chmod($0, 0o444) }
+        #else
         try LibraryFixtures.run(
             "/bin/chmod",
             [
@@ -470,6 +481,7 @@ import Testing
                 template.appendingPathComponent("nor.bin").path,
             ]
         )
+        #endif
         let resources = tmp.appendingPathComponent("Resources")
         try fm.createDirectory(at: resources.appendingPathComponent("Device"), withIntermediateDirectories: true)
         try LibraryFixtures.run(

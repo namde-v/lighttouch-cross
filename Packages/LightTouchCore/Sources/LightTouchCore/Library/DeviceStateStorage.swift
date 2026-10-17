@@ -22,7 +22,7 @@ public nonisolated enum DeviceStateStorage {
         snapshots: [URL],
         preparedNOR: URL? = nil,
         state: URL,
-        owner: UUID?
+        owner: Foundation.UUID?
     ) throws {
         let lease = try stoppedLease(owner, state: state)
         defer { withExtendedLifetime(lease) {} }
@@ -36,7 +36,7 @@ public nonisolated enum DeviceStateStorage {
     }
 
     /// `tree` renamed to .erasing-<name> beside it, then `files` and it removed; every path checked first.
-    private static func removeAside(_ tree: URL, with files: [URL], state: URL, owner: UUID?) throws {
+    private static func removeAside(_ tree: URL, with files: [URL], state: URL, owner: Foundation.UUID?) throws {
         let fm = FileManager.default
         let doomed = tree.deletingLastPathComponent().appendingPathComponent(".erasing-" + tree.lastPathComponent)
         for path in files + [tree, doomed] { try checkRemovable(path, state: state, owner: owner) }
@@ -60,7 +60,7 @@ public nonisolated enum DeviceStateStorage {
     /// prepared one. The record's other fields (name, guest, panel) stay. Then generations/ goes, renamed aside like
     /// the overlay. A crash before the record is written leaves an erased overlay on the edited base (Erase again
     /// finishes); after it, at worst a .erasing- directory the launch sweep removes.
-    static func returnToPrepared(_ owner: UUID, state: URL) throws {
+    static func returnToPrepared(_ owner: Foundation.UUID, state: URL) throws {
         let fm = FileManager.default
         let device = DeviceInstance.directory(owner, state: state)
         let generations = device.appendingPathComponent("generations")
@@ -96,7 +96,7 @@ public nonisolated enum DeviceStateStorage {
 
     /// The helper/export/edit lock is the authority, including external CLI
     /// owners. A cached GUI "stopped" state cannot authorize deleting its files.
-    private static func stoppedLease(_ owner: UUID?, state: URL) throws -> StorageLease? {
+    private static func stoppedLease(_ owner: Foundation.UUID?, state: URL) throws -> StorageLease? {
         guard let owner else { return nil }  // legacy profile-only stores
         let work = state.appendingPathComponent("Devices/\(owner.uuidString)/work")
         try checkRemovable(work, state: state, owner: owner)
@@ -116,7 +116,7 @@ public nonisolated enum DeviceStateStorage {
 
     public static func canonicalPath(_ url: URL) -> String { StoragePathAuthority.canonicalPath(url) }
 
-    public static func checkBootPaths(base: URL, mutable: [URL], state: URL, owner: UUID) throws {
+    public static func checkBootPaths(base: URL, mutable: [URL], state: URL, owner: Foundation.UUID) throws {
         do {
             try StoragePathAuthority.checkBootPaths(base: base, mutable: mutable, state: state, owner: owner)
         } catch StoragePathAuthority.Failure.invalidPath(let url) {
@@ -131,7 +131,7 @@ public nonisolated enum DeviceStateStorage {
         }
     }
 
-    public static func checkRemovable(_ url: URL, state: URL, owner: UUID?) throws {
+    public static func checkRemovable(_ url: URL, state: URL, owner: Foundation.UUID?) throws {
         do { try StoragePathAuthority.checkRemovable(url, state: state, owner: owner) } catch StoragePathAuthority
             .Failure.invalidPath
         {
@@ -282,7 +282,7 @@ public nonisolated enum DeviceStateStorage {
     /// bits, which don't stop root. Probes on a scratch directory.
     static func immutableSettable() -> Bool {
         let fm = FileManager.default
-        let probe = fm.temporaryDirectory.appendingPathComponent("ltm-immutable-probe-\(UUID().uuidString)")
+        let probe = fm.temporaryDirectory.appendingPathComponent("ltm-immutable-probe-\(Foundation.UUID().uuidString)")
         do {
             try fm.createDirectory(at: probe, withIntermediateDirectories: false)
             defer { try? fm.removeItem(at: probe) }
@@ -313,7 +313,7 @@ public nonisolated enum DeviceStateStorage {
     /// Delete Device: Devices/<uuid> is renamed to Devices/.deleting-<uuid>
     /// first, so a crash mid-removal never leaves a half device that loads
     /// (DeviceInstance.all skips the name); the launch sweep finishes it.
-    public static func removeDevice(_ id: UUID, state: URL) throws {
+    public static func removeDevice(_ id: Foundation.UUID, state: URL) throws {
         let lease = try stoppedLease(id, state: state)
         defer { withExtendedLifetime(lease) {} }
         let devices = state.appendingPathComponent("Devices", isDirectory: true)

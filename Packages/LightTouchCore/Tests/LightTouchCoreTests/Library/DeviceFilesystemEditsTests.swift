@@ -277,14 +277,17 @@ import Testing
     /// The default probes on a real volume mounted the way an edit is (nobrowse, in the temporary directory, whose
     /// /private/var/folders the mount table names): it is a mount point, and a file held open for writing is a copy
     /// in progress until it is closed.
-    #if os(Linux)
-    // Needs hdiutil to mount a real disk image (macOS-only); the Linux port
-    // has no equivalent volume-mount probe.
+    #if os(Linux) || os(Windows)
+    // Needs hdiutil to mount a real disk image (macOS-only); neither the Linux
+    // nor the Windows port has an equivalent volume-mount probe.
     @Test(.disabled("needs macOS hdiutil and a mountable volume"))
     #else
     @Test
     #endif
     func theMountAndWriteProbesOnARealVolume() async throws {
+        #if os(Windows)
+        // Disabled above; the body (hdiutil, truncate(2), usleep(3)) is macOS-only.
+        #else
         try await LibraryFixtures.withScratch { dir in
             func run(_ tool: String, _ args: [String]) throws -> String {
                 let p = Process()
@@ -352,6 +355,7 @@ import Testing
             _ = try run("/usr/sbin/diskutil", ["unmount", dev])
             #expect(!DeviceFilesystemEdits.isMountPoint(mountPoint))
         }
+        #endif
     }
 
     /// Jailbreak…: one `edit --action jailbreak` with the decrypt cache, "Jailbreaking…" while it runs; not with an

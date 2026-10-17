@@ -3,6 +3,9 @@ import Testing
 
 @testable import LightTouchCore
 
+// The daemon lifecycle (fork, reparenting to init, SIGTERM) is POSIX-only;
+// there is no Windows usbmuxd binary to exercise the Windows reaper against.
+#if !os(Windows)
 /// usbmuxd that dies is started again on the sockets the emulator dials, a few times; given up, a new boot starts it.
 struct USBMuxTests {
     /// State audit A-11: an unexpected daemon death left app management off until Force Stop then Start.
@@ -145,3 +148,4 @@ struct USBMuxTests {
         }
     }
 }
+#endif

@@ -339,6 +339,10 @@ private nonisolated func cloneFile(_ source: String, to destination: String) -> 
         return false
     }
     return true
+    #elseif os(Windows)
+    // No copy-on-write clone API on Windows; the caller falls back to a plain
+    // copy when this returns false.
+    return false
     #else
     return clonefile(source, destination, 0) == 0
     #endif

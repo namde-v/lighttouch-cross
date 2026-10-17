@@ -58,7 +58,7 @@ public enum FirmwareCommand {
         // Swift 6.2.4 on Windows miscompiles assignments through @Option/@Flag
         // wrappers (SIL verification failure on assign_by_wrapper). Build the
         // command line directly instead of going through the wrappers.
-        static func arguments(
+        public static func arguments(
             entry: URL,
             ipsw: URL,
             out: URL,
@@ -149,7 +149,7 @@ public enum FirmwareCommand {
 
         public init() {}
         #if os(Windows)
-        static func arguments(blob: URL, out: URL, seed: String) -> [String] {
+        public static func arguments(blob: URL, out: URL, seed: String) -> [String] {
             ["unpack-base", "--blob", blob.path, "--out", out.path, "--seed", seed]
         }
         #else
@@ -172,7 +172,7 @@ public enum FirmwareCommand {
 
         public init() {}
         #if os(Windows)
-        static func arguments(base: URL, out: URL) -> [String] {
+        public static func arguments(base: URL, out: URL) -> [String] {
             ["pack-base", "--base", base.path, "--out", out.path]
         }
         #else
@@ -195,7 +195,7 @@ public enum FirmwareCommand {
 
         public init() {}
         #if os(Windows)
-        static func arguments(device: URL, recordPolicy: RecordPolicy, allowRaw: Bool = false) -> [String] {
+        public static func arguments(device: URL, recordPolicy: RecordPolicy, allowRaw: Bool = false) -> [String] {
             var args = ["boot-admit", "--device", device.path, "--record-policy", recordPolicy.rawValue]
             if allowRaw { args.append("--allow-raw") }
             return args
@@ -300,7 +300,7 @@ public enum FirmwareCommand {
 
         public init() {}
         #if os(Windows)
-        static func arguments(device: URL, recordPolicy: RecordPolicy, out: URL, root: URL) -> [String] {
+        public static func arguments(device: URL, recordPolicy: RecordPolicy, out: URL, root: URL) -> [String] {
             ["mount", "--device", device.path, "--volume", Volume.all.rawValue,
              "--out", out.path, "--root", root.path, "--record-policy", recordPolicy.rawValue]
         }
@@ -349,7 +349,7 @@ public enum FirmwareCommand {
 
         public init() {}
         #if os(Windows)
-        static func arguments(out: URL) -> [String] {
+        public static func arguments(out: URL) -> [String] {
             ["unmount", "--out", out.path]
         }
         #else
@@ -367,7 +367,7 @@ public enum FirmwareCommand {
 
         public init() {}
         #if os(Windows)
-        static func arguments(root: URL) -> [String] {
+        public static func arguments(root: URL) -> [String] {
             ["cache-prune", "--root", root.path]
         }
         #else
@@ -388,7 +388,7 @@ public enum FirmwareCommand {
 
         public init() {}
         #if os(Windows)
-        static func arguments(root: URL) -> [String] {
+        public static func arguments(root: URL) -> [String] {
             ["detach-images", "--root", root.path]
         }
         #else
@@ -431,7 +431,7 @@ public enum FirmwareCommand {
 
         public init() {}
         #if os(Windows)
-        static func arguments(entry: URL, archive: URL, out: URL) -> [String] {
+        public static func arguments(entry: URL, archive: URL, out: URL) -> [String] {
             ["unwrap", "--entry", entry.path, "--archive", archive.path, "--out", out.path]
         }
         #else

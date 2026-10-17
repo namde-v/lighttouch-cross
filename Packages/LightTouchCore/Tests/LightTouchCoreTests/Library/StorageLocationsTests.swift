@@ -15,6 +15,17 @@ import Testing
 struct StorageLocationsTests {
     let fm = FileManager.default
 
+    #if os(Windows)
+    /// flock(LOCK_EX) for tests: a non-blocking exclusive LockFileEx on the
+    /// CRT descriptor's HANDLE.
+    func lockNB(_ fd: Int32) -> Bool {
+        let raw = _get_osfhandle(fd)
+        guard raw != -1, let handle = UnsafeMutableRawPointer(bitPattern: raw) else { return false }
+        var overlapped = OVERLAPPED()
+        return LockFileEx(handle, DWORD(LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY), 0, 1, 0, &overlapped)
+    }
+    #endif
+
     func write(_ text: String, _ url: URL) throws {
         try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data(text.utf8).write(to: url)
@@ -38,7 +49,11 @@ struct StorageLocationsTests {
             try StorageLocations.privateDirectory(unsuffixed)
             try write("pages", unsuffixed.appendingPathComponent("Devices/x/base/0.page"))
             let held = open(unsuffixed.appendingPathComponent(".app-lock").path, O_RDWR | O_CREAT, 0o600)
+            #if os(Windows)
+            #expect(held >= 0 && lockNB(held))
+            #else
             #expect(held >= 0 && flock(held, LOCK_EX) == 0)
+            #endif
             #expect(throws: (any Error).self) {
                 try StorageLocations.prepare(applicationSupport: support, library: library)
             }
@@ -62,7 +77,13 @@ struct StorageLocationsTests {
                 layout.logs.path == library.appendingPathComponent("Logs/" + StorageLocations.bundleIdentifier).path
                     && exists(layout.logs)
             )
-            for url in [destination, layout.logs] { #expect(try mode(url) == 0o700) }
+            for url in [destination, layout.logs] {
+                #if !os(Windows)
+                // POSIX permissions have no Windows equivalent (owner-only by
+                // default ACL instead).
+                #expect(try mode(url) == 0o700)
+                #endif
+            }
             _ = try StorageLocations.prepare(applicationSupport: support, library: library)  // again: fine
 
             // An isolated run keeps its state and logs under the override.
@@ -135,7 +156,11 @@ struct StorageLocationsTests {
             for path in [url, url.appendingPathExtension("1")] {
                 let data = try Data(contentsOf: path)
                 #expect(!data.isEmpty && data.count <= StorageLocations.logLimit && data.allSatisfy { $0 == 65 })
+                #if !os(Windows)
+                // POSIX permissions have no Windows equivalent (owner-only by
+                // default ACL instead).
                 #expect(try mode(path) == 0o600)
+                #endif
             }
         }
     }
@@ -144,7 +169,11 @@ struct StorageLocationsTests {
     @Test func logPipeReaderEndsAtEOF() async throws {
         try await LibraryFixtures.withScratch { logs in
             var descriptors: [Int32] = [-1, -1]
+            #if os(Windows)
+            #expect(_pipe(&descriptors, 4096, _O_BINARY | _O_NOINHERIT) == 0)
+            #else
             #expect(pipe(&descriptors) == 0)
+            #endif
             let url = logs.appendingPathComponent("eof.log")
             let reader = try LogPipeReader(descriptor: descriptors[0], log: RotatingLog(url: url))
             try FileHandle(fileDescriptor: descriptors[1], closeOnDealloc: false).write(
@@ -159,6 +188,8 @@ struct StorageLocationsTests {
     }
 
     /// The serial FIFOs: unlinked at app stop while QEMU still holds a writer, whose writes still land; no names left.
+    /// FIFO-only: SerialLogCapture isn't supported on Windows.
+    #if !os(Windows)
     @Test func serialFIFOsAreRemovedWhileTheWriterLives() throws {
         try withTemporaryDirectory { root in
             let fifoRoot = root.appendingPathComponent("fifo")
@@ -181,4 +212,5 @@ struct StorageLocationsTests {
             #expect(try text(log) == "guest serial after unlink")
         }
     }
+    #endif
 }

@@ -58,7 +58,7 @@ nonisolated private final class ToneSource: @unchecked Sendable {  // lock-prote
                 if flag.lock.withLock({ flag.stopped }) {
                     return capture.receive(.audioEnded(generation: 1, failed: false))
                 }
-                usleep(5000)
+                Thread.sleep(forTimeInterval: 0.005)
             }
         }
         return capture

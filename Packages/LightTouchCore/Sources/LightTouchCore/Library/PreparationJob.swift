@@ -219,7 +219,7 @@ public nonisolated final class PreparationJob: @unchecked Sendable {
                     ).arguments
                 #endif
             }
-            let log = try FileDescriptor.open(request.log.path, .writeOnly)
+            let log = try FileDescriptor.open(FilePath(request.log.path), .writeOnly)
             let task = Task.detached { [self] in await run(arguments, log: log) }
             lock.withLock { self.task = task }
             if lock.withLock({ cancelled }) { task.cancel() }
@@ -245,7 +245,13 @@ public nonisolated final class PreparationJob: @unchecked Sendable {
     /// The preparer, its JSON Lines read as they come, its stderr into the log.
     private func run(_ arguments: [String], log: FileDescriptor) async {
         var options = PlatformOptions()
+        #if os(Windows)
+        // No signals on Windows: gracefulShutDown sends WM_CLOSE/CTRL_C
+        // instead of SIGTERM (SIGKILL still follows if it doesn't exit).
+        options.teardownSequence = [.gracefulShutDown(allowedDurationToNextStep: .seconds(5))]
+        #else
         options.teardownSequence = [.send(signal: .terminate, allowedDurationToNextStep: .seconds(5))]
+        #endif
         let status: Int32
         do {
             let result = try await Subprocess.run(
@@ -263,8 +269,13 @@ public nonisolated final class PreparationJob: @unchecked Sendable {
             }
             status =
                 switch result.terminationStatus {
+                #if os(Windows)
+                // No signals on Windows, and the exit code is a DWORD (UInt32).
+                case .exited(let code): Int32(bitPattern: code)
+                #else
                 case .exited(let code): code
                 case .signaled(let signal): 128 + signal
+                #endif
                 }
         } catch {
             if lock.withLock({ cancelled }) { return finish(.cancelled) }

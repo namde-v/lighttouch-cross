@@ -346,6 +346,11 @@ public final class DeviceFilesystemEdits {
             let fields = line.split(separator: " ")
             return fields.count > 1 && unescape(fields[1]) == target
         }
+        #elseif os(Windows)
+        // No statfs(2) or realpath(3) on Windows, and edit-volume mounting
+        // isn't implemented there (no Dokan/WinFsp mount path in firmwarekit):
+        // nothing can be mounted on the folder.
+        return false
         #else
         var fs = statfs()
         guard statfs(url.path, &fs) == 0, let real = realpath(url.path, nil) else { return false }
@@ -362,6 +367,10 @@ public final class DeviceFilesystemEdits {
             // Swift's Glibc doesn't import statfs; statvfs carries the same counters.
             var fs = statvfs()
             return statvfs(url.path, &fs) == 0 ? [UInt64(fs.f_bfree), UInt64(fs.f_ffree)] : []
+            #elseif os(Windows)
+            // No statfs(2) on Windows, and edit volumes aren't mounted there
+            // (see isMountPoint): nothing to watch, so report no counters.
+            return []
             #else
             var fs = statfs()
             return statfs(url.path, &fs) == 0 ? [fs.f_bfree, fs.f_ffree] : []
@@ -402,6 +411,11 @@ extension DeviceFilesystemEdits {
                 if flags & UInt32(O_ACCMODE) != UInt32(O_RDONLY) { return true }
             }
         }
+        return false
+        #elseif os(Windows)
+        // libproc is Darwin-only and /proc is Linux-only; enumerating open
+        // handles on Windows (NtQuerySystemInformation) is out of scope while
+        // edit volumes aren't mounted there (see isMountPoint).
         return false
         #else
         guard let real = realpath(url.path, nil) else { return false }

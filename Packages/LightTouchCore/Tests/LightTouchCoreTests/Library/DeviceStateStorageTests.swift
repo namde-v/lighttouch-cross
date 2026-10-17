@@ -16,6 +16,17 @@ import Testing
 struct DeviceStateStorageTests {
     let fm = FileManager.default
 
+    #if os(Windows)
+    /// flock(LOCK_EX | LOCK_NB) for tests: a non-blocking exclusive LockFileEx
+    /// on the CRT descriptor's HANDLE.
+    func lockNB(_ fd: Int32) -> Bool {
+        let raw = _get_osfhandle(fd)
+        guard raw != -1, let handle = UnsafeMutableRawPointer(bitPattern: raw) else { return false }
+        var overlapped = OVERLAPPED()
+        return LockFileEx(handle, DWORD(LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY), 0, 1, 0, &overlapped)
+    }
+    #endif
+
     @Test func overlayIsPinnedToItsBase() throws {
         try withTemporaryDirectory { root in
             // Adopted when empty, kept for its base, refused for another base and for an unstamped overlay with pages.
@@ -244,7 +255,11 @@ struct DeviceStateStorageTests {
                 #expect((try? Data(contentsOf: marker)) == Data("unchanged".utf8))
             }
             let owner = open(work.appendingPathComponent("lease").path, O_RDWR | O_CREAT, 0o600)
+            #if os(Windows)
+            #expect(owner >= 0 && lockNB(owner))
+            #else
             #expect(owner >= 0 && flock(owner, LOCK_EX | LOCK_NB) == 0)
+            #endif
             refused()
             close(owner)
             try Data("{}".utf8).write(to: work.appendingPathComponent("edit.json"))

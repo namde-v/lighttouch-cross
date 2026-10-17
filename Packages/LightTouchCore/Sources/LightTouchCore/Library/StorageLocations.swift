@@ -68,6 +68,19 @@ public nonisolated enum StorageLocations {
     public static func adoptUnsuffixedRoot(_ old: URL, as state: URL) throws {
         let fm = FileManager.default
         guard fm.fileExists(atPath: old.path), !fm.fileExists(atPath: state.path) else { return }
+        #if os(Windows)
+        // No flock(2) or O_CLOEXEC on Windows: a non-blocking exclusive
+        // LockFileEx on the CRT descriptor's HANDLE (see Bundled.windowsTryLock).
+        let fd = open(old.appendingPathComponent(".app-lock").path, O_RDWR | O_CREAT | _O_NOINHERIT, 0o600)
+        guard fd >= 0 else { throw posixError() }
+        defer { close(fd) }
+        guard windowsTryLock(fd) else {
+            throw CocoaError(
+                .fileLocking,
+                userInfo: [NSLocalizedDescriptionKey: "Light Touch is already running with this library."]
+            )
+        }
+        #else
         let fd = open(old.appendingPathComponent(".app-lock").path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw posixError() }
         defer { close(fd) }
@@ -77,6 +90,7 @@ public nonisolated enum StorageLocations {
                 userInfo: [NSLocalizedDescriptionKey: "Light Touch is already running with this library."]
             )
         }
+        #endif
         try fm.moveItem(at: old, to: state)
     }
 
@@ -103,6 +117,59 @@ public nonisolated enum StorageLocations {
         public let path: String
     }
 
+    #if os(Windows)
+    /// LockFileEx-based flock(LOCK_EX | LOCK_NB) replacement (see Bundled.windowsTryLock).
+    private static func windowsTryLock(_ fd: Int32) -> Bool {
+        let raw = _get_osfhandle(fd)
+        guard raw != -1, let handle = UnsafeMutableRawPointer(bitPattern: raw) else { return false }
+        var overlapped = OVERLAPPED()
+        // LockFileEx returns BOOL (Swift Bool); the flag #defines import as
+        // Int32 and need a DWORD conversion for the DWORD parameters.
+        return LockFileEx(handle, DWORD(LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY), 0, 1, 0, &overlapped)
+    }
+    #endif
+
+    #if os(Windows)
+    public static func daemonIdentity(_ pid: DWORD) -> DaemonIdentity? {
+        // No pid_t or libproc on Windows: parent pid via the Toolhelp32
+        // snapshot, start time via GetProcessTimes, path via
+        // QueryFullProcessImageNameW. Windows has no POSIX uids; uid is 0.
+        guard let process = OpenProcess(DWORD(PROCESS_QUERY_LIMITED_INFORMATION), false, pid),
+            process != INVALID_HANDLE_VALUE
+        else { return nil }
+        defer { CloseHandle(process) }
+        var parent: UInt32 = 0
+        if let snapshot = CreateToolhelp32Snapshot(DWORD(TH32CS_SNAPPROCESS), 0),
+            snapshot != INVALID_HANDLE_VALUE
+        {
+            defer { CloseHandle(snapshot) }
+            var entry = PROCESSENTRY32W()
+            entry.dwSize = DWORD(MemoryLayout<PROCESSENTRY32W>.size)
+            if Process32FirstW(snapshot, &entry) {
+                repeat {
+                    if entry.th32ProcessID == pid { parent = entry.th32ParentProcessID; break }
+                } while Process32NextW(snapshot, &entry)
+            }
+        }
+        var creation = FILETIME(), exitTime = FILETIME(), kernel = FILETIME(), user = FILETIME()
+        guard GetProcessTimes(process, &creation, &exitTime, &kernel, &user) else { return nil }
+        // FILETIME: 100ns ticks since 1601-01-01; Unix micros since 1970-01-01.
+        let micros = (UInt64(creation.dwHighDateTime) << 32 | UInt64(creation.dwLowDateTime)) / 10
+            - 11_644_473_600_000_000
+        var pathBuf = [UInt16](repeating: 0, count: 4096)
+        var pathLen = DWORD(pathBuf.count)
+        guard pathBuf.withUnsafeMutableBufferPointer({
+            QueryFullProcessImageNameW(process, 0, $0.baseAddress, &pathLen)
+        }) else { return nil }
+        return DaemonIdentity(
+            parent: parent,
+            uid: 0,
+            started: micros / 1_000_000,
+            micros: micros % 1_000_000,
+            path: String(decodingCString: pathBuf, as: UTF16.self)
+        )
+    }
+    #else
     public static func daemonIdentity(_ pid: pid_t) -> DaemonIdentity? {
         #if os(Linux)
         // libproc is Darwin-only: the same facts from /proc.

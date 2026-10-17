@@ -26,7 +26,11 @@ struct BootStageTests {
     @Test func theRecordedBootsSerialLinesGiveTheStagesInOrder() async throws {
         try await withScratchDirectory { dir in
             var fds: [Int32] = [-1, -1]
+            #if os(Windows)
+            #expect(_pipe(&fds, 4096, _O_BINARY | _O_NOINHERIT) == 0)
+            #else
             #expect(pipe(&fds) == 0)
+            #endif
             let seen = Seen()
             let reader = try LogPipeReader(
                 descriptor: fds[0],
@@ -39,7 +43,12 @@ struct BootStageTests {
             // 64 bytes at a time: markers split across writes.
             for start in stride(from: 0, to: log.count, by: 64) {
                 let chunk = log[start..<min(start + 64, log.count)]
+                #if os(Windows)
+                // UCRT write takes a UInt32 count.
+                _ = chunk.withUnsafeBytes { write(fds[1], $0.baseAddress, UInt32(chunk.count)) }
+                #else
                 _ = chunk.withUnsafeBytes { write(fds[1], $0.baseAddress, chunk.count) }
+                #endif
                 try await Task.sleep(for: .milliseconds(2))
             }
             try await Task.sleep(for: .milliseconds(100))
@@ -132,7 +141,11 @@ struct BootStageTests {
     @Test func theSerialWatchReportsEachPhraseOnceAcrossWrites() throws {
         try withTemporaryDirectory { dir in
             var fds: [Int32] = [-1, -1]
+            #if os(Windows)
+            #expect(_pipe(&fds, 4096, _O_BINARY | _O_NOINHERIT) == 0)
+            #else
             #expect(pipe(&fds) == 0)
+            #endif
             let matches = Matches()
             let reader = try LogPipeReader(
                 descriptor: fds[0],
@@ -141,7 +154,12 @@ struct BootStageTests {
             )
             // Each write is drained (flush waits on the reader's queue) before the next: every write is its own chunk.
             func send(_ text: String) {
+                #if os(Windows)
+                // UCRT write takes a UInt32 count.
+                _ = text.withCString { write(fds[1], $0, UInt32(strlen($0))) }
+                #else
                 _ = text.withCString { write(fds[1], $0, strlen($0)) }
+                #endif
                 reader.flush()
             }
             send("iBoot-636.66\nroot filesystem mou")
