@@ -183,6 +183,8 @@ import Darwin
     }
 
     /// Cancel's process sweep: a grandchild is found and stopped.
+    /// Unix-only: spawns /bin/sh and uses kill/waitpid.
+    #if !os(Windows)
     @Test func terminatesDescendants() async throws {
         // Spawned and reaped here rather than through Process, whose waitUntilExit once missed the exit under load and hung the plan.
         var sh: pid_t = 0
@@ -225,6 +227,7 @@ import Darwin
         #expect(reaped)
         #expect(kids.allSatisfy { kill($0, 0) != 0 })
     }
+    #endif
 
     struct Run {
         var lines: [[String: Any]]

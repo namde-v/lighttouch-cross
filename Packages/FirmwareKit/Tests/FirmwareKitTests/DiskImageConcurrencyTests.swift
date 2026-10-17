@@ -13,6 +13,8 @@ import Testing
 @testable import FirmwareKit
 
 struct DiskImageConcurrencyTests {
+    // Unix-only: shells out to /usr/bin/printf.
+    #if !os(Windows)
     @Test func harmlessCommandsMakeConcurrentProgress() async throws {
         let completed = try await withThrowingTaskGroup(of: Bool.self) { group in
             for index in 0..<64 {
@@ -32,6 +34,9 @@ struct DiskImageConcurrencyTests {
         #expect(completed.count == 64)
         #expect(completed.allSatisfy { $0 })
     }
+    #endif
+    // Unix-only: shells out to /bin/sh and checks signal termination.
+    #if !os(Windows)
     @Test func exitSignalStdioAndClosedInputRemainDistinct() async throws {
         let exit = try await DiskImage.exec(["/bin/sh", "-c", "printf out; printf err >&2; exit 7"])
         #expect(exit.0 == 7 && exit.1 == "outerr")
@@ -43,7 +48,10 @@ struct DiskImageConcurrencyTests {
             _ = try await DiskImage.exec(["/private/tmp/firmwarekit-no-such-tool-" + UUID().uuidString])
         }
     }
+    #endif
 
+    // Unix-only: shells out to /bin/sh and checks kill(pid, 0).
+    #if !os(Windows)
     @Test func cancellingActualToolReapsItsChild() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -67,6 +75,7 @@ struct DiskImageConcurrencyTests {
         await #expect(throws: CancellationError.self) { _ = try await tool.value }
         #expect(kill(pid, 0) == -1 && errno == ESRCH, "tool child must be gone when cancelled await returns")
     }
+    #endif
 
     @Test func failedAttachmentQueryDoesNotBecomeEmptySuccess() throws {
         let empty = "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>images</key><array/></dict></plist>"

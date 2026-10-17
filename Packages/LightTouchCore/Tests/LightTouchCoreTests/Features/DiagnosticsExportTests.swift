@@ -85,6 +85,8 @@ struct DiagnosticsExportTests {
         return try LibraryFixtures.script(directory.appendingPathComponent("archive-helper"), script)
     }
 
+    // Unix-only: shells out to /usr/bin/unzip and checks kill(pid, 0).
+    #if !os(Windows)
     @Test func exportIsAtomicAndCancellable() async throws {
         try await LibraryFixtures.withScratch { root in
             let scratch = root.appendingPathComponent("diagnostic temp")
@@ -190,6 +192,7 @@ struct DiagnosticsExportTests {
             #expect(try text(log) == "sample events")
         }
     }
+    #endif
 
     /// The archive's logs, info and crash reports carry no identity: the home folder, the user's and the Mac's
     /// names, the device's own identifiers and anything shaped like one are gone from the text, and a crash report

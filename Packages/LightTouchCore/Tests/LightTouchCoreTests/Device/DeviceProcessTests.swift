@@ -55,6 +55,8 @@ struct DeviceProcessTests {
         var closedAfter = -1
     }
 
+    // Unix-only: needs socketpair(2); LinkChannel close behavior is covered on Windows by other tests.
+    #if !os(Windows)
     @Test func aReapedHelpersLastFrameIsDeliveredOnceBeforeClose() throws {
         for _ in 0..<50 {
             var sv: [Int32] = [-1, -1]
@@ -83,6 +85,7 @@ struct DeviceProcessTests {
             #expect(got == ["exit 0"] && closedAfter == 1, "delivered \(got), closed after \(closedAfter)")
         }
     }
+    #endif
 
     enum Failure: Error { case controlled }
 

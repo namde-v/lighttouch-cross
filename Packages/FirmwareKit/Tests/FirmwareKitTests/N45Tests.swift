@@ -343,8 +343,12 @@ import Testing
                 #expect((report["gles_engine"] is NSNull) != gles)
                 #expect(owned.contains(GuestPackage.loader.0) && owned.contains(GuestPackage.loader.1))
                 for rel in owned {  // everything written is there
+                    #if os(Windows)
+                    #expect(FileManager.default.fileExists(atPath: a.appendingPathComponent(rel).path), "\(rel)")
+                    #else
                     var st = stat()
                     #expect(lstat(a.appendingPathComponent(rel).path, &st) == 0, "\(rel)")
+                    #endif
                 }
                 let env = { (m: URL) in
                     (NSDictionary(contentsOf: m.appendingPathComponent(SystemEdits.springBoardJob))?[

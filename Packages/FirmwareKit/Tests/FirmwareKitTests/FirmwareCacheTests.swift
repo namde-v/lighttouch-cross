@@ -23,6 +23,14 @@ struct FirmwareCacheTests {
             #expect(try Data(contentsOf: file) == Data("cached".utf8))
         }
         try reader()
+        #if os(Windows)
+        // No lstat(2)/st_ino on Windows: the lease file surviving prune (not replaced) is the assertion.
+        let lease = root.appendingPathComponent(".lease").path
+        #expect(FileManager.default.fileExists(atPath: lease))
+        try FirmwareCache.prune(root: root)
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+        #expect(FileManager.default.fileExists(atPath: lease))
+        #else
         var before = stat()
         var after = stat()
         #expect(lstat(root.appendingPathComponent(".lease").path, &before) == 0)
@@ -30,5 +38,6 @@ struct FirmwareCacheTests {
         #expect(!FileManager.default.fileExists(atPath: file.path))
         #expect(lstat(root.appendingPathComponent(".lease").path, &after) == 0)
         #expect(before.st_ino == after.st_ino)
+        #endif
     }
 }
