@@ -68,8 +68,12 @@ import Testing
         let p = N72NAND.metadataPages(blocks: 128000, epoch: 1)
         #expect(p.count == 50 && p.values.allSatisfy { $0.count == 4096 + 64 })
         let hdr = try #require(p[.init(cs: 1, page: 256)])
+        // (built with appends: the Windows compiler mis-infers chained array `+`)
+        var hdrForCrc = Array(hdr[0..<0x10])
+        hdrForCrc += [0, 0, 0, 0]
+        hdrForCrc += hdr[0x14..<0x5C]
         #expect(
-            crc(hdr[0..<0x10] + [0, 0, 0, 0] + hdr[0x14..<0x5C]) == UInt32(hdr[0x10]) | UInt32(hdr[0x11]) << 8
+            crc(hdrForCrc[...]) == UInt32(hdr[0x10]) | UInt32(hdr[0x11]) << 8
                 | UInt32(hdr[0x12]) << 16 | UInt32(hdr[0x13]) << 24
         )
         #expect(p[.init(cs: 2, page: 256)]![0x28..<0x30].reversed().reduce(0) { $0 << 8 | Int($1) } == 128002)

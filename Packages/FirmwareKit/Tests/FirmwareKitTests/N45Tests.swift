@@ -171,10 +171,11 @@ import Testing
             }
             #expect(!fm.fileExists(atPath: file(N45NAND.Page(bank: bank, page: 35 * 128 + 8)).path))
             let d = Array(first[0..<pp])
-            #expect(
-                Array(first[pp...]) == [UInt8](repeating: 0xFF, count: 8) + [0, 0x80]
-                    + [UInt8](repeating: 0xFF, count: 54)
-            )
+            // (built with appends: the Windows compiler mis-infers chained array `+`)
+            var expectedTail: [UInt8] = [UInt8](repeating: 0xFF, count: 8)
+            expectedTail += [0, 0x80]
+            expectedTail += [UInt8](repeating: 0xFF, count: 54)
+            #expect(Array(first[pp...]) == expectedTail)
             #expect(le(d, 0, 4) == UInt64(bank) && le(d, 0xC, 4) == 0xFFFF_FFFF && le(d, 0x12, 2) == 8)
             #expect(
                 le(d, 0x14, 2) == 1 && le(d, 0x1A, 2) == 1 && le(d, 0x1C, 2) == 39 && le(d, 0x1E, 2) == 162
