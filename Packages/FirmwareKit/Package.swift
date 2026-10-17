@@ -111,7 +111,9 @@ let package = Package(
                 .product(name: "ZIPFoundation", package: "ZIPFoundation"),
                 .product(name: "MachOKit", package: "MachOKit", condition: .when(platforms: [.macOS, .linux])),
                 .product(name: "Subprocess", package: "swift-subprocess"),
-                .product(name: "Unrar", package: "Unrar.swift"),
+                // Unrar only where its C++ links: the Windows MSVC build has
+                // undefined symbols (MarkOfTheWeb etc.); RARSource is gated out there.
+                .product(name: "Unrar", package: "Unrar.swift", condition: .when(platforms: [.macOS, .linux])),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "_CryptoExtras", package: "swift-crypto"),
                 .product(name: "SystemPackage", package: "swift-system"),

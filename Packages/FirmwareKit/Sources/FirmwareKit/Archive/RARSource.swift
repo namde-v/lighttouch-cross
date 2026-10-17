@@ -10,7 +10,9 @@
 import Crypto
 import FirmwareSchema
 import Foundation
+#if !os(Windows)
 import Unrar
+#endif
 
 public enum RARSource {
     public static func unwrap(
@@ -19,6 +21,10 @@ public enum RARSource {
         to ipsw: URL,
         progress: ((Double) -> Void)? = nil
     ) throws {
+        #if os(Windows)
+        // Unrar's C++ doesn't link on Windows (undefined MarkOfTheWeb symbols).
+        throw FirmwareError(.unsupported, "RAR extraction is unsupported on Windows")
+        #else
         guard source.isArchive, let member = source.member, let sha1 = source.sha1, let archiveSHA1 = source.archiveSHA1
         else {
             throw FirmwareError(.unsupported, "not a rar source with member, sha1 and archive_sha1")
@@ -92,6 +98,7 @@ public enum RARSource {
         }
         try? FileManager.default.removeItem(at: ipsw)
         try FileManager.default.moveItem(at: partial, to: ipsw)
+        #endif
     }
 
     static func size(_ url: URL) -> Int64 {
