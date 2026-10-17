@@ -20,6 +20,15 @@ import enum HostRuntime.GuestPack
 
 @testable import FirmwareKit
 
+#if os(Windows)
+    /// setenv is POSIX-only. The iBoot-patcher test needs macOS fixtures to run at all,
+    /// so this shim only keeps the call compiling; the test skips without fixtures.
+    func setenv(_ name: String, _ value: String, _ overwrite: Int32) -> Int32 {
+        _ = overwrite
+        return name.withCString { n in value.withCString { v in _putenv_s(n, v) } }
+    }
+#endif
+
 /// Real firmware for the fit checks: the Python decrypt caches' rootfs.dmg (skipped when absent), with a chosen set of
 /// the system volume's files copied out of the HFS image into a plain directory (a stand-in for the mounted volume).
 enum FitFixture {
@@ -125,7 +134,7 @@ enum FitFixture {
     static func deflateRaw(_ data: Data) throws -> Data {
         #if canImport(Compression)
             return try (data as NSData).compressed(using: .zlib) as Data
-        #else
+        #elseif !os(Windows)
             var stream = z_stream()
             guard
                 deflateInit2_(
@@ -155,6 +164,10 @@ enum FitFixture {
             }
             guard status == Z_STREAM_END else { throw CocoaError(.fileWriteUnknown) }
             return output
+        #else
+            // No zlib on Windows (CZlibFK is a no-op there); repack is only called by
+            // fixture-gated tests, so this is unreachable in practice.
+            throw FirmwareError(.unsupported, "raw deflate needs zlib")
         #endif
     }
 
@@ -181,9 +194,13 @@ enum FitFixture {
     @Test func trieReexports() {
         // (one byte before the trie) root: no info, children "_A" -> 10 and "_B" -> 15;
         // _A: flags 8 (re-export), ordinal 2, same name; _B: flags 0, address 4
-        let b: [UInt8] =
-            [0xEE] + [0x00, 0x02] + Array("_A".utf8) + [0, 10] + Array("_B".utf8) + [0, 15]
-            + [0x03, 0x08, 0x02, 0x00, 0x00] + [0x02, 0x00, 0x04, 0x00]
+        // Broken into statements: the single chained expression exceeds the Windows
+        // compiler's type-checking budget.
+        var b: [UInt8] = [0xEE, 0x00, 0x02]
+        b += Array("_A".utf8)
+        b += [0, 10]
+        b += Array("_B".utf8)
+        b += [0, 15, 0x03, 0x08, 0x02, 0x00, 0x00, 0x02, 0x00, 0x04, 0x00]
         #expect(b.withUnsafeBytes { MachO32.trieReexports($0, at: 1, size: b.count - 1) } == ["_A"])
         #expect(b.withUnsafeBytes { MachO32.trieReexports($0, at: 1, size: 3) } == [])  // truncated: nothing, no crash
     }

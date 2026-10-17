@@ -80,10 +80,10 @@ public enum FirmwareCommand {
             if let sibling {
                 args += ["--sibling-entry", sibling.entry.path, "--sibling-ipsw", sibling.ipsw.path]
             }
-            if skipSetup { args.append("--skip-setup") }
-            if jailbreak { args.append("--jailbreak") }
             if let language { args += ["--language", language] }
             if let keyboards { args += ["--keyboards", keyboards] }
+            if skipSetup { args.append("--skip-setup") }
+            if jailbreak { args.append("--jailbreak") }
             return args
         }
         #else

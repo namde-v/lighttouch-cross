@@ -44,8 +44,10 @@ import Testing
 
     /// Every anchor in a 1.x firmware's own store (FK_TRUSTSTORE_1X: its Security.framework/TrustStore.sqlite3):
     /// its subj column is normalizedSubject of its data, its tset the empty settings.
-    @Test(.enabled(if: FixtureRequirements.corpusEnabled, "Firmware corpus test; set FK_TEST_CORPUS=1 to run"))
-    func matchesTheStockStore() throws {
+    /// No SQLite on Windows (CSQLite3 is a no-op there).
+    #if !os(Windows)
+        @Test(.enabled(if: FixtureRequirements.corpusEnabled, "Firmware corpus test; set FK_TEST_CORPUS=1 to run"))
+        func matchesTheStockStore() throws {
         guard let path = ProcessInfo.processInfo.environment["FK_TRUSTSTORE_1X"] else {
             try FixtureRequirements.missing("FK_TRUSTSTORE_1X")
         }
@@ -68,8 +70,11 @@ import Testing
         }
         #expect(rows > 100)
     }
+    #endif
 
-    @Test func addsAnAnchorRowAsTheStockRowsAre() throws {
+    /// No SQLite on Windows (CSQLite3 is a no-op there); trust-store editing is unsupported there too.
+    #if !os(Windows)
+        @Test func addsAnAnchorRowAsTheStockRowsAre() throws {
         let store = FileManager.default.temporaryDirectory.appendingPathComponent("ts-\(UUID()).sqlite3")
         defer { try? FileManager.default.removeItem(at: store) }
         var db: OpaquePointer?
@@ -102,12 +107,15 @@ import Testing
         #expect(blob(3) == Self.certificate)
         #expect(sqlite3_step(stmt) == SQLITE_DONE)
     }
+    #endif
 
     /// A stopped 1.x device (N45FTLTests' booted-guest store around a volume with an empty system trust store):
     /// trust() writes the row through a stopped edit, records the marker, and does nothing the second time.
     // Needs a real HFS volume (makeHFS/withMounted); Linux makeHFS is an honest stub (see SHIM_NOTES.md).
-    @Test(.enabled(if: TrustStore1xTests.hfsVolumeAvailable, "needs HFS volume tooling"))
-    func trustsThroughAStoppedEdit() async throws {
+    // No SQLite on Windows (CSQLite3 is a no-op there).
+    #if !os(Windows)
+        @Test(.enabled(if: TrustStore1xTests.hfsVolumeAvailable, "needs HFS volume tooling"))
+        func trustsThroughAStoppedEdit() async throws {
         let fm = FileManager.default
         let root = try Fixtures.tempDir("trust1x-edit")
         defer { try? fm.removeItem(at: root) }
@@ -185,4 +193,5 @@ import Testing
             Data(bytes: sqlite3_column_blob(stmt, 0), count: Int(sqlite3_column_bytes(stmt, 0))) == Self.certificate
         )
     }
+    #endif
 }

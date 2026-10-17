@@ -16,11 +16,10 @@ struct StoppedStorageTests {
         defer { try? FileManager.default.removeItem(at: dir) }
         let path = dir.appendingPathComponent("work/lease")
         try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
-        // Exactly the flags used by LightTouchDevice, on an independent descriptor.
-        let fd = open(path.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
-        #expect(fd >= 0)
-        defer { close(fd) }
-        #expect(flock(fd, LOCK_EX | LOCK_NB) == 0)
+        // Hold the lease the way the device does (POSIX flock is unavailable on Windows;
+        // OwnedStorageRecord uses the platform lock underneath).
+        let lease = try OwnedStorageRecord.acquire(device: dir, allowRaw: true)
+        withExtendedLifetime(lease) {}
         let out = dir.appendingPathComponent("export")
         await #expect(throws: FirmwareError.self) {
             try await VolumeExport.export(.init(device: dir), out: out)

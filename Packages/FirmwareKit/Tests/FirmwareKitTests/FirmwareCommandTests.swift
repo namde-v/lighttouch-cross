@@ -6,37 +6,73 @@ import Testing
 struct FirmwareCommandTests {
     @Test func everyCommandsArgumentsParseBackToTheSameCommand() throws {
         let url = URL(fileURLWithPath: "/tmp/a b")
-        // The commands the app and the harness build.
-        let built: [any FirmwareCommandLine] = [
-            FirmwareCommand.Create(
-                entry: url,
-                ipsw: url,
-                out: url,
-                seed: "S",
-                helper: url,
-                cache: url,
-                guestTools: url,
-                sibling: (url, url),
-                skipSetup: true,
-                language: "fr-FR"
-            ),
-            FirmwareCommand.UnpackBase(blob: url, out: url, seed: "S"),
-            FirmwareCommand.PackBase(base: url, out: url),
-            FirmwareCommand.BootAdmit(device: url, recordPolicy: .standalone, allowRaw: true),
-            FirmwareCommand.Edit(
-                device: url,
-                action: .trustAnchor,
-                session: UUID(),
-                recordPolicy: .managed,
-                cert: url,
-                mountPoint: url
-            ),
-            FirmwareCommand.Mount(device: url, recordPolicy: .managed, out: url, root: url),
-            FirmwareCommand.Unmount(out: url),
-            FirmwareCommand.CachePrune(root: url),
-            FirmwareCommand.DetachImages(root: url),
-            FirmwareCommand.Unwrap(entry: url, archive: url, out: url),
-        ]
+        #if os(Windows)
+            // No memberwise inits on Windows (the @Option-wrapper SIL bug); the app builds
+            // argv through the same static factories, so the round-trip test does too.
+            let builtArgs: [[String]] = [
+                FirmwareCommand.Create.arguments(
+                    entry: url,
+                    ipsw: url,
+                    out: url,
+                    seed: "S",
+                    helper: url,
+                    cache: url,
+                    guestTools: url,
+                    sibling: (url, url),
+                    skipSetup: true,
+                    language: "fr-FR"
+                ),
+                FirmwareCommand.UnpackBase.arguments(blob: url, out: url, seed: "S"),
+                FirmwareCommand.PackBase.arguments(base: url, out: url),
+                FirmwareCommand.BootAdmit.arguments(device: url, recordPolicy: .standalone, allowRaw: true),
+                FirmwareCommand.Edit.arguments(
+                    device: url,
+                    action: .trustAnchor,
+                    session: UUID(),
+                    recordPolicy: .managed,
+                    cert: url,
+                    mountPoint: url
+                ),
+                FirmwareCommand.Mount.arguments(device: url, recordPolicy: .managed, out: url, root: url),
+                FirmwareCommand.Unmount.arguments(out: url),
+                FirmwareCommand.CachePrune.arguments(root: url),
+                FirmwareCommand.DetachImages.arguments(root: url),
+                FirmwareCommand.Unwrap.arguments(entry: url, archive: url, out: url),
+            ]
+        #else
+            // The commands the app and the harness build.
+            let built: [any FirmwareCommandLine] = [
+                FirmwareCommand.Create(
+                    entry: url,
+                    ipsw: url,
+                    out: url,
+                    seed: "S",
+                    helper: url,
+                    cache: url,
+                    guestTools: url,
+                    sibling: (url, url),
+                    skipSetup: true,
+                    language: "fr-FR"
+                ),
+                FirmwareCommand.UnpackBase(blob: url, out: url, seed: "S"),
+                FirmwareCommand.PackBase(base: url, out: url),
+                FirmwareCommand.BootAdmit(device: url, recordPolicy: .standalone, allowRaw: true),
+                FirmwareCommand.Edit(
+                    device: url,
+                    action: .trustAnchor,
+                    session: UUID(),
+                    recordPolicy: .managed,
+                    cert: url,
+                    mountPoint: url
+                ),
+                FirmwareCommand.Mount(device: url, recordPolicy: .managed, out: url, root: url),
+                FirmwareCommand.Unmount(out: url),
+                FirmwareCommand.CachePrune(root: url),
+                FirmwareCommand.DetachImages(root: url),
+                FirmwareCommand.Unwrap(entry: url, archive: url, out: url),
+            ]
+            let builtArgs = built.map(\.arguments)
+        #endif
         // The ones only people and scripts type, in `arguments`' order.
         let typed = [
             [
@@ -54,7 +90,7 @@ struct FirmwareCommandTests {
             ["developer-audit", "--payload", "/p"],
         ]
         var covered: Set<String> = []
-        for arguments in built.map(\.arguments) + typed {
+        for arguments in builtArgs + typed {
             let type = try #require(FirmwareCommand.all.first { $0.configuration.commandName == arguments.first })
             let parsed = try type.parse(Array(arguments.dropFirst()))
             #expect(parsed.arguments == arguments)
@@ -66,15 +102,37 @@ struct FirmwareCommandTests {
     /// The app's Skip Setup Assistant choice reaches the preparer as --skip-setup, and only when chosen.
     @Test func createPassesSkipSetupOnlyWhenChosen() {
         let url = URL(fileURLWithPath: "/tmp/x")
-        #expect(FirmwareCommand.Create(entry: url, ipsw: url, out: url, skipSetup: true).arguments.last == "--skip-setup")
-        #expect(!FirmwareCommand.Create(entry: url, ipsw: url, out: url).arguments.contains("--skip-setup"))
+        #if os(Windows)
+            #expect(
+                FirmwareCommand.Create.arguments(entry: url, ipsw: url, out: url, skipSetup: true).last
+                    == "--skip-setup"
+            )
+            #expect(!FirmwareCommand.Create.arguments(entry: url, ipsw: url, out: url).contains("--skip-setup"))
+        #else
+            #expect(
+                FirmwareCommand.Create(entry: url, ipsw: url, out: url, skipSetup: true).arguments.last
+                    == "--skip-setup"
+            )
+            #expect(!FirmwareCommand.Create(entry: url, ipsw: url, out: url).arguments.contains("--skip-setup"))
+        #endif
     }
 
     /// The app's Jailbreak choice reaches the preparer as --jailbreak, and only when chosen.
     @Test func createPassesJailbreakOnlyWhenChosen() {
         let url = URL(fileURLWithPath: "/tmp/x")
-        #expect(FirmwareCommand.Create(entry: url, ipsw: url, out: url, jailbreak: true).arguments.last == "--jailbreak")
-        #expect(!FirmwareCommand.Create(entry: url, ipsw: url, out: url).arguments.contains("--jailbreak"))
+        #if os(Windows)
+            #expect(
+                FirmwareCommand.Create.arguments(entry: url, ipsw: url, out: url, jailbreak: true).last
+                    == "--jailbreak"
+            )
+            #expect(!FirmwareCommand.Create.arguments(entry: url, ipsw: url, out: url).contains("--jailbreak"))
+        #else
+            #expect(
+                FirmwareCommand.Create(entry: url, ipsw: url, out: url, jailbreak: true).arguments.last
+                    == "--jailbreak"
+            )
+            #expect(!FirmwareCommand.Create(entry: url, ipsw: url, out: url).arguments.contains("--jailbreak"))
+        #endif
     }
 
     @Test func createTakesAnEntryOrACatalogWithAnID() {
