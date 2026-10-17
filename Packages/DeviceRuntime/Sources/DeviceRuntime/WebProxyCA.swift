@@ -59,16 +59,19 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
         // No flock(2) or O_NOFOLLOW on Windows: an exclusive LockFileEx on the
         // CRT descriptor's HANDLE (see StorageLease), refusing reparse points
         // (symlinks, junctions) as O_NOFOLLOW does on POSIX.
+        // The POSIX open spelling crashes Swift 6.2.4's Windows overlay at
+        // runtime (and _open is variadic/unavailable in Swift): open the lock
+        // via CreateFileW + _open_osfhandle instead (the Vendor.lock pattern).
         let lockPath = config.path + ".ca.lock"
         if isReparsePoint(lockPath) { throw Failure.unreadable("lock") }
-        let lock = open(lockPath, O_RDWR | O_CREAT | _O_NOINHERIT, 0o600)
+        let lock = openLockFile(lockPath)
         guard lock >= 0, lockExclusive(lock) else {
-            if lock >= 0 { _ = WinSDK.close(lock) }
+            if lock >= 0 { _ = _close(lock) }
             throw Failure.unreadable("lock")
         }
         defer {
             unlock(lock)
-            _ = WinSDK.close(lock)
+            _ = _close(lock)
         }
         #else
         let lock = open(config.path + ".ca.lock", O_RDWR | O_CREAT | O_NOFOLLOW, 0o600)
@@ -277,6 +280,32 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
     }
 
     #if os(Windows)
+    /// A CRT descriptor for the lock file (created when missing), via
+    /// CreateFileW + _open_osfhandle: the POSIX open spelling crashes Swift
+    /// 6.2.4's Windows overlay at runtime, and _open is variadic/unavailable
+    /// in Swift (the Vendor.lock pattern). The HANDLE is non-inheritable
+    /// (nil security attributes), matching _O_NOINHERIT; _open_osfhandle
+    /// transfers ownership, so _close(fd) closes the HANDLE too.
+    private static func openLockFile(_ path: String) -> Int32 {
+        var wide = Array(path.utf16)
+        wide.append(0)
+        let handle: UnsafeMutableRawPointer? = wide.withUnsafeBufferPointer { buffer in
+            guard let wpath = buffer.baseAddress else { return nil }
+            return CreateFileW(
+                wpath,
+                DWORD(GENERIC_READ) | DWORD(GENERIC_WRITE),
+                DWORD(FILE_SHARE_READ) | DWORD(FILE_SHARE_WRITE) | DWORD(FILE_SHARE_DELETE),
+                nil,
+                DWORD(OPEN_ALWAYS),
+                DWORD(FILE_ATTRIBUTE_NORMAL),
+                nil)
+        }
+        guard let handle, handle != INVALID_HANDLE_VALUE else { return -1 }
+        let fd = _open_osfhandle(Int(bitPattern: handle), O_RDWR)
+        if fd < 0 { CloseHandle(handle) }
+        return fd
+    }
+
     /// No flock(2) on Windows: an exclusive byte-range lock via LockFileEx on
     /// the CRT descriptor's HANDLE (same pattern as StorageLease).
     private static func lockExclusive(_ fd: Int32) -> Bool {
