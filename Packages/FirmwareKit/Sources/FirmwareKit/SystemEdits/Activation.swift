@@ -64,6 +64,38 @@ public enum Activation {
             after = try signed(after)
         }
         // Preserve the HFS catalog record and its metadata; this file is on a disposable staging volume.
+        #if os(Windows)
+        // No O_NOFOLLOW or fchmod(2) on Windows: open binary (no CRLF translation) and use the
+        // path-based UCRT _chmod, which honors the write bit (read-only vs. writable).
+        let metadata = open(file.path, O_RDONLY | _O_BINARY)
+        guard metadata >= 0 else { throw ActivationFailure("Cannot open activation target") }
+        var original = stat()
+        guard fstat(metadata, &original) == 0, Int32(original.st_mode) & S_IFMT == S_IFREG else {
+            close(metadata)
+            throw ActivationFailure("Activation target is not a regular file")
+        }
+        defer {
+            _ = chmod(file.path, Int32(original.st_mode) & 0o7777)
+            close(metadata)
+        }
+        guard chmod(file.path, Int32(original.st_mode) & 0o7777 | 0o200) == 0 else {
+            throw ActivationFailure("Cannot make activation target writable")
+        }
+        let out = open(file.path, O_WRONLY | _O_BINARY)
+        guard out >= 0 else { throw ActivationFailure("Cannot open activation target") }
+        defer { close(out) }
+        try after.withUnsafeBytes { bytes in
+            guard let start = bytes.baseAddress else { return }  // empty: nothing to write
+            var offset = 0
+            while offset < bytes.count {
+                // UCRT write takes a UInt32 count and returns Int32.
+                let count = Int(write(out, start.advanced(by: offset), UInt32(bytes.count - offset)))
+                if count < 0 && errno == EINTR { continue }
+                guard count > 0 else { throw ActivationFailure("Cannot write activation target") }
+                offset += count
+            }
+        }
+        #else
         let metadata = open(file.path, O_RDONLY | O_NOFOLLOW)
         guard metadata >= 0 else { throw ActivationFailure("Cannot open activation target") }
         var original = stat()
@@ -91,6 +123,7 @@ public enum Activation {
                 offset += count
             }
         }
+        #endif
         let patch = Patch(
             strategy: String(cString: report.strategy),
             isa: String(cString: report.isa),
@@ -262,14 +295,38 @@ enum MachOSignature {
     }
 
     /// LC_CODE_SIGNATURE's (dataoff, datasize) of a thin 32-bit Mach-O in memory (Activation.signed patches the buffer).
-    #if canImport(MachOKit)
     static func codeSignature(in data: Data) -> (offset: Int, size: Int)? {
+        #if canImport(MachOKit)
         data.withUnsafeBytes { b -> (Int, Int)? in
             guard b.count >= 28, let base = b.baseAddress, b.loadUnaligned(as: UInt32.self) == 0xFEED_FACE,
                 let cs = codeSignature(MachOImage(ptr: base.assumingMemoryBound(to: mach_header.self)).loadCommands)
             else { return nil }
             return (Int(cs.dataoff), Int(cs.datasize))
         }
+        #else
+        // MachOKit is unavailable on Windows: parse the 32-bit Mach-O header directly.
+        // mach_header (28 bytes): magic, cputype, cpusubtype, filetype, ncmds, sizeofcmds, flags.
+        // Each load command starts with cmd, cmdsize; LC_CODE_SIGNATURE (0x1D) is a
+        // linkedit_data_command: cmd, cmdsize, dataoff, datasize.
+        data.withUnsafeBytes { b -> (Int, Int)? in
+            guard let base = b.baseAddress, b.count >= 28 else { return nil }
+            guard base.loadUnaligned(as: UInt32.self) == 0xFEED_FACE else { return nil }
+            let ncmds = base.advanced(by: 16).loadUnaligned(as: UInt32.self)
+            var off = 28
+            for _ in 0..<ncmds {
+                guard off + 8 <= b.count else { return nil }
+                let cmd = base.advanced(by: off).loadUnaligned(as: UInt32.self)
+                let cmdsize = base.advanced(by: off + 4).loadUnaligned(as: UInt32.self)
+                guard cmdsize >= 8, off + Int(cmdsize) <= b.count else { return nil }
+                if cmd == 0x1D, cmdsize >= 16 {
+                    let dataoff = base.advanced(by: off + 8).loadUnaligned(as: UInt32.self)
+                    let datasize = base.advanced(by: off + 12).loadUnaligned(as: UInt32.self)
+                    return (Int(dataoff), Int(datasize))
+                }
+                off += Int(cmdsize)
+            }
+            return nil
+        }
+        #endif
     }
-    #endif
 }

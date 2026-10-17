@@ -15,14 +15,14 @@ import HostRuntime
 public actor StorageGeneration {
     public enum Phase: String, Codable, Sendable { case editing, ready, published }
     public struct Intent: Codable, Sendable {
-        public let id: UUID
+        public let id: Foundation.UUID
         public let originalRecord: String
         public var phase: Phase
         public var candidateRecord: String?
         public var storageManifest: String? = nil
     }
     nonisolated public let device: URL
-    nonisolated public let id: UUID
+    nonisolated public let id: Foundation.UUID
     nonisolated public let root: URL
     nonisolated public var base: URL { root.appendingPathComponent("base") }
     nonisolated public var overlay: URL { root.appendingPathComponent("overlay") }
@@ -43,7 +43,7 @@ public actor StorageGeneration {
     static func begin(owner: StoppedRecordOwner) throws -> StorageGeneration {
         try StorageGeneration(owner: owner, resume: nil)
     }
-    public static func resume(device: URL, id: UUID, policy: StorageRecordPolicy = .standalone) throws
+    public static func resume(device: URL, id: Foundation.UUID, policy: StorageRecordPolicy = .standalone) throws
         -> StorageGeneration
     {
         let owner = try OwnedStorageRecord.acquire(device: device, policy: policy, resume: true)
@@ -67,7 +67,7 @@ public actor StorageGeneration {
         if let resume {
             intent = resume
         } else {
-            intent = Intent(id: UUID(), originalRecord: Self.hash(snapshot), phase: .editing)
+            intent = Intent(id: Foundation.UUID(), originalRecord: Self.hash(snapshot), phase: .editing)
         }
         let root = device.appendingPathComponent("generations/\(intent.id.uuidString)")
         guard root.resolvingSymlinksInPath().path.hasPrefix(device.path + "/generations/") else {
@@ -398,10 +398,23 @@ public actor StorageGeneration {
     }
     static func hash(_ data: Data) -> String { Preparer.sha256(data) }
     static func sync(_ url: URL) throws {
+        #if os(Windows)
+        // No fsync(2) or open(2) on directories: _commit files; directory entry
+        // durability is best-effort (no FlushFileBuffers handle dance).
+        var isDir: ObjCBool = false
+        let isDirectory = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
+        guard !isDirectory else { return }
+        // O_NOFOLLOW has no Windows equivalent; these are internal storage paths.
+        let fd = open(url.path, O_RDONLY | _O_BINARY | O_CLOEXEC)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        defer { posixClose(fd) }
+        guard fsync(fd) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        #else
         let fd = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         defer { posixClose(fd) }
         guard fsync(fd) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        #endif
     }
     private static func writableDirectories(_ directory: URL) throws {
         let fm = FileManager.default
@@ -431,8 +444,14 @@ public actor StorageGeneration {
         try sync(directory)
     }
     static func write(_ data: Data, to destination: URL) throws {
-        let temporary = destination.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString).tmp")
+        let temporary = destination.deletingLastPathComponent().appendingPathComponent(".\(Foundation.UUID().uuidString).tmp")
+        #if os(Windows)
+        // O_NOFOLLOW has no Windows equivalent; O_EXCL on a fresh temp name is the symlink defense here.
+        // _O_BINARY: the UCRT defaults to text mode (CRLF translation).
+        let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | _O_BINARY, 0o600)
+        #else
         let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        #endif
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         defer {
             posixClose(fd)
@@ -459,7 +478,8 @@ public actor StorageGeneration {
     /// the new one whole. A volume without F_FULLFSYNC (some network shares) gets fsync.
     static func fullSync(_ fd: Int32) -> Bool {
         // F_FULLFSYNC is Darwin-only; Linux has no drive-cache flush ioctl here, so fsync is the whole story.
-        #if os(Linux)
+        // Windows: _commit (the fsync shim) is the whole story.
+        #if os(Linux) || os(Windows)
             return fsync(fd) == 0
         #else
             return fcntl(fd, F_FULLFSYNC) == 0 || fsync(fd) == 0
@@ -483,7 +503,8 @@ private func posixWrite(_ fd: Int32, _ buf: UnsafeRawPointer?, _ count: Int) -> 
     #if os(Linux)
         Glibc.write(fd, buf, count)
     #elseif os(Windows)
-        WinSDK.write(fd, buf, count)
+        // UCRT write takes a UInt32 count and returns Int32.
+        Int(WinSDK.write(fd, buf, UInt32(count)))
     #else
         Darwin.write(fd, buf, count)
     #endif

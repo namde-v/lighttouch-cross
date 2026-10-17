@@ -318,12 +318,51 @@ public enum Preparer {
             guard hz > 0 else { return nil }
             return (st.startTicks / hz, st.startTicks % hz * 1_000_000 / hz)
         }
+    #elseif os(Windows)
+        /// Windows: direct children via the Tool Help process snapshot.
+        private static func procChildren(of pid: pid_t) -> [pid_t] {
+            let snapshot = CreateToolhelp32Snapshot(DWORD(TH32CS_SNAPPROCESS), 0)
+            guard snapshot != INVALID_HANDLE_VALUE else { return [] }
+            defer { CloseHandle(snapshot) }
+            var entry = PROCESSENTRY32()
+            entry.dwSize = DWORD(MemoryLayout<PROCESSENTRY32>.size)
+            var out: [pid_t] = []
+            var ok = Process32First(snapshot, &entry)
+            while ok {
+                let child = pid_t(bitPattern: entry.th32ProcessID)
+                if pid_t(bitPattern: entry.th32ParentProcessID) == pid, child != pid { out.append(child) }
+                ok = Process32Next(snapshot, &entry)
+            }
+            return out
+        }
+
+        /// Windows: process start time from GetProcessTimes (100ns ticks since 1601), as
+        /// (seconds, microseconds). Only the stability within a run matters (pid-reuse guard).
+        private static func startTime(of pid: pid_t) -> (seconds: UInt64, microseconds: UInt64)? {
+            guard let handle = OpenProcess(DWORD(PROCESS_QUERY_LIMITED_INFORMATION), false, DWORD(bitPattern: pid)),
+                handle != INVALID_HANDLE_VALUE
+            else { return nil }
+            defer { CloseHandle(handle) }
+            var creation = FILETIME(), exit = FILETIME(), kernel = FILETIME(), user = FILETIME()
+            guard GetProcessTimes(handle, &creation, &exit, &kernel, &user) else { return nil }
+            let t = UInt64(creation.dwHighDateTime) << 32 | UInt64(creation.dwLowDateTime)
+            return (t / 10_000_000, t % 10_000_000 / 10)
+        }
+
+        /// Windows: TerminateProcess (there is no SIGTERM/SIGKILL).
+        private static func terminateProcess(_ pid: pid_t) {
+            guard let handle = OpenProcess(DWORD(PROCESS_TERMINATE), false, DWORD(bitPattern: pid)),
+                handle != INVALID_HANDLE_VALUE
+            else { return }
+            defer { CloseHandle(handle) }
+            _ = TerminateProcess(handle, 1)
+        }
     #endif
 
     /// Every process below `root` (depth first, children before their parent), as libproc sees it now
-    /// (Linux: through /proc).
+    /// (Linux: through /proc; Windows: through the Tool Help snapshot).
     static func descendants(of root: pid_t) -> [pid_t] {
-        #if os(Linux)
+        #if os(Linux) || os(Windows)
             return procChildren(of: root).flatMap { descendants(of: $0) + [$0] }
         #else
             var buf = [pid_t](repeating: 0, count: 512)
@@ -336,6 +375,11 @@ public enum Preparer {
         #if os(Linux)
             return descendants(of: root).compactMap { pid in
                 guard let st = startTime(of: pid), procStat(of: pid)?.state != "Z" else { return nil }
+                return ChildProcess(pid: pid, seconds: st.seconds, microseconds: st.microseconds)
+            }
+        #elseif os(Windows)
+            return descendants(of: root).compactMap { pid in
+                guard let st = startTime(of: pid) else { return nil }
                 return ChildProcess(pid: pid, seconds: st.seconds, microseconds: st.microseconds)
             }
         #else
@@ -354,6 +398,9 @@ public enum Preparer {
                 st.microseconds == process.microseconds
             else { return false }
             return procStat(of: process.pid)?.state != "Z"
+        #elseif os(Windows)
+            guard let st = startTime(of: process.pid) else { return false }
+            return st.seconds == process.seconds && st.microseconds == process.microseconds
         #else
             var info = proc_bsdinfo()
             return proc_pidinfo(process.pid, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdinfo>.size)) > 0
@@ -366,12 +413,22 @@ public enum Preparer {
         await Task.detached { await terminate(children, grace: grace) }.value
     }
     private static func terminate(_ children: [ChildProcess], grace: TimeInterval) async {
+        #if os(Windows)
+        // No signals: TerminateProcess now, wait the grace, then once more for racers.
+        for process in children where isSameProcess(process) { terminateProcess(process.pid) }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(grace))
+        while ContinuousClock.now < deadline, children.contains(where: isSameProcess) {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        for process in children where isSameProcess(process) { terminateProcess(process.pid) }
+        #else
         for process in children where isSameProcess(process) { kill(process.pid, SIGTERM) }
         let deadline = ContinuousClock.now.advanced(by: .seconds(grace))
         while ContinuousClock.now < deadline, children.contains(where: isSameProcess) {
             try? await Task.sleep(for: .milliseconds(20))
         }
         for process in children where isSameProcess(process) { kill(process.pid, SIGKILL) }
+        #endif
     }
 
     // MARK: - Files
@@ -429,6 +486,23 @@ public enum Preparer {
 
     /// chmod -R a-w: children first, so a directory is still writable while its entries change.
     static func readOnly(_ url: URL) throws {
+        #if os(Windows)
+        // No lstat(2)/chmod(2) permission bits: the read-only attribute is the chmod a-w equivalent.
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        if fm.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+            for n in try fm.contentsOfDirectory(atPath: url.path) { try readOnly(url.appendingPathComponent(n)) }
+        }
+        var wide = Array(url.path.utf16)
+        wide.append(0)
+        let ok = wide.withUnsafeBufferPointer { buf -> Bool in
+            guard let p = buf.baseAddress else { return false }
+            let attrs = GetFileAttributesW(p)
+            guard attrs != INVALID_FILE_ATTRIBUTES else { return false }
+            return SetFileAttributesW(p, attrs | DWORD(FILE_ATTRIBUTE_READONLY))
+        }
+        guard ok else { throw FirmwareError(.internal, "chmod a-w \(url.path)") }
+        #else
         let fm = FileManager.default
         var isDir: ObjCBool = false
         if fm.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
@@ -438,5 +512,6 @@ public enum Preparer {
         guard lstat(url.path, &st) == 0, chmod(url.path, st.st_mode & 0o7777 & ~0o222) == 0 else {
             throw FirmwareError(.internal, "chmod a-w \(url.path): \(String(cString: strerror(errno)))")
         }
+        #endif
     }
 }

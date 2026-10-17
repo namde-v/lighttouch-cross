@@ -59,13 +59,20 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
         // No flock(2) or O_NOFOLLOW on Windows: an exclusive LockFileEx on the
         // CRT descriptor's HANDLE (see StorageLease), refusing reparse points
         // (symlinks, junctions) as O_NOFOLLOW does on POSIX.
+        // DIAG: temporary crash diagnostics (stderr, unbuffered).
+        func diag(_ s: String) { fputs("webproxyca-diag: \(s)\n", stderr) }
+        diag("enter prepare")
         let lockPath = config.path + ".ca.lock"
+        diag("lockPath=\(lockPath)")
         if isReparsePoint(lockPath) { throw Failure.unreadable("lock") }
+        diag("isReparsePoint ok")
         let lock = open(lockPath, O_RDWR | O_CREAT | _O_NOINHERIT, 0o600)
+        diag("open -> \(lock)")
         guard lock >= 0, lockExclusive(lock) else {
             if lock >= 0 { _ = WinSDK.close(lock) }
             throw Failure.unreadable("lock")
         }
+        diag("lockExclusive ok")
         defer {
             unlock(lock)
             _ = WinSDK.close(lock)
@@ -80,9 +87,18 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
         if FileManager.default.fileExists(atPath: pem.path) {
             ca = try load(config: config)
         } else {
+            #if os(Windows)
+            diag("generating key")
+            #endif
             let key = try newKey()
+            #if os(Windows)
+            diag("key ok")
+            #endif
             let name = DER.name("Light Touch Device Proxy")
             let der = try certificate(key: key, issuerKey: key, issuer: name, subject: name, days: 3650, host: nil)
+            #if os(Windows)
+            diag("certificate ok")
+            #endif
             let text =
                 "-----BEGIN PRIVATE KEY-----\n"
                 + key.pkcs8DERRepresentation.base64EncodedString(options: .lineLength64Characters)
@@ -90,7 +106,13 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
                 + der.base64EncodedString(options: .lineLength64Characters)
                 + "\n-----END CERTIFICATE-----\n"
             try save(Data(text.utf8), to: pem, mode: 0o600)
+            #if os(Windows)
+            diag("save pem ok")
+            #endif
             ca = try load(config: config)
+            #if os(Windows)
+            diag("load ok")
+            #endif
         }
         try save(ca.certificateDER, to: URL(fileURLWithPath: config.path + ".ca.der"), mode: 0o644)
         return ca
@@ -278,8 +300,11 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
     /// No flock(2) on Windows: an exclusive byte-range lock via LockFileEx on
     /// the CRT descriptor's HANDLE (same pattern as StorageLease).
     private static func lockExclusive(_ fd: Int32) -> Bool {
-        // TODO: Diagnose crash - temporarily bypass locking
-        return true
+        guard let handle = lockHandle(fd) else { return false }
+        var overlapped = OVERLAPPED()
+        // LockFileEx returns BOOL (Swift Bool); the flag #defines import as
+        // Int32 and need a DWORD conversion for the DWORD parameters.
+        return LockFileEx(handle, DWORD(LOCKFILE_EXCLUSIVE_LOCK), 0, 1, 0, &overlapped)
     }
 
     private static func unlock(_ fd: Int32) {

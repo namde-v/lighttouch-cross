@@ -91,12 +91,19 @@ func output(_ arguments: [String], environment: [String: String]? = nil) throws 
 func isFinderLitter(_ name: String) -> Bool { (name as NSString).lastPathComponent == ".DS_Store" }
 
 /// Every regular file and symlink under `root` (not descending into linked directories), relative paths, sorted.
+/// Paths are always "/"-separated (Windows' enumerator yields "\\").
 func walk(_ root: URL) -> [String] {
     guard let e = files.enumerator(atPath: root.resolvingSymlinksInPath().path) else { return [] }
     var found: [String] = []
     while let name = e.nextObject() as? String {
         let type = e.fileAttributes?[.type] as? FileAttributeType
-        if (type == .typeRegular || type == .typeSymbolicLink) && !isFinderLitter(name) { found.append(name) }
+        if (type == .typeRegular || type == .typeSymbolicLink) && !isFinderLitter(name) {
+            #if os(Windows)
+            found.append(name.replacingOccurrences(of: "\\", with: "/"))
+            #else
+            found.append(name)
+            #endif
+        }
     }
     return found.sorted()
 }

@@ -119,7 +119,12 @@ public enum FirmwareDecryptor {
                 throw FirmwareError(.keyMissing, "\(entry.id): no key for the root filesystem \(os)")
             }
             let out = dir.appendingPathComponent("rootfs.dmg")
+            #if os(Windows)
+            // FileHandle.fileDescriptor is unavailable on Windows.
+            try ipsw.stream(os) { try VFDecrypt.decrypt(from: $0, output: out, key: key) }
+            #else
             try ipsw.stream(os) { try VFDecrypt.decrypt(from: $0.fileDescriptor, output: out, key: key) }
+            #endif
             files.append("rootfs.dmg")
         }
         return Result(plainTail: plainTail, paths: comp, files: files)

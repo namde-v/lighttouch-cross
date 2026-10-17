@@ -292,7 +292,11 @@ public enum N72NAND {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let tmp = dir.appendingPathComponent(".\(url.lastPathComponent).tmp")
         try data.write(to: tmp)
+        #if os(Windows)
+        let fd = open(tmp.path, O_RDONLY | _O_BINARY)
+        #else
         let fd = open(tmp.path, O_RDONLY)
+        #endif
         defer { if fd >= 0 { close(fd) } }
         guard fd >= 0, fsync(fd) == 0, rename(tmp.path, url.path) == 0 else {
             let error = POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)

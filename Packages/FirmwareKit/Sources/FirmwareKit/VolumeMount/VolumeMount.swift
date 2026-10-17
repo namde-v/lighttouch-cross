@@ -223,6 +223,9 @@ public enum VolumeMount {
             // Needs: hfsprogs + root + hfsplus; then map -s/-J/-v onto mkfs.hfsplus and verify against macOS output.
             throw FirmwareError(
                 .unsupported, "makeHFS \(image.lastPathComponent): mkfs.hfsplus wiring deferred (see SHIM_NOTES.md)")
+        #elseif os(Windows)
+            // Honest stub: no newfs_hfs/mkfs.hfsplus on Windows.
+            throw FirmwareError(.unsupported, "makeHFS \(image.lastPathComponent): no HFS+ formatter on Windows")
         #else
             guard FileManager.default.createFile(atPath: image.path, contents: nil),
                 truncate(image.path, off_t(size / 4096 * 4096)) == 0

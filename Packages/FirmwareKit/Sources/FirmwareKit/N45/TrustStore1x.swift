@@ -79,6 +79,10 @@ public enum TrustStore1x {
 
     /// Adds (or replaces) `certificate` as an anchor in the trust store at `store`.
     static func addAnchor(_ certificate: Data, to store: URL) throws {
+        #if os(Windows)
+        // No SQLite on Windows (CSQLite3 is a no-op there); trust-store editing is unsupported.
+        throw FirmwareError(.unsupported, "\(store.path): trust store editing needs SQLite")
+        #else
         let subject = try normalizedSubject(certificate)
         var db: OpaquePointer?
         guard sqlite3_open_v2(store.path, &db, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
@@ -107,6 +111,7 @@ public enum TrustStore1x {
         guard sqlite3_step(stmt) == SQLITE_DONE else {
             throw FirmwareError(.unsupported, "\(store.path): \(String(cString: sqlite3_errmsg(db)))")
         }
+        #endif
     }
 
     /// The device directory's record of the anchor its guest trusts (FirmwareWire.trustAnchorFile). A new

@@ -81,7 +81,12 @@ public final class HFSPlusVolume {
     public init(_ url: URL, writable: Bool = false) throws {
         self.url = url
         self.writable = writable
+        #if os(Windows)
+        // _O_BINARY: the UCRT defaults to text mode (CRLF translation), which corrupts image I/O.
+        fd = open(url.path, (writable ? O_RDWR : O_RDONLY) | _O_BINARY)
+        #else
         fd = open(url.path, writable ? O_RDWR : O_RDONLY)
+        #endif
         guard fd >= 0 else { throw FirmwareError(.internal, "open \(url.path): \(String(cString: strerror(errno)))") }
         var vh = [UInt8](repeating: 0, count: 512)
         guard pread(fd, &vh, 512, 1024) == 512, vh[0] == 0x48, vh[1] == 0x2B || vh[1] == 0x58 else {
@@ -712,6 +717,10 @@ public final class HFSPlusVolume {
 /// Raw-deflate `z` into at most `max` bytes: the Compression framework's
 /// `compression_decode_buffer(..., COMPRESSION_ZLIB)` after its 2-byte zlib header is stripped.
 private func rawInflate(_ z: [UInt8], max: Int, what: String) throws -> [UInt8] {
+    #if os(Windows)
+    // No zlib on Windows (CZlibFK is a no-op there); HFS+ decompression is unsupported.
+    throw FirmwareError(.unsupported, what)
+    #else
     guard max > 0 else { return [] }
     var input = z
     var out = [UInt8](repeating: 0, count: max)
@@ -734,6 +743,7 @@ private func rawInflate(_ z: [UInt8], max: Int, what: String) throws -> [UInt8] 
     // `max`; compression_decode_buffer would have silently truncated, so return what fit.
     guard status == Z_STREAM_END || status == Z_OK else { throw FirmwareError(.unsupported, what) }
     return Array(out.prefix(out.count - Int(stream.avail_out)))
+    #endif
 }
 
 private func be16(_ b: [UInt8], _ o: Int) -> UInt16 { UInt16(b[o]) << 8 | UInt16(b[o + 1]) }

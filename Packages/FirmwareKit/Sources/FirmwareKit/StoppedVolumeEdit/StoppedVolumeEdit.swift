@@ -21,7 +21,7 @@ import HostRuntime
 /// with the store's own MBR and signature, and the generation starts with an empty overlay.
 public enum StoppedVolumeEdit {
     public struct Session: Codable, Sendable {
-        public let id: UUID
+        public let id: Foundation.UUID
         public let device: URL
         public let image: URL
         public let mountPoint: String?
@@ -173,7 +173,7 @@ public enum StoppedVolumeEdit {
     /// "File System" folder when nil.
     nonisolated(nonsending) public static func mount(
         device: URL,
-        id: UUID,
+        id: Foundation.UUID,
         policy: StorageRecordPolicy = .standalone,
         mountPoint: URL? = nil
     ) async throws -> Session {
@@ -211,7 +211,7 @@ public enum StoppedVolumeEdit {
     /// and the generation's (writable) base; the members it returns go into the generation's lock. YaFTL and N72 only.
     nonisolated(nonsending) public static func commit(
         device: URL,
-        id: UUID,
+        id: Foundation.UUID,
         policy: StorageRecordPolicy = .standalone,
         log: (String) -> Void = { _ in },
         amend: ((_ system: URL, _ base: URL) throws -> [String: Any])? = nil
@@ -374,7 +374,7 @@ public enum StoppedVolumeEdit {
         log("published storage generation \(edit.id.uuidString)")
     }
 
-    nonisolated(nonsending) public static func discard(device: URL, id: UUID, policy: StorageRecordPolicy = .standalone)
+    nonisolated(nonsending) public static func discard(device: URL, id: Foundation.UUID, policy: StorageRecordPolicy = .standalone)
         async throws
     {
         try await StorageGeneration.withOwner(try StorageGeneration.resume(device: device, id: id, policy: policy)) {
@@ -383,7 +383,7 @@ public enum StoppedVolumeEdit {
             try await edit.discard()
         }
     }
-    nonisolated(nonsending) public static func recover(device: URL, id: UUID, policy: StorageRecordPolicy = .standalone)
+    nonisolated(nonsending) public static func recover(device: URL, id: Foundation.UUID, policy: StorageRecordPolicy = .standalone)
         async throws
     {
         try await StorageGeneration.withOwner(try StorageGeneration.resume(device: device, id: id, policy: policy)) {
@@ -562,8 +562,9 @@ public enum StoppedVolumeEdit {
         }
     }
     /// Clear BSD file flags. Linux has no chflags(2); there are no flags to clear before chmod.
+    /// Windows has neither; there is nothing to clear.
     private static func clearFlags(_ path: String) -> Int32 {
-        #if os(Linux)
+        #if os(Linux) || os(Windows)
             return 0
         #else
             return chflags(path, 0)
@@ -608,9 +609,11 @@ public enum StoppedVolumeEdit {
 #endif
 
 /// Darwin's xattr calls take (position, options); Linux's take fewer arguments and uses the l* variants for
-/// nofollow. These wrappers keep the call sites identical.
+/// nofollow. These wrappers keep the call sites identical. Windows has no xattrs: the wrappers report none.
 private func listXattrNames(_ path: String, _ buf: UnsafeMutablePointer<CChar>?, _ size: Int) -> Int {
-    #if os(Linux)
+    #if os(Windows)
+        return 0
+    #elseif os(Linux)
         path.withCString { llistxattr($0, buf, size) }
     #else
         listxattr(path, buf, size, XATTR_NOFOLLOW)
@@ -620,7 +623,9 @@ private func listXattrNames(_ path: String, _ buf: UnsafeMutablePointer<CChar>?,
 private func getXattrValue(
     _ path: String, _ name: String, _ value: UnsafeMutableRawPointer?, _ size: Int
 ) -> Int {
-    #if os(Linux)
+    #if os(Windows)
+        return -1
+    #elseif os(Linux)
         name.withCString { name in path.withCString { path in lgetxattr(path, name, value, size) } }
     #else
         getxattr(path, name, value, size, 0, XATTR_NOFOLLOW)
@@ -628,23 +633,27 @@ private func getXattrValue(
 }
 
 private func setXattrValue(_ path: String, _ name: String, _ value: UnsafeRawPointer?, _ size: Int) -> Int32 {
-    #if os(Linux)
+    #if os(Windows)
+        return -1
+    #elseif os(Linux)
         name.withCString { name in path.withCString { path in lsetxattr(path, name, value, size, 0) } }
     #else
         setxattr(path, name, value, size, 0, XATTR_NOFOLLOW)
     #endif
 }
 
-/// "No such attribute": ENOATTR on Darwin, ENODATA on Linux.
+/// "No such attribute": ENOATTR on Darwin, ENODATA on Linux, ENOENT on Windows (unreached: no xattrs there).
 private var xattrNotFound: Int32 {
     #if os(Linux)
         ENODATA
+    #elseif os(Windows)
+        ENOENT
     #else
         ENOATTR
     #endif
 }
 
 /// UF_COMPRESSED lives in sys/stat.h on Darwin only; the value is the HFS+ catalog flag either way.
-#if os(Linux)
+#if os(Linux) || os(Windows)
     private let UF_COMPRESSED: UInt32 = 0x20
 #endif

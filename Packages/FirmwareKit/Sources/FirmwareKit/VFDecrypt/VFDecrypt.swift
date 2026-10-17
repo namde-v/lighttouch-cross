@@ -21,20 +21,74 @@ import Darwin
 
 public enum VFDecrypt {
     public static func decrypt(input: URL, output: URL, key: Data) throws {
+        #if os(Windows)
+        let fd = open(input.path, O_RDONLY | _O_BINARY)
+        #else
         let fd = open(input.path, O_RDONLY)
+        #endif
         guard fd >= 0 else { throw FirmwareError(.internal, "open \(input.path): \(String(cString: strerror(errno)))") }
         defer { close(fd) }
         try decrypt(from: fd, output: output, key: key)
     }
 
     public static func decrypt(from fd: Int32, output: URL, key: Data) throws {
+        #if os(Windows)
+        // UCRT read takes a UInt32 count and returns Int32.
+        try decrypt(output: output, key: key) { buf, count in
+            let r = read(fd, buf, UInt32(count))
+            return r <= 0 ? 0 : Int(r)
+        }
+        #else
+        try decrypt(output: output, key: key) { buf, count in
+            var got = 0
+            while got < count {
+                let r = read(fd, buf + got, count - got)
+                if r > 0 { got += r } else if r < 0, errno == EINTR { continue } else { break }
+            }
+            return got
+        }
+        #endif
+    }
+
+    #if os(Windows)
+    /// FileHandle.fileDescriptor is unavailable on Windows; read through the handle instead.
+    public static func decrypt(from handle: FileHandle, output: URL, key: Data) throws {
+        try decrypt(output: output, key: key) { buf, count in
+            guard let data = try handle.read(upToCount: count), !data.isEmpty else { return 0 }
+            data.copyBytes(to: buf.assumingMemoryBound(to: UInt8.self), count: data.count)
+            return data.count
+        }
+    }
+    #endif
+
+    /// The decryption core over a sequential byte source.
+    private static func decrypt(
+        output: URL,
+        key: Data,
+        read: (_ buf: UnsafeMutableRawPointer, _ count: Int) throws -> Int
+    ) throws {
         guard key.count == 36 else {
             throw FirmwareError(.keyMissing, "vfdecrypt key must be 36 bytes, got \(key.count)")
         }
         let aesKey = [UInt8](key.prefix(16))
         let hmacKey = [UInt8](key.dropFirst(16))
         var header = [UInt8](repeating: 0, count: 0x100)
-        guard readFully(fd, &header, 0, 0x100) == 0x100, header[0..<8].elementsEqual("encrcdsa".utf8) else {
+
+        /// Reads until `count` bytes or EOF; returns the bytes read.
+        func readFully(_ buf: inout [UInt8], _ at: Int, _ count: Int) throws -> Int {
+            var got = 0
+            try buf.withUnsafeMutableBytes { p in
+                guard let start = p.baseAddress else { return }  // an empty buffer holds nothing
+                while got < count {
+                    let r = try read(start + at + got, count - got)
+                    guard r > 0 else { break }
+                    got += r
+                }
+            }
+            return got
+        }
+
+        guard try readFully(&header, 0, 0x100) == 0x100, header[0..<8].elementsEqual("encrcdsa".utf8) else {
             throw FirmwareError(.unsupported, "not encrcdsa")
         }
         let be = { (o: Int, n: Int) in header[o..<o + n].reduce(UInt64(0)) { $0 << 8 | UInt64($1) } }
@@ -54,7 +108,7 @@ public enum VFDecrypt {
         } else {
             var skip = dataOffset - 0x100
             while skip > 0 {
-                let n = readFully(fd, &ct, 0, min(skip, bs))
+                let n = try readFully(&ct, 0, min(skip, bs))
                 guard n > 0 else { throw FirmwareError(.unsupported, "short image") }
                 skip -= n
             }
@@ -69,7 +123,7 @@ public enum VFDecrypt {
         var pending = Data(capacity: 1 << 22)
         var n: UInt32 = 0
         while left > 0 {
-            let r = carried + readFully(fd, &ct, carried, bs - carried)
+            let r = try carried + readFully(&ct, carried, bs - carried)
             carried = 0
             guard r > 0 else { throw FirmwareError(.unsupported, "short image") }
             guard r % 16 == 0 else {
@@ -99,16 +153,4 @@ public enum VFDecrypt {
         try out.write(contentsOf: pending)
     }
 
-    /// Reads until `count` bytes or EOF; returns the bytes read.
-    static func readFully(_ fd: Int32, _ buf: inout [UInt8], _ at: Int, _ count: Int) -> Int {
-        var got = 0
-        buf.withUnsafeMutableBytes { p in
-            guard let start = p.baseAddress else { return }  // an empty buffer holds nothing
-            while got < count {
-                let r = read(fd, start + at + got, count - got)
-                if r > 0 { got += r } else if r < 0, errno == EINTR { continue } else { break }
-            }
-        }
-        return got
-    }
 }
