@@ -11,11 +11,12 @@ import Foundation
 import WinSDK
 
 /// WinSDK has no mode_t; permission bits fit in UInt32 on every platform here.
-typealias mode_t = UInt32
+/// Public because FirmwareKit's public API uses it (e.g. SystemEdits.put's mode parameter).
+public typealias mode_t = UInt32
 /// WinSDK has no off_t; file offsets are 64-bit.
-typealias off_t = Int64
+public typealias off_t = Int64
 /// WinSDK has no pid_t; process IDs fit in Int32 (getpid() returns Int32).
-typealias pid_t = Int32
+public typealias pid_t = Int32
 /// O_CLOEXEC's Windows equivalent: the CRT descriptor is not inherited by
 /// child processes.
 let O_CLOEXEC: Int32 = 0x80  // _O_NOINHERIT
@@ -42,7 +43,8 @@ func pwrite(_ fd: Int32, _ buf: UnsafeRawPointer?, _ count: Int, _ offset: off_t
 
 /// ftruncate(3): resize an open file.
 func ftruncate(_ fd: Int32, _ length: off_t) -> Int32 {
-    _chsize_s(fd, UInt64(bitPattern: length))
+    // _chsize_s takes a signed __int64 size; off_t is already Int64.
+    _chsize_s(fd, length)
 }
 
 /// truncate(3): resize a file by path.
@@ -51,7 +53,7 @@ func truncate(_ path: UnsafePointer<CChar>?, _ length: off_t) -> Int32 {
     let fd = open(path, O_WRONLY | _O_BINARY)
     guard fd >= 0 else { return -1 }
     defer { _ = close(fd) }
-    return _chsize_s(fd, UInt64(bitPattern: length))
+    return _chsize_s(fd, length)
 }
 
 /// fsync(2): flush an open file's buffers to the OS.

@@ -70,7 +70,8 @@ public enum Activation {
         let metadata = open(file.path, O_RDONLY | _O_BINARY)
         guard metadata >= 0 else { throw ActivationFailure("Cannot open activation target") }
         var original = stat()
-        guard fstat(metadata, &original) == 0, Int32(original.st_mode) & S_IFMT == S_IFREG else {
+        let modeBits: Int32 = Int32(original.st_mode)
+        guard fstat(metadata, &original) == 0, (modeBits & S_IFMT) == S_IFREG else {
             close(metadata)
             throw ActivationFailure("Activation target is not a regular file")
         }
