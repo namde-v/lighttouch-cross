@@ -249,7 +249,7 @@ private nonisolated func renameNoReplace(from: String, to: String) -> Int32 {
     guard attrs == WinSDK.INVALID_FILE_ATTRIBUTES else { return -1 }
     return from.withCString { f in
         to.withCString { t in
-            WinSDK._rename(f, t)
+            rename(f, t)
         }
     }
     #else
@@ -338,7 +338,11 @@ private final class MediaVideoExport {
             error: .string(limit: 8192)
         ) { execution in
             let pidValue = execution.processIdentifier.value
+            #if os(Windows)
+            self.pid.withLock { $0 = Int32(bitPattern: pidValue) }
+            #else
             self.pid.withLock { $0 = pidValue }
+            #endif
             defer { self.pid.withLock { $0 = -1 } }
             do {
                 // Wait for the transcode without holding the actor: ffmpeg
