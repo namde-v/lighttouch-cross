@@ -375,8 +375,10 @@ private final class MediaVideoExport {
             throw DeviceToolsError.failed(
                 "This video couldn’t be converted for the \(profileName) (ffmpeg exited \(code))."
             )
+        #if !os(Windows)
         case .signaled:
             throw DeviceToolsError.failed("This video couldn’t be converted for the \(profileName).")
+        #endif
         }
     }
 

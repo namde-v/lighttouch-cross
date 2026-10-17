@@ -164,7 +164,11 @@ public actor ScreenMovieWriter {
                 output: .discarded,
                 error: .string(limit: 8192)
             ) { execution in
+                #if os(Windows)
+                self.ffmpegPID.withLock { $0 = Int32(bitPattern: execution.processIdentifier.value) }
+                #else
                 self.ffmpegPID.withLock { $0 = execution.processIdentifier.value }
+                #endif
                 defer { self.ffmpegPID.withLock { $0 = -1 } }
                 guard let stream = self.frameStream else { return }
                 do {

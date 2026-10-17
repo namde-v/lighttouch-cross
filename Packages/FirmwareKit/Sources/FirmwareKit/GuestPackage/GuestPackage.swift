@@ -41,7 +41,11 @@ public enum GuestPackage {
     static func preserveHook(
         volume: URL,
         target: String,
+        #if os(Windows)
+        write: ((String, Data, Int32) throws -> Void)? = nil
+        #else
         write: ((String, Data, mode_t) throws -> Void)? = nil
+        #endif
     ) throws -> String {
         let fm = FileManager.default
         let at = { volume.appendingPathComponent($0) }

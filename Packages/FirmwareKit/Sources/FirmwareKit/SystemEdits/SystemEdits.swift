@@ -850,7 +850,11 @@ public enum SystemEdits {
 
     /// Writes `data` into `url` in place (truncating an existing file, so it keeps its catalog record), creating
     /// it 0666 & ~umask if absent; with `mode`, then sets the permission bits.
+    #if os(Windows)
+    static func put(_ data: Data, _ url: URL, mode: Int32? = nil) throws {
+    #else
     static func put(_ data: Data, _ url: URL, mode: mode_t? = nil) throws {
+    #endif
         let fd = open(url.path, O_WRONLY | O_CREAT | O_TRUNC, 0o666)
         guard fd >= 0 else { throw FirmwareError(.internal, "open \(url.path): \(String(cString: strerror(errno)))") }
         defer { close(fd) }

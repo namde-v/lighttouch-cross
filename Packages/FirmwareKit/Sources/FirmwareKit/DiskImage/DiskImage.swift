@@ -340,7 +340,9 @@ public enum DiskImage {
         let status: Int32 =
             switch result.terminationStatus {
             case .exited(let code): Int32(bitPattern: code)
+            #if !os(Windows)
             case .signaled(let signal): -Int32(bitPattern: signal)
+            #endif
             }
         return (status, result.standardOutput + result.standardError)
     }
