@@ -13,6 +13,16 @@ public nonisolated enum FirmwareTool {
     /// FirmwareKit validates/migrates stopped storage and releases ownership
     /// before DeviceRuntime spawns the helper. No live NOR writer is hosted here.
     public static func admitBoot(device: URL, managed: Bool, executable: URL) async throws -> Bool {
+        #if os(Windows)
+        let data = try await run(
+            FirmwareCommand.BootAdmit.arguments(
+                device: device,
+                recordPolicy: managed ? .managed : .standalone,
+                allowRaw: !managed
+            ),
+            executable: executable
+        )
+        #else
         let data = try await run(
             FirmwareCommand.BootAdmit(
                 device: device,
@@ -21,6 +31,7 @@ public nonisolated enum FirmwareTool {
             ),
             executable: executable
         )
+        #endif
         let report = try JSONDecoder().decode(FirmwareWire.BootAdmission.self, from: data)
         guard report.event == "admitted" else {
             throw DeviceToolsError.failed("The firmware worker did not admit this device.")
@@ -31,18 +42,35 @@ public nonisolated enum FirmwareTool {
     /// iPhone OS 1.x: `certificate` (DER) as a system anchor in the stopped device (`firmwarekit edit --action
     /// trust-anchor`, a stopped edit through the 1.x FTL). Nothing when the device already trusts it.
     public static func trustAnchor(device: URL, certificate: URL, executable: URL) async throws -> Bool {
+        #if os(Windows)
+        let data = try await run(
+            FirmwareCommand.Edit.arguments(device: device, action: .trustAnchor, recordPolicy: .managed, cert: certificate),
+            executable: executable
+        )
+        #else
         let data = try await run(
             FirmwareCommand.Edit(device: device, action: .trustAnchor, recordPolicy: .managed, cert: certificate),
             executable: executable
         )
+        #endif
         struct Report: Decodable { let changed: Bool }
         return try JSONDecoder().decode(Report.self, from: data).changed
     }
 
     public static func run(_ command: some FirmwareCommandLine, executable: URL) async throws -> Data {
+        try await run(command.arguments, executable: executable)
+    }
+
+    #if os(Windows)
+    // On Windows the FirmwareCommand inits are unavailable (Swift 6.2.4 SIL crash
+    // on @Option/@Flag setters); call sites pass the prebuilt arguments instead.
+    public static func run(_ arguments: [String], executable: URL) async throws -> Data {
+    #else
+    private static func run(_ arguments: [String], executable: URL) async throws -> Data {
+    #endif
         let child = try await Subprocess.run(
             .path(FilePath(executable.path)),
-            arguments: Arguments(command.arguments),
+            arguments: Arguments(arguments),
             input: .none,
             output: .string(limit: 65536),
             error: .string(limit: 65536)

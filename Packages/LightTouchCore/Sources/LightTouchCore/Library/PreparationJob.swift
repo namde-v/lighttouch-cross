@@ -185,9 +185,26 @@ public nonisolated final class PreparationJob: @unchecked Sendable {
             FileManager.default.createFile(atPath: request.log.path, contents: nil)
             let arguments: [String]
             if let blob = request.blob {
+                #if os(Windows)
+                arguments = FirmwareCommand.UnpackBase.arguments(blob: blob, out: staging, seed: id.uuidString)
+                #else
                 arguments = FirmwareCommand.UnpackBase(blob: blob, out: staging, seed: id.uuidString).arguments
+                #endif
             } else {
                 if let sibling = request.sibling { try JSONEncoder().encode(sibling.entry).write(to: siblingFile) }
+                #if os(Windows)
+                arguments = FirmwareCommand.Create.arguments(
+                    entry: entryFile,
+                    ipsw: request.ipsw,
+                    out: staging,
+                    seed: id.uuidString,
+                    helper: request.helper,
+                    cache: request.cache,
+                    sibling: request.sibling.map { (siblingFile, $0.ipsw) },
+                    skipSetup: request.skipSetup,
+                    jailbreak: request.jailbreak
+                )
+                #else
                 arguments =
                     FirmwareCommand.Create(
                         entry: entryFile,
@@ -200,6 +217,7 @@ public nonisolated final class PreparationJob: @unchecked Sendable {
                         skipSetup: request.skipSetup,
                         jailbreak: request.jailbreak
                     ).arguments
+                #endif
             }
             let log = try FileDescriptor.open(request.log.path, .writeOnly)
             let task = Task.detached { [self] in await run(arguments, log: log) }

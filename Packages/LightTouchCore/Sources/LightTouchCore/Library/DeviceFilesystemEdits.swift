@@ -149,6 +149,17 @@ public final class DeviceFilesystemEdits {
                 }
                 if action == .commitFilesystem { try await waitForCopies(instance) }
                 if action == .jailbreak {
+                    #if os(Windows)
+                    _ = try await FirmwareTool.run(
+                        FirmwareCommand.Edit.arguments(
+                            device: paths(instance).directory,
+                            action: .jailbreak,
+                            recordPolicy: .managed,
+                            cache: cache
+                        ),
+                        executable: executable
+                    )
+                    #else
                     _ = try await FirmwareTool.run(
                         FirmwareCommand.Edit(
                             device: paths(instance).directory,
@@ -158,14 +169,22 @@ public final class DeviceFilesystemEdits {
                         ),
                         executable: executable
                     )
+                    #endif
                     return
                 }
                 var intent = pending(instance)
                 if action == .openFilesystem, intent == nil {
+                    #if os(Windows)
+                    let result = try await FirmwareTool.run(
+                        FirmwareCommand.Edit.arguments(device: paths(instance).directory, action: .begin, recordPolicy: .managed),
+                        executable: executable
+                    )
+                    #else
                     let result = try await FirmwareTool.run(
                         FirmwareCommand.Edit(device: paths(instance).directory, action: .begin, recordPolicy: .managed),
                         executable: executable
                     )
+                    #endif
                     let created = try JSONDecoder().decode(Mounted.self, from: result)
                     intent = Intent(id: created.id, phase: "editing")
                 }
@@ -180,6 +199,18 @@ public final class DeviceFilesystemEdits {
                     }
                 if action == .openFilesystem { activity[instance.id] = "Opening in Finder…" }
                 let mountPoint = mountPoint(instance)
+                #if os(Windows)
+                _ = try await FirmwareTool.run(
+                    FirmwareCommand.Edit.arguments(
+                        device: paths(instance).directory,
+                        action: operation,
+                        session: intent.id,
+                        recordPolicy: .managed,
+                        mountPoint: action == .openFilesystem ? mountPoint : nil
+                    ),
+                    executable: executable
+                )
+                #else
                 _ = try await FirmwareTool.run(
                     FirmwareCommand.Edit(
                         device: paths(instance).directory,
@@ -190,6 +221,7 @@ public final class DeviceFilesystemEdits {
                     ),
                     executable: executable
                 )
+                #endif
                 if action == .openFilesystem {
                     open(mountPoint)
                     watch(instance, library: library)
@@ -215,6 +247,17 @@ public final class DeviceFilesystemEdits {
         defer { activity[instance.id] = nil }
         if commit { try await waitForCopies(instance) }
         activity[instance.id] = commit ? "Saving the file system…" : "Discarding changes…"
+        #if os(Windows)
+        _ = try await FirmwareTool.run(
+            FirmwareCommand.Edit.arguments(
+                device: paths(instance).directory,
+                action: commit ? .commit : .discard,
+                session: intent.id,
+                recordPolicy: .managed
+            ),
+            executable: executable
+        )
+        #else
         _ = try await FirmwareTool.run(
             FirmwareCommand.Edit(
                 device: paths(instance).directory,
@@ -224,6 +267,7 @@ public final class DeviceFilesystemEdits {
             ),
             executable: executable
         )
+        #endif
         removeMountFolder(instance)
         library.reload()
     }
