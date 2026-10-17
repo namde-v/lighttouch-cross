@@ -120,6 +120,7 @@ public enum FirmwareCommand {
 
         public init() {}
         public init(blob: URL, out: URL, seed: String) {
+            self.init()
             self.blob = blob.path
             self.out = out.path
             self.seed = seed
@@ -136,6 +137,7 @@ public enum FirmwareCommand {
 
         public init() {}
         public init(base: URL, out: URL) {
+            self.init()
             self.base = base.path
             self.out = out.path
         }
@@ -152,6 +154,7 @@ public enum FirmwareCommand {
 
         public init() {}
         public init(device: URL, recordPolicy: RecordPolicy, allowRaw: Bool = false) {
+            self.init()
             self.device = device.path
             self.recordPolicy = recordPolicy
             self.allowRaw = allowRaw
@@ -192,6 +195,7 @@ public enum FirmwareCommand {
             mountPoint: URL? = nil,
             cache: URL? = nil
         ) {
+            self.init()
             self.device = device.path
             self.action = action
             self.session = session?.uuidString
@@ -227,6 +231,7 @@ public enum FirmwareCommand {
 
         public init() {}
         public init(device: URL, recordPolicy: RecordPolicy, out: URL, root: URL) {
+            self.init()
             self.device = device.path
             volume = .all
             self.recordPolicy = recordPolicy
@@ -280,6 +285,7 @@ public enum FirmwareCommand {
 
         public init() {}
         public init(root: URL) {
+            self.init()
             self.root = root.path
             ipsw = nil
         }
@@ -331,6 +337,7 @@ public enum FirmwareCommand {
 
         public init() {}
         public init(entry: URL, archive: URL, out: URL) {
+            self.init()
             self.entry = entry.path
             self.archive = archive.path
             self.out = out.path
