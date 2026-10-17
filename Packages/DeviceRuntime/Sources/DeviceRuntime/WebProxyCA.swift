@@ -129,13 +129,12 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
         // POSIX checks below are after.
         guard !isReparsePoint(path), isRegularFile(path) else { throw Failure.unreadable(path) }
         fputs("webproxyca-diag: load checks ok\n", stderr)
-        let fd = _open(path, O_RDONLY | _O_NOINHERIT)
-        fputs("webproxyca-diag: load open -> \(fd)\n", stderr)
-        guard fd >= 0 else { throw Failure.unreadable(path) }
-        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-        fputs("webproxyca-diag: load FileHandle ok\n", stderr)
-        guard let text = String(data: handle.readDataToEndOfFile(), encoding: .utf8),
-            let pkcs8 = pemBlock(text, "PRIVATE KEY"),
+        // _open is variadic (unavailable in Swift); read via Foundation instead.
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let text = String(data: data, encoding: .utf8)
+        else { throw Failure.unreadable(path) }
+        fputs("webproxyca-diag: load read ok\n", stderr)
+        guard let pkcs8 = pemBlock(text, "PRIVATE KEY"),
             let certDER = pemBlock(text, "CERTIFICATE"),
             let key = try? _RSA.Signing.PrivateKey(derRepresentation: pkcs8),
             let tbs = DER.children(certDER)?.first?.whole,
