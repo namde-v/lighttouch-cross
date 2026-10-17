@@ -332,7 +332,11 @@ public nonisolated final class PreparationJob: @unchecked Sendable {
         if let preparer {
             let detach = Process()
             detach.executableURL = preparer
+            #if os(Windows)
+            detach.arguments = FirmwareCommand.DetachImages.arguments(root: preparing)
+            #else
             detach.arguments = FirmwareCommand.DetachImages(root: preparing).arguments
+            #endif
             detach.standardOutput = FileHandle.nullDevice
             if (try? detach.run()) != nil {
                 detach.waitUntilExit()

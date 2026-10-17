@@ -229,6 +229,7 @@ public nonisolated enum StorageLocations {
         )
         #endif
     }
+    #endif
 
     /// Time Machine skips it (an xattr, so it survives renames).
     public static func excludeFromBackup(_ url: URL, _ excluded: Bool = true) {

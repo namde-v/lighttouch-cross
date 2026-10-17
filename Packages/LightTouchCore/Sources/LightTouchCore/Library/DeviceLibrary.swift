@@ -164,6 +164,8 @@ nonisolated final class StateRootWatch: @unchecked Sendable {
         pending = work
         queue.asyncAfter(deadline: .now() + latency, execute: work)
     }
+    #elseif os(Windows)
+    // No FSEvents on Windows (see above): no callback to filter.
     #else
     func matters(_ path: String, _ flags: FSEventStreamEventFlags) -> Bool {
         let rescan = kFSEventStreamEventFlagRootChanged | kFSEventStreamEventFlagMustScanSubDirs
