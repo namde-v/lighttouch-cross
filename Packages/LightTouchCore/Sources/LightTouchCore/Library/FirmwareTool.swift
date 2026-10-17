@@ -58,16 +58,18 @@ public nonisolated enum FirmwareTool {
     }
 
     public static func run(_ command: some FirmwareCommandLine, executable: URL) async throws -> Data {
-        try await run(command.arguments, executable: executable)
+        try await runArguments(command.arguments, executable: executable)
     }
 
-    #if os(Windows)
     // On Windows the FirmwareCommand inits are unavailable (Swift 6.2.4 SIL crash
     // on @Option/@Flag setters); call sites pass the prebuilt arguments instead.
+    #if os(Windows)
     public static func run(_ arguments: [String], executable: URL) async throws -> Data {
-    #else
-    private static func run(_ arguments: [String], executable: URL) async throws -> Data {
+        try await runArguments(arguments, executable: executable)
+    }
     #endif
+
+    private static func runArguments(_ arguments: [String], executable: URL) async throws -> Data {
         let child = try await Subprocess.run(
             .path(FilePath(executable.path)),
             arguments: Arguments(arguments),

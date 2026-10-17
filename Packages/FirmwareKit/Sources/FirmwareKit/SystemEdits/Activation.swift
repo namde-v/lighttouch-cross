@@ -1,7 +1,9 @@
 import CActivation
 import Crypto
 import Foundation
+#if canImport(MachOKit)
 import MachOKit
+#endif
 #if os(Linux)
 import Glibc
 #elseif os(Windows)
@@ -187,14 +189,17 @@ private func putBE32(_ b: inout [UInt8], _ offset: Int, _ value: UInt32) {
 enum MachOSignature {
     static let armCPU: Int32 = 12, armv7: Int32 = 9  // CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V7
 
+    #if canImport(MachOKit)
     static func codeSignature(_ cmds: some Sequence<LoadCommand>) -> LoadCommandInfo<linkedit_data_command>? {
         for lc in cmds { if case .codeSignature(let info) = lc { return info } }
         return nil
     }
+    #endif
 
     /// ipad1_rootfs.guest_tool_problem: nil for a thin armv7 Mach-O that 3.2's dyld takes (no LC_MAIN, no
     /// LC_VERSION_MIN_IPHONEOS) and that is signed; else why not.
     static func guestToolProblem(_ url: URL) -> String? {
+        #if canImport(MachOKit)
         guard case .machO(let m)? = try? MachOKit.loadFromFile(url: url), !m.is64Bit else {
             return "not a thin 32-bit Mach-O"
         }
@@ -207,10 +212,15 @@ enum MachOSignature {
             }
         }
         return codeSignature(m.loadCommands) != nil ? nil : "unsigned (ldid -S)"
+        #else
+        // MachOKit is unavailable on Windows; Mach-O validation is skipped.
+        return nil
+        #endif
     }
 
     /// ipad1_rootfs.appsync_problem: nil for a fat Mach-O with an armv7 slice and a signature per slice.
     static func appSyncProblem(_ url: URL) -> String? {
+        #if canImport(MachOKit)
         guard case .fat(let f)? = try? MachOKit.loadFromFile(url: url), let slices = try? f.machOFiles() else {
             return "not a fat Mach-O (expected armv6+armv7)"
         }
@@ -219,10 +229,14 @@ enum MachOSignature {
         }
         return slices.contains { $0.header.layout.cputype == armCPU && $0.header.layout.cpusubtype == armv7 }
             ? nil : "no armv7 slice"
+        #else
+        return nil
+        #endif
     }
 
     /// 2.x/3.0 dyld needs classic relocations and an ARMv6 slice; fail before baking a modern helper.
     static func earlyARMProblem(_ url: URL) -> String? {
+        #if canImport(MachOKit)
         guard let file = try? MachOKit.loadFromFile(url: url) else { return "not a Mach-O" }
         let images: [MachOFile]
         switch file {
@@ -242,9 +256,13 @@ enum MachOSignature {
             }
         }
         return codeSignature(image.loadCommands) == nil ? "unsigned armv6 slice" : nil
+        #else
+        return nil
+        #endif
     }
 
     /// LC_CODE_SIGNATURE's (dataoff, datasize) of a thin 32-bit Mach-O in memory (Activation.signed patches the buffer).
+    #if canImport(MachOKit)
     static func codeSignature(in data: Data) -> (offset: Int, size: Int)? {
         data.withUnsafeBytes { b -> (Int, Int)? in
             guard b.count >= 28, let base = b.baseAddress, b.loadUnaligned(as: UInt32.self) == 0xFEED_FACE,
@@ -253,4 +271,5 @@ enum MachOSignature {
             return (Int(cs.dataoff), Int(cs.datasize))
         }
     }
+    #endif
 }

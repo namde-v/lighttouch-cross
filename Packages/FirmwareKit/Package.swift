@@ -104,7 +104,7 @@ let package = Package(
                 "CActivation", "FirmwareSchema", "CZlibFK", "CSQLite3",
                 .product(name: "HostRuntime", package: "HostRuntime"),
                 .product(name: "ZIPFoundation", package: "ZIPFoundation"),
-                .product(name: "MachOKit", package: "MachOKit"),
+                .product(name: "MachOKit", package: "MachOKit", condition: .when(platforms: [.macOS, .linux])),
                 .product(name: "Subprocess", package: "swift-subprocess"),
                 .product(name: "Unrar", package: "Unrar.swift"),
                 .product(name: "Crypto", package: "swift-crypto"),
