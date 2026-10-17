@@ -229,7 +229,9 @@ public struct Vendor {
         // releases the lock, matching the flock contract below.
         // DIAG: temporary crash diagnostics (stderr, unbuffered).
         fputs("vendor-diag: lock enter\n", stderr)
-        let fd = open(path, O_RDWR | O_CREAT, 0o644)
+        // Note: use _open (not open) on Windows; the POSIX open spelling crashes
+        // swift-frontend 6.2.4's Windows overlay at runtime.
+        let fd = _open(path, O_RDWR | O_CREAT, 0o644)
         fputs("vendor-diag: open -> \(fd)\n", stderr)
         guard fd >= 0 else { throw ToolError("vendor: cannot open \(path): \(String(cString: strerror(errno)))") }
         fputs("vendor-diag: trying lock\n", stderr)
