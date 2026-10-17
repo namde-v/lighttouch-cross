@@ -54,10 +54,16 @@ public actor ScreenMovieWriter {
     private var frameContinuation: AsyncStream<[UInt8]>.Continuation?
     private var sessionTask: Task<Void, Never>?
     private var sessionError: Error?
+    #if os(Windows)
+    private let ffmpegPID: Mutex<Int32> = Mutex(-1)
+    #else
     private let ffmpegPID: Mutex<pid_t> = Mutex(-1)
+    #endif
     private var lastFrameIndex = -1
+    #if !os(Windows)
     private var audioFD: Int32 = -1
     private var audioFIFO: URL?
+    #endif
 
     private static let fps = 30.0
 
@@ -82,6 +88,11 @@ public actor ScreenMovieWriter {
         let height = Int(outputSize.height)
         guard width > 0, height > 0 else { throw CaptureError.failed("Invalid recording size.") }
 
+        #if os(Windows)
+        if audio != nil {
+            throw CaptureError.failed("Screen recording with audio is not supported on Windows.")
+        }
+        #else
         if audio != nil {
             let fifo = url.deletingLastPathComponent()
                 .appendingPathComponent(".ltm-audio-\(UUID().uuidString).fifo")
@@ -102,6 +113,7 @@ public actor ScreenMovieWriter {
             // F_SETPIPE_SZ isn't in Swift's Glibc module; the value is 1031.
             _ = fcntl(audioFD, 1031, 1 << 20)
         }
+        #endif
 
         let (stream, continuation) = AsyncStream<[UInt8]>.makeStream()
         frameStream = stream
@@ -111,7 +123,11 @@ public actor ScreenMovieWriter {
         count = 0
         audioFrame = 0
         phase = .recording
+        #if os(Windows)
+        let fifoPath: String? = nil
+        #else
         let fifoPath = audioFIFO?.path
+        #endif
         sessionTask = Task { [weak self] in
             await self?.runSession(url: url, width: width, height: height, audioFIFO: fifoPath)
         }
@@ -202,17 +218,22 @@ public actor ScreenMovieWriter {
         count += 1
     }
 
+    #if !os(Windows)
     private func drainAudio(through end: Double? = nil) async throws -> Bool {
         guard let capture, audioFD >= 0 else { return true }
+
         while true {
             guard let packet = try capture.read() else { return true }
             try appendAudio(packet.data, seconds: packet.seconds, through: end)
             if packet.data.isEmpty { return true }
         }
     }
+    #endif
 
+    #if !os(Windows)
     private func appendAudio(_ data: Data, seconds: Double, through end: Double? = nil) throws {
         guard audioFD >= 0 else { return }
+
         guard seconds.isFinite, seconds >= 0, seconds < Double(Int64.max / 44100), data.count % 4 == 0 else {
             throw CaptureError.failed("Couldn’t record the device’s audio.")
         }
@@ -231,9 +252,12 @@ public actor ScreenMovieWriter {
         try writeAudio(data.dropFirst(skipped * 4))
         audioFrame += Int64(frames)
     }
+    #endif
 
+    #if !os(Windows)
     private func writeAudio(_ bytes: Data) throws {
         guard audioFD >= 0 else { return }
+
         try bytes.withUnsafeBytes { buffer in
             var pointer = buffer.baseAddress!
             var remaining = buffer.count
@@ -245,12 +269,15 @@ public actor ScreenMovieWriter {
             }
         }
     }
+    #endif
 
     public func cancel() {
         capture?.stop()
         phase = .idle
+        #if !os(Windows)
         if audioFD >= 0 { close(audioFD); audioFD = -1 }
         if let fifo = audioFIFO { try? FileManager.default.removeItem(at: fifo); audioFIFO = nil }
+        #endif
         frameContinuation?.finish()
         frameContinuation = nil
         frameStream = nil
@@ -267,7 +294,9 @@ public actor ScreenMovieWriter {
         defer {
             capture = nil
             phase = .idle
+            #if !os(Windows)
             if let fifo = audioFIFO { try? FileManager.default.removeItem(at: fifo); audioFIFO = nil }
+            #endif
         }
         do {
             guard count > 0 else { throw CaptureError.failed("No device frames were recorded.") }

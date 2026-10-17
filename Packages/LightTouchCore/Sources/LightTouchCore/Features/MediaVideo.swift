@@ -349,7 +349,11 @@ private final class MediaVideoExport {
                 // exiting ends the polling, cancellation kills it. A zombie
                 // still answers kill(pid, 0), so poll /proc for a live state;
                 // Subprocess.run reaps it once the body returns.
+                #if os(Windows)
+                while Self.isProcessRunning(Int32(bitPattern: pidValue)) {
+                #else
                 while Self.isProcessRunning(pidValue) {
+                #endif
                     try await Task.sleep(for: .milliseconds(50))
                 }
             } catch {
