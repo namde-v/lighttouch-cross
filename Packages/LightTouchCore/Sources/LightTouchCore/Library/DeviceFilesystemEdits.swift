@@ -58,14 +58,14 @@ public final class DeviceFilesystemEdits {
     public static let didChangeNotification = Notification.Name("DeviceFilesystemEditsDidChange")
     /// What each device's filesystem operation is doing now ("Preparing to mount the file system…"), for the device area; a
     /// device with an entry here can't start or open another.
-    public private(set) var activity: [UUID: String] = [:] {
+    public private(set) var activity: [Foundation.UUID: String] = [:] {
         didSet { NotificationCenter.default.post(name: Self.didChangeNotification, object: self) }
     }
-    private var busy: Set<UUID> { Set(activity.keys) }
+    private var busy: Set<Foundation.UUID> { Set(activity.keys) }
     /// A 1.x device whose storage wasn't shut down cleanly can't be opened; this offers to shut it down first.
     public var onUncleanShutdown: ((FirmwareCatalog.Entry) -> Void)?
     public struct Intent: Decodable {
-        public let id: UUID
+        public let id: Foundation.UUID
         public let phase: String
     }
     public struct Mounted: Decodable {
