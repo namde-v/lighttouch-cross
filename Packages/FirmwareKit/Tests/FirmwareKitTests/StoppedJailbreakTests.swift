@@ -43,7 +43,9 @@ import Testing
         return job["EnvironmentVariables"] as? [String: Any] ?? [:]
     }
 
-    @Test func typeinMovesToSubstrateOnlyWhenAsked() throws {
+    // The Cydia bootstrap fixture needs /usr/bin/tar; not available on Windows.
+    #if !os(Windows)
+        @Test func typeinMovesToSubstrateOnlyWhenAsked() throws {
         let dir = fm.temporaryDirectory.appendingPathComponent("ltm-jb-\(UUID().uuidString)")
         defer { try? fm.removeItem(at: dir) }
         let bootstrap = try CydiaInstallTests().bootstrap(in: dir)
@@ -65,6 +67,7 @@ import Testing
         #expect(fm.fileExists(atPath: n72.appendingPathComponent(ext + ".plist").path))
         #expect(s.root.contains(ext + ".dylib") && s.root.contains(ext + ".plist"))
     }
+    #endif
 
     @Test func kbootTakesTheJailbrokenBootArgsOnce() throws {
         let base = fm.temporaryDirectory.appendingPathComponent("ltm-jb-kboot-\(UUID().uuidString)")
