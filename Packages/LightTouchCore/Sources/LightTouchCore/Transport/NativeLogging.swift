@@ -127,7 +127,7 @@ public nonisolated final class RotatingLog: @unchecked Sendable {
         #if os(Windows)
         // The open file is still the path's file when a fresh open of the
         // path yields the same volume serial + file index.
-        let descriptor = open(url.path, O_RDONLY | _O_NOINHERIT)
+        let descriptor = open(url.path, O_RDONLY | _O_NOINHERIT, 0o600)
         guard descriptor >= 0 else { return false }
         defer { close(descriptor) }
         let raw = _get_osfhandle(descriptor)
