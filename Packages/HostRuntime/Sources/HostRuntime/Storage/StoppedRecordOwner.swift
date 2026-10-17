@@ -8,7 +8,7 @@ public nonisolated enum StorageRecordPolicy: Sendable {
 
     public static func managedDeviceDirectory(_ device: URL) throws -> Self {
         guard device.deletingLastPathComponent().lastPathComponent == "Devices",
-            let id = UUID(uuidString: device.lastPathComponent)
+            let id = Foundation.UUID(uuidString: device.lastPathComponent)
         else {
             throw StorageRecordPaths.Failure.invalidRecord
         }
