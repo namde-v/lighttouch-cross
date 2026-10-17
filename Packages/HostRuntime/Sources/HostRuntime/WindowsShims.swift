@@ -45,9 +45,9 @@ func winOpen(
         )
     }
     guard let handle, handle != INVALID_HANDLE_VALUE else { return -1 }
-    // _O_RDONLY is 0; _O_WRONLY/_O_RDWR from fcntl.h; _O_NOINHERIT is 0x80.
-    var osfFlags = Int32(_O_BINARY) | 0x80
-    if read, write { osfFlags |= Int32(_O_RDWR) } else if write { osfFlags |= Int32(_O_WRONLY) }
+    // Match BuildTools' proven pattern: pass the O_* access mode directly.
+    let osfFlags: Int32
+    if read, write { osfFlags = O_RDWR } else if write { osfFlags = O_WRONLY } else { osfFlags = O_RDONLY }
     let fd = _open_osfhandle(Int(bitPattern: handle), osfFlags)
     if fd == -1 { CloseHandle(handle) }
     return fd
