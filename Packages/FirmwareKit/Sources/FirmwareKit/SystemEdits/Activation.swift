@@ -293,7 +293,33 @@ enum MachOSignature {
         }
         return codeSignature(image.loadCommands) == nil ? "unsigned armv6 slice" : nil
         #else
-        return nil
+        // MachOKit is unavailable on Windows: parse the 32-bit Mach-O header directly.
+        // mach_header (28 bytes): magic, cputype, cpusubtype, filetype, ncmds, sizeofcmds, flags.
+        // Each load command starts with cmd, cmdsize. The "newer dyld" commands are:
+        // LC_DYLD_INFO_ONLY (0x22), LC_MAIN (0x80000028), LC_VERSION_MIN_IPHONEOS (0x24), LC_BUILD_VERSION (0x32).
+        // (LC_REQ_DYLD bit 0x80000000 is masked off for the comparison.)
+        guard let data = try? Data(contentsOf: url) else { return "not a Mach-O" }
+        return data.withUnsafeBytes { b -> String? in
+            guard let base = b.baseAddress, b.count >= 28 else { return "not a Mach-O" }
+            guard base.loadUnaligned(as: UInt32.self) == 0xFEED_FACE else { return "not a Mach-O" }
+            let cputype = base.advanced(by: 4).loadUnaligned(as: UInt32.self)
+            let cpusubtype = base.advanced(by: 8).loadUnaligned(as: UInt32.self)
+            // ARM (12), armv6 subtype (6).
+            guard cputype == 12, cpusubtype == 6 else { return "no armv6 slice" }
+            let ncmds = base.advanced(by: 16).loadUnaligned(as: UInt32.self)
+            var off = 28
+            for _ in 0..<ncmds {
+                guard off + 8 <= b.count else { return "unreadable slices" }
+                let cmd = base.advanced(by: off).loadUnaligned(as: UInt32.self) & ~0x8000_0000
+                let cmdsize = base.advanced(by: off + 4).loadUnaligned(as: UInt32.self)
+                guard cmdsize >= 8, off + Int(cmdsize) <= b.count else { return "unreadable slices" }
+                if cmd == 0x22 || cmd == 0x28 || cmd == 0x24 || cmd == 0x32 {
+                    return "requires a newer dyld; rebuild with LEGACY_LINK=1"
+                }
+                off += Int(cmdsize)
+            }
+            return nil
+        }
         #endif
     }
 
