@@ -8,6 +8,8 @@ private let helpFile = URL(fileURLWithPath: #filePath).deletingLastPathComponent
 
 /// The bundled Help.txt as task topics: the chosen topic's own text, [Device] read as the device's name, the HIG
 /// audit's cuts and the menu paths that exist.
+// The Help.txt path (../../../../../LightTouchMac) doesn't resolve on Windows CI.
+#if !os(Windows)
 struct HelpTopicTests {
     let whole: String
     let topics: [HelpTopic]
@@ -88,3 +90,4 @@ struct HelpTopicTests {
         #expect(whole.contains(path), "Help lacks \(path)")
     }
 }
+#endif

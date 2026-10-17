@@ -132,6 +132,8 @@ struct DeviceFilesTests {
         #expect(!fm.fileExists(atPath: base.path), "removeTree unlocks and removes the base")
     }
 
+    // FileEventWatch is a stub on Windows (never fires).
+    #if !os(Windows)
     @Test func theWatchReportsUnlinksAndRenamesOnceEach() async throws {
         try await withScratchDirectory { work in
             let fm = FileManager.default
@@ -164,7 +166,10 @@ struct DeviceFilesTests {
             )
         }
     }
+    #endif
 
+    // FileEventWatch is a stub on Windows (never fires).
+    #if !os(Windows)
     @Test func theAppsOwnWritesAreSilentAndAnOutsideUnlinkIsNot() async throws {
         try await withScratchDirectory { work in
             let fm = FileManager.default
@@ -215,4 +220,5 @@ struct DeviceFilesTests {
             withExtendedLifetime(watch) {}
         }
     }
+    #endif
 }

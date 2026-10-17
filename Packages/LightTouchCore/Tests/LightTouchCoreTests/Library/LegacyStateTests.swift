@@ -166,10 +166,13 @@ import Testing
             )
             let nor = try #require(files.writableNOR)
             #expect(try fm.fileExists(atPath: nor.path) && mode(nor) & 0o200 != 0, "a writable NOR clone on first boot")
+            #if !os(Windows)
+            // POSIX permissions have no Windows equivalent (owner-only by default ACL instead).
             #expect(
                 try mode(paths.base.appendingPathComponent("identity.json")) == 0o600
                     && mode(paths.base.appendingPathComponent("nor.bin")) == 0o444
             )
+            #endif
             #expect(
                 try DeviceStateStorage.pinOverlay(paths.overlay, toBase: instance.storage.key),
                 "the overlay is pinned to the base"
