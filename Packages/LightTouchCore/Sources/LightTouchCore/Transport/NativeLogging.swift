@@ -1,5 +1,4 @@
 import Foundation
-import Synchronization
 #if os(Linux)
 import Glibc
 // The struct stat's initializer is defined here, not in Glibc's overlay
@@ -161,11 +160,35 @@ public nonisolated final class LogPipeReader: @unchecked Sendable {
     // bugs (read-side spin, write-side block). A dedicated thread does blocking
     // reads instead; closing the descriptor unblocks it. `stopped` also guards
     // the idempotent close: finish() and deinit may both run.
-    private let state = Mutex(State())
-    private struct State: Sendable {
-        var stopped = false
-        var watch: LogWatch?
+    //
+    // A class (not Synchronization.Mutex, which is non-copyable and cannot be
+    // captured by the thread): the thread must not retain self, or a reader
+    // dropped without finish() would leak the blocked thread.
+    private final class ReaderState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stopped = false
+        private var watch: LogWatch?
+        var isStopped: Bool {
+            lock.lock(); defer { lock.unlock() }; return stopped
+        }
+        func setWatch(_ watch: LogWatch?) {
+            lock.lock(); defer { lock.unlock() }; self.watch = watch
+        }
+        func scan(_ chunk: Data) {
+            lock.lock(); defer { lock.unlock() }; watch?.scan(chunk)
+        }
+        /// Marks stopped; returns true for the first caller, which closes the
+        /// descriptor to unblock the reader thread.
+        func stopFirst() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            defer { stopped = true }
+            return !stopped
+        }
+        func markStopped() {
+            lock.lock(); defer { lock.unlock() }; stopped = true
+        }
     }
+    private let readerState = ReaderState()
     #else
     private let source: any DispatchSourceRead
     private let queue: DispatchQueue
@@ -217,25 +240,25 @@ public nonisolated final class LogPipeReader: @unchecked Sendable {
         self.descriptor = descriptor
         self.log = log
         #if os(Windows)
-        state.withLock { $0.watch = watch }
+        readerState.setWatch(watch)
         // Capture state piecemeal: the thread must not retain self, or a
         // reader dropped without finish() would leak the blocked thread.
-        let state = self.state
+        let readerState = self.readerState
         let cancellation = self.cancellation
         let log = self.log
         cancellation.enter()
         let thread = Thread {
             var bytes = [UInt8](repeating: 0, count: 32_768)
-            while !state.withLock({ $0.stopped }) {
+            while !readerState.isStopped {
                 // UCRT read takes a UInt32 count and returns Int32; it blocks
                 // until bytes arrive or the write end closes (EOF, count 0).
                 let count = read(descriptor, &bytes, UInt32(bytes.count))
                 guard count > 0 else { break }
                 let chunk = Data(bytes.prefix(Int(count)))
                 log.append(chunk)
-                state.withLock { $0.watch?.scan(chunk) }
+                readerState.scan(chunk)
             }
-            state.withLock { $0.stopped = true }
+            readerState.markStopped()
             cleanup?()
             cancellation.leave()
         }
@@ -262,11 +285,7 @@ public nonisolated final class LogPipeReader: @unchecked Sendable {
     /// The first caller closes the descriptor, unblocking the reader thread's
     /// read(); later callers (finish() after deinit, or vice versa) no-op.
     private func stopReading() {
-        let first = state.withLock { state -> Bool in
-            defer { state.stopped = true }
-            return !state.stopped
-        }
-        if first { close(descriptor) }
+        if readerState.stopFirst() { close(descriptor) }
     }
     #endif
 
