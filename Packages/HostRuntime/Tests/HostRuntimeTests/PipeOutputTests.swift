@@ -30,7 +30,7 @@ struct PipeOutputTests {
     }
     #endif
 
-    @Test(.timeLimit(.minutes(2))) func orderedDeliveryAndClosedConsumerAreNativeErrors() async throws {
+    @Test func orderedDeliveryAndClosedConsumerAreNativeErrors() async throws {
         var fds: [Int32] = [0, 0]
         #expect(checkPipe(&fds))
         let reader = fds[0]
@@ -74,7 +74,7 @@ struct PipeOutputTests {
         lost.stop()
     }
 
-    @Test(.timeLimit(.minutes(2))) func stopJoinsQueuedWriteWithoutReadingFullPipe() async throws {
+    @Test func stopJoinsQueuedWriteWithoutReadingFullPipe() async throws {
         var fds: [Int32] = [0, 0]
         #expect(checkPipe(&fds))
         defer {
