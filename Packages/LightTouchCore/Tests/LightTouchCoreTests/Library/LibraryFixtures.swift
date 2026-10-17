@@ -126,10 +126,13 @@ nonisolated enum LibraryFixtures {
         // crashes corelibs-foundation's Process.run instead of throwing.
         _ = try? run("/usr/bin/chflags", ["-R", "nouchg", url.path])
         #endif
-        // u+w in-process: spawning /bin/chmod with stderr on
-        // FileHandle.nullDevice fatals on Linux (nullDevice wraps fd -1;
-        // Process.run() synchronizes the handle -> fsync(-1) -> EBADF ->
-        // try! in synchronizeFile() traps -> SIGILL kills the test runner).
+        // u+w in-process: spawning /bin/chmod here fatals on Linux. The
+        // landmine is not nullDevice (run() identity-maps it to /dev/null and
+        // never touches it) but the Pipe that run() used for stdout:
+        // corelibs-foundation's Process.run() calls closeFile() (= try!
+        // close()) on Pipe stdio after spawning, and a spurious EBADF there
+        // fatals the whole test runner (FileHandle.swift:740). See run()
+        // above, which now captures stdout to a temp file instead.
         makeWritable(url)
         try? FileManager.default.removeItem(at: url)
     }
