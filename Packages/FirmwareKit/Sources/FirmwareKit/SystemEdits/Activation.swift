@@ -76,11 +76,12 @@ public enum Activation {
         guard attrs != 0xFFFF_FFFF, attrs & DWORD(FILE_ATTRIBUTE_DIRECTORY) == 0 else {
             throw ActivationFailure("Activation target is not a regular file")
         }
+        let wasReadOnly = attrs & DWORD(FILE_ATTRIBUTE_READONLY) != 0
         defer {
-            _ = chmod(file.path, Int32(original.st_mode) & 0o7777)
-            close(metadata)
+            // Restore the read-only bit if it was set.
+            if wasReadOnly { _ = chmod(file.path, 0o444) }
         }
-        guard chmod(file.path, Int32(original.st_mode) & 0o7777 | 0o200) == 0 else {
+        guard chmod(file.path, 0o666) == 0 else {
             throw ActivationFailure("Cannot make activation target writable")
         }
         let out = open(file.path, O_WRONLY | _O_BINARY)

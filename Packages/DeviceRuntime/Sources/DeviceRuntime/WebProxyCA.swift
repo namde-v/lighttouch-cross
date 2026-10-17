@@ -284,30 +284,30 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
 
     private static func save(_ data: Data, to url: URL, mode: Int32) throws {
         #if os(Windows)
-        // Uniqueness via UUID (no getpid on Windows); no O_NOFOLLOW: the temp
-        // name is random per call, and the parent directory is the app's own.
-        // _O_BINARY: the UCRT defaults to text mode (CRLF translation), which
-        // corrupts both the PEM text and the DER binary.
-        let temporary = url.path + ".\(Foundation.UUID().uuidString).tmp"
-        let fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC | _O_NOINHERIT | _O_BINARY, mode)
+        // Use Foundation's atomic write (no POSIX open: the open spelling
+        // crashes Swift 6.2.4's Windows overlay at runtime, and _open is
+        // variadic/unavailable). Data.write(to:options:.atomic) writes to a
+        // temp file and renames, matching the POSIX path's atomicity.
+        // No O_NOFOLLOW: the temp name is random per call, and the parent
+        // directory is the app's own.
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            throw Failure.unreadable(url.path)
+        }
         #else
         let temporary = url.path + ".\(getpid()).tmp"
         let fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, mode_t(mode))
-        #endif
         guard fd >= 0 else { throw Failure.unreadable(temporary) }
         let ok = data.withUnsafeBytes {
             guard let base = $0.baseAddress else { return data.isEmpty }
-            #if os(Windows)
-            // UCRT write takes a UInt32 count.
-            return $0.count <= Int(Int32.max) && write(fd, base, UInt32($0.count)) == Int32($0.count)
-            #else
             return write(fd, base, $0.count) == $0.count
-            #endif
         }
         guard close(fd) == 0, ok, rename(temporary, url.path) == 0 else {
             unlink(temporary)
             throw Failure.unreadable(url.path)
         }
+        #endif
     }
 
     #if os(Windows)
