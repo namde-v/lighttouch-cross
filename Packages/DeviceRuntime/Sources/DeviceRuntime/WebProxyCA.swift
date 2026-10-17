@@ -274,8 +274,10 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
         #if os(Windows)
         // Uniqueness via UUID (no getpid on Windows); no O_NOFOLLOW: the temp
         // name is random per call, and the parent directory is the app's own.
+        // _O_BINARY: the UCRT defaults to text mode (CRLF translation), which
+        // corrupts both the PEM text and the DER binary.
         let temporary = url.path + ".\(Foundation.UUID().uuidString).tmp"
-        let fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC | _O_NOINHERIT, mode)
+        let fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC | _O_NOINHERIT | _O_BINARY, mode)
         #else
         let temporary = url.path + ".\(getpid()).tmp"
         let fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, mode_t(mode))
