@@ -289,8 +289,10 @@ public actor ScreenMovieWriter {
         frameContinuation?.finish()
         frameContinuation = nil
         frameStream = nil
+        #if !os(Windows)
         let pid = ffmpegPID.withLock { $0 }
         if pid > 0 { kill(pid, SIGKILL) }
+        #endif
         capture = nil
     }
 
