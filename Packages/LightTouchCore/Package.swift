@@ -21,7 +21,10 @@ let package = Package(
         .package(path: "../DeviceServices"),
         .package(path: "../DeviceRuntime"),
         .package(url: "https://github.com/swiftlang/swift-subprocess.git", exact: "1.0.0"),
-        .package(url: "https://github.com/weichsel/ZIPFoundation.git", exact: "0.9.20"),
+        // Windows MSVC fixes live on the namde-v fork (windows-msvc-fix branch);
+        // the URL must match Package.resolved or swift test re-resolves upstream
+        // and fails to check out the fork-only revision.
+        .package(url: "https://github.com/namde-v/ZIPFoundation.git", branch: "windows-msvc-fix"),
         // CryptoKit is Apple-only; swift-crypto's Crypto module is API-compatible.
         .package(url: "https://github.com/namde-v/swift-crypto.git", branch: "windows-msvc-fix"),
         // OSLog is Apple-only; swift-log carries the log calls.
