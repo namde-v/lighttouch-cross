@@ -61,7 +61,9 @@ struct PreparedBaseTests {
         #expect(try Self.nor("A") != Self.nor("B"))
     }
 
-    @Test func unpackGivesEachDeviceTheIdentityCreateWould() throws {
+    // PreparedBase.pack/unpack need zlib, which is unavailable on Windows.
+    #if !os(Windows)
+        @Test func unpackGivesEachDeviceTheIdentityCreateWould() throws {
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("prepared-base-\(UUID().uuidString)")
         defer {
             _ = try? Process.run(URL(fileURLWithPath: "/bin/chmod"), arguments: ["-R", "u+w", tmp.path]).waitUntilExit()
@@ -136,4 +138,5 @@ struct PreparedBaseTests {
         }
         #expect(!FileManager.default.fileExists(atPath: tmp.appendingPathComponent("outside").path))
     }
+    #endif
 }
