@@ -41,7 +41,7 @@ public nonisolated struct StorageRecordPaths: Sendable {
         }
         self.relativeRoot = relativeRoot
         id = (record["id"] as? String).flatMap(UUID.init(uuidString:))
-        absoluteStyle = path.hasPrefix("/")
+        absoluteStyle = Self.isAbsolutePath(path)
         self.base = Self.resolve(path, relativeRoot: relativeRoot)
         self.overlay = Self.resolve(overlay, relativeRoot: relativeRoot)
         snapshot = (storage["snapshot"] as? String).map { Self.resolve($0, relativeRoot: relativeRoot) }
@@ -49,7 +49,25 @@ public nonisolated struct StorageRecordPaths: Sendable {
         usbmuxConf = (storage["usbmuxConf"] as? String).map { Self.resolve($0, relativeRoot: relativeRoot) }
     }
     public static func resolve(_ path: String, relativeRoot: URL) -> URL {
-        path.hasPrefix("/") ? URL(fileURLWithPath: path) : relativeRoot.appendingPathComponent(path)
+        Self.isAbsolutePath(path) ? URL(fileURLWithPath: path) : relativeRoot.appendingPathComponent(path)
+    }
+
+    /// Whether `path` names an absolute filesystem location. On Windows,
+    /// URL.path spells drive-letter paths "C:/..." (no leading "/"), so the
+    /// POSIX hasPrefix("/") test alone misclassifies them as relative and
+    /// resolve() would mangle them under the relative root.
+    private static func isAbsolutePath(_ path: String) -> Bool {
+        if path.hasPrefix("/") { return true }
+        #if os(Windows)
+        let chars = Array(path)
+        // Drive-letter absolute: "C:/..." or "C:\...".
+        if chars.count > 2, chars[0].isLetter, chars[1] == ":", (chars[2] == "/" || chars[2] == "\\") {
+            return true
+        }
+        // UNC: "\\server\share".
+        if path.hasPrefix("\\\\") { return true }
+        #endif
+        return false
     }
     public func recordPath(_ url: URL) throws -> String {
         if absoluteStyle { return url.path }
