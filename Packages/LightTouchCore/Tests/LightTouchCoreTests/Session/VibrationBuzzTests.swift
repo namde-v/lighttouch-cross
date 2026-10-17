@@ -59,13 +59,16 @@ struct VibrationBuzzTests {
         let buzz = VibrationBuzz()
         buzz.observe(running: true, pulses: 1)
         let start = render(buzz, seconds: 0.2)
-        let largestStep = zip(start, start.dropFirst()).map { abs($1 - $0) }.max() ?? 0
+        // (explicit [Float]: the Windows compiler mis-infers abs() over zipped Floats inline)
+        let startSteps: [Float] = zip(start, start.dropFirst()).map { abs($1 - $0) }
+        let largestStep: Float = startSteps.max() ?? 0
         #expect(abs(start[0]) < 0.01)
         #expect(largestStep < 0.1)
         buzz.observe(running: false, pulses: 1)
         let end = render(buzz, seconds: 0.05)
         // (explicit [Float]: the Windows compiler mis-infers the literal's element type inline)
         let joined: [Float] = [start.last ?? 0] + end
-        #expect((zip(joined, joined.dropFirst()).map { abs($1 - $0) }.max() ?? 0) < 0.1)
+        let joinedSteps: [Float] = zip(joined, joined.dropFirst()).map { abs($1 - $0) }
+        #expect((joinedSteps.max() ?? 0) < 0.1)
     }
 }
