@@ -444,12 +444,24 @@ public actor StorageGeneration {
     static func write(_ data: Data, to destination: URL) throws {
         let temporary = destination.deletingLastPathComponent().appendingPathComponent(".\(Foundation.UUID().uuidString).tmp")
         #if os(Windows)
-        // O_NOFOLLOW has no Windows equivalent; O_EXCL on a fresh temp name is the symlink defense here.
-        // winOpen: the POSIX open spelling crashes Swift 6.2.4's Windows overlay at runtime.
-        let fd = winOpen(temporary.path, write: true, create: true, exclusive: true)
+        // O_NOFOLLOW/O_EXCL have no Windows equivalent; a UUID temp name is the
+        // defense. _open_osfhandle descriptors fail with EBADF on 6.2.4, so
+        // write via Foundation, flush via winFsync, replace via winRename
+        // (UCRT rename fails if the destination exists).
+        do {
+            try data.write(to: temporary)
+            guard winFsync(path: temporary.path) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            guard winRename(temporary.path, destination.path) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: temporary)
+            throw error
+        }
         #else
         let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o600)
-        #endif
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         defer {
             posixClose(fd)
@@ -468,6 +480,7 @@ public actor StorageGeneration {
         guard fullSync(fd), rename(temporary.path, destination.path) == 0 else {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
+        #endif
         try sync(destination.deletingLastPathComponent())
     }
     /// Every write here publishes (a record, an intent) by the rename after it. fsync only hands data to the

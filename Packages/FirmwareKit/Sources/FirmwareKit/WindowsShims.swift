@@ -138,6 +138,23 @@ func winFsync(path: String) -> Int32 {
     return FlushFileBuffers(handle) ? 0 : -1
 }
 
+/// rename(2) for Windows: atomically replace the destination (POSIX rename
+/// semantics). UCRT rename() fails with EEXIST if the destination exists.
+func winRename(_ old: String, _ new: String) -> Int32 {
+    let oldWide = Array(old.utf16) + [0]
+    let newWide = Array(new.utf16) + [0]
+    let ok: Bool = oldWide.withUnsafeBufferPointer { oldBuf in
+        newWide.withUnsafeBufferPointer { newBuf in
+            MoveFileExW(
+                oldBuf.baseAddress,
+                newBuf.baseAddress,
+                DWORD(MOVEFILE_REPLACE_EXISTING) | DWORD(MOVEFILE_WRITE_THROUGH)
+            )
+        }
+    }
+    return ok ? 0 : -1
+}
+
 /// flock(LOCK_EX | LOCK_NB): non-blocking exclusive byte-range lock, the
 /// same pattern HostRuntime's StorageLease uses. Closing the descriptor
 /// releases the lock.

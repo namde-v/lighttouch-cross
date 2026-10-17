@@ -296,8 +296,9 @@ public enum N72NAND {
         try data.write(to: tmp)
         #if os(Windows)
         // winFsync: _open_osfhandle descriptors fail with EBADF on 6.2.4;
-        // flush by HANDLE instead. No directory fsync on Windows.
-        guard winFsync(path: tmp.path) == 0, rename(tmp.path, url.path) == 0 else {
+        // flush by HANDLE instead. winRename: UCRT rename fails if dest exists.
+        // No directory fsync on Windows.
+        guard winFsync(path: tmp.path) == 0, winRename(tmp.path, url.path) == 0 else {
             let error = POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             try? FileManager.default.removeItem(at: tmp)
             throw error
