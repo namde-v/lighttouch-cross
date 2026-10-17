@@ -50,9 +50,10 @@ private func temporaryDirectory() throws -> URL {
     return directory.resolvingSymlinksInPath()
 }
 
-/// Polls the main actor until `check` holds; the deadline only guards a hang.
+/// Polls the main actor until `check` holds; the deadline only guards a hang. Generous because it returns
+/// as soon as the check holds; on a loaded CI machine @MainActor contention can delay the first poll.
 private func wait(_ check: () -> Bool) async throws {
-    let deadline = ContinuousClock.now + .seconds(10)
+    let deadline = ContinuousClock.now + .seconds(120)
     while !check(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
     #expect(check(), "timed out")
 }

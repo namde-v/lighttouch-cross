@@ -73,6 +73,11 @@ struct DeviceFilesTests {
         #if os(Linux)
         let enforcementHolds =
             DeviceStateStorage.immutableSettable() || geteuid() != 0
+        #elseif os(Windows)
+        // The read-only attribute doesn't stop the owner on Windows (and
+        // posixPermissions setAttributes is a no-op there): a locked base is
+        // advisory, so there is nothing to check.
+        let enforcementHolds = false
         #else
         let enforcementHolds = true
         #endif
