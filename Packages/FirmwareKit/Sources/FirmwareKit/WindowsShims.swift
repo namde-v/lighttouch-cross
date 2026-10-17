@@ -47,10 +47,63 @@ func ftruncate(_ fd: Int32, _ length: off_t) -> Int32 {
     _chsize_s(fd, length)
 }
 
+/// open(2) for Windows. The POSIX `open` spelling imports into Swift but
+/// CRASHES swift-frontend 6.2.4's Windows overlay at runtime, and `_open` is
+/// variadic (unavailable in Swift) — proven by the BuildTools Vendor.lock
+/// work (commit 1890a52). Build the HANDLE with CreateFileW and wrap it as
+/// a CRT descriptor with _open_osfhandle, so every caller can keep using
+/// read/write/pread/pwrite/close/_commit/ftruncate on the returned fd and
+/// the existing `fd >= 0` error checks keep working. Mode bits are ignored
+/// (Windows permissions are ACLs). The descriptor is always _O_BINARY (no
+/// CRLF translation) and _O_NOINHERIT (the O_CLOEXEC equivalent).
+/// Returns -1 on failure; errno is NOT set (it is not safely assignable from
+/// Swift on Windows), so failure diagnostics should not use strerror here.
+func winOpen(
+    _ path: String,
+    read: Bool = false,
+    write: Bool = false,
+    create: Bool = false,
+    truncate truncateExisting: Bool = false,
+    exclusive: Bool = false
+) -> Int32 {
+    var access = DWORD(0)
+    if read { access |= DWORD(GENERIC_READ) }
+    if write { access |= DWORD(GENERIC_WRITE) }
+    let creation: DWORD
+    switch (create, truncateExisting, exclusive) {
+    case (_, _, true): creation = DWORD(CREATE_NEW) // O_CREAT|O_EXCL
+    case (true, true, _): creation = DWORD(CREATE_ALWAYS) // O_CREAT|O_TRUNC
+    case (true, false, _): creation = DWORD(OPEN_ALWAYS) // O_CREAT
+    case (false, true, _): creation = DWORD(TRUNCATE_EXISTING) // O_TRUNC
+    default: creation = DWORD(OPEN_EXISTING)
+    }
+    let wide = Array(path.utf16) + [0]
+    let handle: UnsafeMutableRawPointer? = wide.withUnsafeBufferPointer { buf in
+        CreateFileW(
+            buf.baseAddress,
+            access,
+            DWORD(FILE_SHARE_READ) | DWORD(FILE_SHARE_WRITE) | DWORD(FILE_SHARE_DELETE),
+            nil,
+            creation,
+            DWORD(FILE_ATTRIBUTE_NORMAL),
+            nil
+        )
+    }
+    guard let handle, handle != INVALID_HANDLE_VALUE else { return -1 }
+    // Match BuildTools' proven pattern: pass the O_* access mode directly.
+    // _O_BINARY/_O_NOINHERIT caused EBADF on swift-frontend 6.2.4.
+    let osfFlags: Int32
+    if read, write { osfFlags = O_RDWR } else if write { osfFlags = O_WRONLY } else { osfFlags = O_RDONLY }
+    let fd = _open_osfhandle(Int(bitPattern: handle), osfFlags)
+    if fd == -1 { CloseHandle(handle) }
+    return fd
+}
+
 /// truncate(3): resize a file by path.
 func truncate(_ path: UnsafePointer<CChar>?, _ length: off_t) -> Int32 {
     guard let path else { return -1 }
-    let fd = open(path, O_WRONLY | _O_BINARY)
+    // winOpen: the POSIX open spelling crashes Swift 6.2.4's Windows overlay.
+    let fd = winOpen(String(cString: path), write: true)
     guard fd >= 0 else { return -1 }
     defer { _ = close(fd) }
     return _chsize_s(fd, length)
@@ -59,6 +112,47 @@ func truncate(_ path: UnsafePointer<CChar>?, _ length: off_t) -> Int32 {
 /// fsync(2): flush an open file's buffers to the OS.
 func fsync(_ fd: Int32) -> Int32 {
     _commit(fd)
+}
+
+/// fsync-by-path for Windows: flush a file's buffers via CreateFileW +
+/// FlushFileBuffers, without a CRT descriptor. _open_osfhandle returns
+/// descriptors that fail with EBADF on swift-frontend 6.2.4, so the
+/// durability call sites (writeDurably, sync) use this instead of
+/// winOpen + fsync.
+func winFsync(path: String) -> Int32 {
+    let wide = Array(path.utf16) + [0]
+    let handle: UnsafeMutableRawPointer? = wide.withUnsafeBufferPointer { buf in
+        CreateFileW(
+            buf.baseAddress,
+            // FlushFileBuffers requires GENERIC_WRITE.
+            DWORD(GENERIC_READ) | DWORD(GENERIC_WRITE),
+            DWORD(FILE_SHARE_READ) | DWORD(FILE_SHARE_WRITE) | DWORD(FILE_SHARE_DELETE),
+            nil,
+            DWORD(OPEN_EXISTING),
+            DWORD(FILE_ATTRIBUTE_NORMAL),
+            nil
+        )
+    }
+    guard let handle, handle != INVALID_HANDLE_VALUE else { return -1 }
+    defer { CloseHandle(handle) }
+    return FlushFileBuffers(handle) ? 0 : -1
+}
+
+/// rename(2) for Windows: atomically replace the destination (POSIX rename
+/// semantics). UCRT rename() fails with EEXIST if the destination exists.
+func winRename(_ old: String, _ new: String) -> Int32 {
+    let oldWide = Array(old.utf16) + [0]
+    let newWide = Array(new.utf16) + [0]
+    let ok: Bool = oldWide.withUnsafeBufferPointer { oldBuf in
+        newWide.withUnsafeBufferPointer { newBuf in
+            MoveFileExW(
+                oldBuf.baseAddress,
+                newBuf.baseAddress,
+                DWORD(MOVEFILE_REPLACE_EXISTING) | DWORD(MOVEFILE_WRITE_THROUGH)
+            )
+        }
+    }
+    return ok ? 0 : -1
 }
 
 /// flock(LOCK_EX | LOCK_NB): non-blocking exclusive byte-range lock, the

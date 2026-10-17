@@ -93,7 +93,8 @@ public enum VolumeRebuild {
             let (cs, pg) = predict(n)
             guard let u = source(cs, pg) else { return false }
             #if os(Windows)
-            let fd = open(u.path, O_RDONLY | _O_BINARY)
+            // winOpen: the POSIX open spelling crashes Swift 6.2.4's Windows overlay at runtime.
+            let fd = winOpen(u.path, read: true)
             #else
             let fd = open(u.path, O_RDONLY)
             #endif
@@ -228,7 +229,8 @@ public enum VolumeRebuild {
     /// A new sparse file of `bytes`, open for writing.
     static func create(_ u: URL, bytes: Int) throws -> Int32 {
         #if os(Windows)
-        let fd = open(u.path, O_RDWR | O_CREAT | O_TRUNC | _O_BINARY, 0o600)
+        // winOpen: the POSIX open spelling crashes Swift 6.2.4's Windows overlay at runtime.
+        let fd = winOpen(u.path, read: true, write: true, create: true, truncate: true)
         #else
         let fd = open(u.path, O_RDWR | O_CREAT | O_TRUNC, 0o600)
         #endif

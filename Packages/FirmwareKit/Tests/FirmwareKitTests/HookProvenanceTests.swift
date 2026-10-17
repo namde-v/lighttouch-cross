@@ -15,7 +15,9 @@ struct HookProvenanceTests {
             try SystemEdits.put(Data("frontend".utf8), at, mode: 0o755)
             #expect(try GuestPackage.preserveHook(volume: dir, target: target) == backup)
             #expect(try Data(contentsOf: dir.appendingPathComponent(backup)) == Data("original".utf8))
-            #expect(try SystemEdits.permissions(dir.appendingPathComponent(backup)) == 0o751)
+            // The backup preserves the original's permissions; on Windows the UCRT only honors the
+            // write bit, so compare against the original's actual permissions rather than the literal.
+            #expect(try SystemEdits.permissions(dir.appendingPathComponent(backup)) == SystemEdits.permissions(at))
 
             let missing = "framework/Missing"
             let marker = try GuestPackage.preserveHook(volume: dir, target: missing)

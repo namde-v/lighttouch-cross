@@ -22,7 +22,8 @@ import Darwin
 public enum VFDecrypt {
     public static func decrypt(input: URL, output: URL, key: Data) throws {
         #if os(Windows)
-        let fd = open(input.path, O_RDONLY | _O_BINARY)
+        // winOpen: the POSIX open spelling crashes Swift 6.2.4's Windows overlay at runtime.
+        let fd = winOpen(input.path, read: true)
         #else
         let fd = open(input.path, O_RDONLY)
         #endif

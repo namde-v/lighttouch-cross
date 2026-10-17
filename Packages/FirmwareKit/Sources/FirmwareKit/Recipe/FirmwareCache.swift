@@ -16,8 +16,8 @@ public enum FirmwareCache {
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             #if os(Windows)
             // No flock(2) or O_NOFOLLOW on Windows: LockFileEx byte-range locks (see WindowsShims).
-            // _O_BINARY: the UCRT defaults to text mode.
-            let fd = open(root.appendingPathComponent(".lease").path, O_RDWR | O_CREAT | O_CLOEXEC | _O_BINARY, 0o600)
+            // winOpen: the POSIX open spelling crashes Swift 6.2.4's Windows overlay at runtime.
+            let fd = winOpen(root.appendingPathComponent(".lease").path, read: true, write: true, create: true)
             guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
             if exclusive {
                 guard flockTryLockExclusive(fd) else {

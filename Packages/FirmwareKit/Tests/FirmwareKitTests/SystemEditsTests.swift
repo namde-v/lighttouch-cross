@@ -381,8 +381,9 @@ enum K48Oracle {
             options: .mutableContainersAndLeaves,
             format: nil
         )
-        // Linux's corelibs returns Swift value types, not NSMutableDictionary.
-        #if os(Linux)
+        // Linux's corelibs and swift-foundation on Windows return Swift value
+        // types, not NSMutableDictionary.
+        #if os(Linux) || os(Windows)
             let d = SystemEdits.mutablePlistValue(raw) as! NSMutableDictionary
         #else
             let d = raw as! NSMutableDictionary

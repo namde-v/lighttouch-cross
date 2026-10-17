@@ -63,8 +63,8 @@ enum DecryptionCache {
         let lockFile = parent.appendingPathComponent(key + ".lock")
         #if os(Windows)
         // No flock(2) on Windows: LockFileEx byte-range locks (see WindowsShims).
-        // _O_BINARY: the UCRT defaults to text mode.
-        let fd = open(lockFile.path, O_CREAT | O_RDWR | O_CLOEXEC | _O_BINARY, 0o600)
+        // winOpen: the POSIX open spelling crashes Swift 6.2.4's Windows overlay at runtime.
+        let fd = winOpen(lockFile.path, read: true, write: true, create: true)
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         defer { close(fd) }
         guard flockLockExclusive(fd) else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }

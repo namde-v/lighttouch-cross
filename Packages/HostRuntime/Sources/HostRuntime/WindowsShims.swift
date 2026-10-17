@@ -1,22 +1,18 @@
 // Windows shims for the POSIX-isms HostRuntime uses on Apple/Linux.
 //
-// The POSIX `open` spelling imports into Swift but CRASHES swift-frontend
-// 6.2.4's Windows overlay at runtime, and `_open` is variadic (unavailable in
-// Swift) — proven by the BuildTools Vendor.lock work (commit 1890a52) and
-// adopted by FirmwareKit's winOpen. They are only compiled on Windows, so
-// they can never shadow a real POSIX symbol.
+// The POSIX `open` spelling imports into Swift but crashes (or returns
+// unusable descriptors with EBADF) on swift-frontend 6.2.4's Windows overlay;
+// `_open` is variadic (unavailable in Swift). winOpen() builds the HANDLE
+// with CreateFileW and wraps it as a CRT descriptor with _open_osfhandle.
 
 #if os(Windows)
 import Foundation
 import WinSDK
 
-/// open(2) for Windows. Builds the HANDLE with CreateFileW and wraps it as a
-/// CRT descriptor with _open_osfhandle, so callers can keep using
-/// read/write/close/LockFileEx on the returned fd and the existing
-/// `fd >= 0` error checks keep working. The descriptor is always _O_BINARY
-/// (no CRLF translation) and _O_NOINHERIT (the O_CLOEXEC equivalent).
-/// Returns -1 on failure; errno is NOT set (it is not safely assignable from
-/// Swift on Windows), so failure diagnostics should use GetLastError().
+/// open(2) for Windows. See the file header. Mode bits are ignored (Windows
+/// permissions are ACLs). The descriptor is always _O_BINARY (no CRLF
+/// translation) and _O_NOINHERIT (the O_CLOEXEC equivalent). Returns -1 on
+/// failure.
 func winOpen(
     _ path: String,
     read: Bool = false,
@@ -49,12 +45,12 @@ func winOpen(
         )
     }
     guard let handle, handle != INVALID_HANDLE_VALUE else { return -1 }
-    // _O_RDONLY is 0; _O_WRONLY/_O_RDWR from fcntl.h. _O_NOINHERIT is 0x80
-    // (the same value the O_CLOEXEC-equivalent shim documents elsewhere).
-    var osfFlags = Int32(_O_BINARY) | 0x80
-    if read, write { osfFlags |= Int32(_O_RDWR) } else if write { osfFlags |= Int32(_O_WRONLY) }
+    // Match BuildTools' proven pattern: pass the O_* access mode directly.
+    let osfFlags: Int32
+    if read, write { osfFlags = O_RDWR } else if write { osfFlags = O_WRONLY } else { osfFlags = O_RDONLY }
     let fd = _open_osfhandle(Int(bitPattern: handle), osfFlags)
     if fd == -1 { CloseHandle(handle) }
     return fd
 }
+
 #endif

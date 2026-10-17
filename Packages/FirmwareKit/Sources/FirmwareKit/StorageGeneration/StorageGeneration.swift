@@ -399,16 +399,14 @@ public actor StorageGeneration {
     static func hash(_ data: Data) -> String { Preparer.sha256(data) }
     static func sync(_ url: URL) throws {
         #if os(Windows)
-        // No fsync(2) or open(2) on directories: _commit files; directory entry
-        // durability is best-effort (no FlushFileBuffers handle dance).
+        // No fsync(2) on directories: winFsync flushes by HANDLE (_open_osfhandle
+        // descriptors fail with EBADF on 6.2.4); directory entry durability is
+        // best-effort. O_NOFOLLOW has no Windows equivalent; these are internal
+        // storage paths.
         var isDir: ObjCBool = false
         let isDirectory = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
         guard !isDirectory else { return }
-        // O_NOFOLLOW has no Windows equivalent; these are internal storage paths.
-        let fd = open(url.path, O_RDONLY | _O_BINARY | O_CLOEXEC)
-        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
-        defer { posixClose(fd) }
-        guard fsync(fd) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        guard winFsync(path: url.path) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         #else
         let fd = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
@@ -446,12 +444,24 @@ public actor StorageGeneration {
     static func write(_ data: Data, to destination: URL) throws {
         let temporary = destination.deletingLastPathComponent().appendingPathComponent(".\(Foundation.UUID().uuidString).tmp")
         #if os(Windows)
-        // O_NOFOLLOW has no Windows equivalent; O_EXCL on a fresh temp name is the symlink defense here.
-        // _O_BINARY: the UCRT defaults to text mode (CRLF translation).
-        let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | _O_BINARY, 0o600)
+        // O_NOFOLLOW/O_EXCL have no Windows equivalent; a UUID temp name is the
+        // defense. _open_osfhandle descriptors fail with EBADF on 6.2.4, so
+        // write via Foundation, flush via winFsync, replace via winRename
+        // (UCRT rename fails if the destination exists).
+        do {
+            try data.write(to: temporary)
+            guard winFsync(path: temporary.path) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            guard winRename(temporary.path, destination.path) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: temporary)
+            throw error
+        }
         #else
         let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o600)
-        #endif
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         defer {
             posixClose(fd)
@@ -470,6 +480,7 @@ public actor StorageGeneration {
         guard fullSync(fd), rename(temporary.path, destination.path) == 0 else {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
+        #endif
         try sync(destination.deletingLastPathComponent())
     }
     /// Every write here publishes (a record, an intent) by the rename after it. fsync only hands data to the
