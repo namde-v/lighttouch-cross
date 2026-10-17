@@ -350,12 +350,15 @@ private final class MediaVideoExport {
                 // still answers kill(pid, 0), so poll /proc for a live state;
                 // Subprocess.run reaps it once the body returns.
                 #if os(Windows)
-                while Self.isProcessRunning(Int32(bitPattern: pidValue)) {
-                #else
-                while Self.isProcessRunning(pidValue) {
-                #endif
+                let pidForPoll = Int32(bitPattern: pidValue)
+                while Self.isProcessRunning(pidForPoll) {
                     try await Task.sleep(for: .milliseconds(50))
                 }
+                #else
+                while Self.isProcessRunning(pidValue) {
+                    try await Task.sleep(for: .milliseconds(50))
+                }
+                #endif
             } catch {
                 #if os(Windows)
                 // No POSIX kill on Windows; the Subprocess runner reaps on cancellation.

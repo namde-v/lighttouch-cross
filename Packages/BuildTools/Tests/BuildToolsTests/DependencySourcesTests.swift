@@ -5,6 +5,9 @@ import Testing
 @testable import BuildTools
 
 /// Archive integrity and source staging, without network or a dependency build.
+#if os(Windows)
+@Suite(.serialized)
+#endif
 struct DependencySourcesTests {
     let content = Data("fixed source archive contents".utf8)
 
