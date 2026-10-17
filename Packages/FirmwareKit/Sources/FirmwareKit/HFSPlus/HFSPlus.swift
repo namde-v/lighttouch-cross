@@ -12,7 +12,9 @@
 //
 // Paths are volume-relative, "/"-separated, no leading slash ("" is the root folder).
 
+#if !os(Windows)
 import CZlibFK
+#endif
 import Crypto
 import Foundation
 #if os(Linux)

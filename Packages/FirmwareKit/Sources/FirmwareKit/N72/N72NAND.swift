@@ -10,7 +10,9 @@
 import FirmwareSchema
 import Foundation
 import HostRuntime
+#if !os(Windows)
 import CZlibFK
+#endif
 #if os(Linux)
 import Glibc
 #elseif os(Windows)

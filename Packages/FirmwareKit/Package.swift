@@ -101,7 +101,12 @@ let package = Package(
         .target(
             name: "FirmwareKit",
             dependencies: [
-                "CActivation", "FirmwareSchema", "CZlibFK", "CSQLite3",
+                "CActivation", "FirmwareSchema",
+                // CZlibFK/CSQLite3 only where zlib/SQLite exist: their modulemaps'
+                // link directives break the Windows link (no z.lib/sqlite3.lib).
+                // Imports are gated with #if !os(Windows) to match.
+                .target(name: "CZlibFK", condition: .when(platforms: [.macOS, .linux])),
+                .target(name: "CSQLite3", condition: .when(platforms: [.macOS, .linux])),
                 .product(name: "HostRuntime", package: "HostRuntime"),
                 .product(name: "ZIPFoundation", package: "ZIPFoundation"),
                 .product(name: "MachOKit", package: "MachOKit", condition: .when(platforms: [.macOS, .linux])),
@@ -115,7 +120,9 @@ let package = Package(
         .testTarget(
             name: "FirmwareKitTests",
             dependencies: [
-                "FirmwareKit", "FirmwareSchema", "CSQLite3", "CZlibFK",
+                "FirmwareKit", "FirmwareSchema",
+                .target(name: "CZlibFK", condition: .when(platforms: [.macOS, .linux])),
+                .target(name: "CSQLite3", condition: .when(platforms: [.macOS, .linux])),
                 .product(name: "HostRuntime", package: "HostRuntime"),
                 .product(name: "Crypto", package: "swift-crypto"),
             ]

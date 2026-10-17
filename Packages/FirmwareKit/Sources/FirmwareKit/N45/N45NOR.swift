@@ -13,7 +13,9 @@
 
 import Crypto
 import Foundation
+#if !os(Windows)
 import CZlibFK
+#endif
 
 public enum N45NOR {
     static let size = 0x100000, block = 0x40, directory = 0x8400, firstBlock = 1040, nvram = 0xFC000

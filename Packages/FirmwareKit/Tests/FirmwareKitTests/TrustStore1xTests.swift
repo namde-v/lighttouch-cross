@@ -1,7 +1,9 @@
 import Crypto
 import Foundation
 import HostRuntime
+#if !os(Windows)
 import CSQLite3
+#endif
 import Testing
 
 @testable import FirmwareKit

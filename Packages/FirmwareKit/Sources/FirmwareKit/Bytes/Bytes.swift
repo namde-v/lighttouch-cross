@@ -1,6 +1,8 @@
 // The byte readers and writers FirmwareKit's formats share: integers at offsets of an image, hex, zlib's CRC-32.
 import Foundation
+#if !os(Windows)
 import CZlibFK
+#endif
 
 func le16(_ b: [UInt8], _ o: Int) -> UInt16 { UInt16(b[o]) | UInt16(b[o + 1]) << 8 }
 

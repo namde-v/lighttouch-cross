@@ -10,7 +10,9 @@ import Crypto
 import FirmwareSchema
 import Foundation
 import HostRuntime
+#if !os(Windows)
 import CSQLite3
+#endif
 
 public enum TrustStore1x {
     static let path = "System/Library/Frameworks/Security.framework/TrustStore.sqlite3"

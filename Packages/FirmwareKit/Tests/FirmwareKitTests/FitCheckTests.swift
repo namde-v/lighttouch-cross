@@ -14,7 +14,7 @@ import enum HostRuntime.GuestPack
 // Compression.framework's NSData helpers are Apple-only; zlib directly elsewhere.
 #if canImport(Compression)
     import Compression
-#else
+#elseif !os(Windows)
     import CZlibFK
 #endif
 

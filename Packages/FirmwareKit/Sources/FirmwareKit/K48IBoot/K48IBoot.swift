@@ -11,7 +11,9 @@
 //   let iboot = try K48IBoot.patchIBoot(decrypted, patcher: url, bootArgs: args, log: log)
 
 import Foundation
+#if !os(Windows)
 import CZlibFK
+#endif
 
 public enum K48IBoot {
     /// The UID the emulated S5L8930 (iPad 1) reports: cdma_uid_key in hw/arm/s5l8930_cdma.c, an AES-256 key.
