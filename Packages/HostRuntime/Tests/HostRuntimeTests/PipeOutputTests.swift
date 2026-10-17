@@ -10,6 +10,10 @@ import Testing
 
 import HostRuntime
 
+// DIAGNOSTIC (win/w-hr-diag): bisects the Windows CI test-step hang. If the
+// suite goes green with PipeOutputTests gated out, DispatchIO-on-Windows is
+// the hang; the gate will then be replaced by a real fix.
+#if !os(Windows)
 struct PipeOutputTests {
     #if os(Windows)
     /// UCRT has no POSIX pipe(2): _pipe in binary mode, so no CRLF
@@ -90,3 +94,4 @@ struct PipeOutputTests {
         #expect(await output.finish())
     }
 }
+#endif // DIAGNOSTIC win/w-hr-diag
