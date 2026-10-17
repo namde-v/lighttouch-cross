@@ -98,8 +98,10 @@ public enum FFmpeg {
             case .exited(0): return (Data(result.standardOutput), result.standardError)
             case .exited(let code):
                 throw FFmpegError.failed("ffmpeg exited with status \(code): \(result.standardError)")
+            #if !os(Windows)
             case .signaled(let code):
                 throw FFmpegError.failed("ffmpeg died from signal \(code): \(result.standardError)")
+            #endif
             }
         } catch {
             if Task.isCancelled { throw CancellationError() }
