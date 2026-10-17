@@ -124,7 +124,8 @@ func winFsync(path: String) -> Int32 {
     let handle: UnsafeMutableRawPointer? = wide.withUnsafeBufferPointer { buf in
         CreateFileW(
             buf.baseAddress,
-            DWORD(GENERIC_READ),
+            // FlushFileBuffers requires GENERIC_WRITE.
+            DWORD(GENERIC_READ) | DWORD(GENERIC_WRITE),
             DWORD(FILE_SHARE_READ) | DWORD(FILE_SHARE_WRITE) | DWORD(FILE_SHARE_DELETE),
             nil,
             DWORD(OPEN_EXISTING),
