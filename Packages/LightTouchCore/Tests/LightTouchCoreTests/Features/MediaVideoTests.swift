@@ -12,6 +12,8 @@ private let kAudioFormatMPEG4AAC: UInt32 = 0x6161_6320
 /// 30 fps, AAC of at most two channels at 48 kHz), its library metadata, one identity for repeated and simultaneous
 /// drops, a private cache that recovers from damage, the source left untouched, invalid input refused,
 /// cancellation honored; a 720p movie stays 720p for the iPad and is 640 wide for the iPod.
+// The fixtures need ffmpeg, which Windows CI doesn't have.
+#if !os(Windows)
 struct MediaVideoTests {
     @Test func iPodExportMetadataIdentityAndCache() async throws {
         try await withTemporaryState { work in
@@ -148,3 +150,4 @@ struct MediaVideoTests {
         }
     }
 }
+#endif

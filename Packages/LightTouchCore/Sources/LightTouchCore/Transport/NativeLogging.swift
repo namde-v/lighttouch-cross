@@ -289,6 +289,18 @@ public nonisolated final class LogPipeReader: @unchecked Sendable {
     }
     #endif
 
+    #if os(Windows)
+    /// Bytes waiting in the pipe: the non-blocking read check (no O_NONBLOCK
+    /// on Windows).
+    private func availableBytes() -> DWORD {
+        let raw = _get_osfhandle(descriptor)
+        guard raw != -1, let handle = UnsafeMutableRawPointer(bitPattern: raw) else { return 0 }
+        var available: DWORD = 0
+        guard PeekNamedPipe(handle, nil, 0, nil, &available, nil) else { return 0 }
+        return available
+    }
+    #endif
+
     #if !os(Windows)
     private func readChunk() {
         guard !stopped else { return }
@@ -307,8 +319,22 @@ public nonisolated final class LogPipeReader: @unchecked Sendable {
 
     public func flush() {
         #if os(Windows)
-        // The reader thread drains continuously, so the log is already
-        // current; no PeekNamedPipe drain needed.
+        guard !readerState.isStopped else { return }
+        var bytes = [UInt8](repeating: 0, count: 32_768)
+        // Bounded drain: the reader thread drains concurrently, so bytes land
+        // in the log either way; this just hurries stragglers along.
+        for _ in 0..<32 {
+            // No O_NONBLOCK on Windows: only read when the pipe holds bytes.
+            guard availableBytes() > 0 else { break }
+            let count = read(descriptor, &bytes, UInt32(bytes.count))
+            guard count > 0 else { break }
+            let chunk = Data(bytes.prefix(Int(count)))
+            log.append(chunk)
+            readerState.scan(chunk)
+        }
+        // Settle: the reader thread may be appending a chunk it read just
+        // before this drain ran.
+        Thread.sleep(forTimeInterval: 0.05)
         #else
         queue.sync {
             guard !stopped else { return }

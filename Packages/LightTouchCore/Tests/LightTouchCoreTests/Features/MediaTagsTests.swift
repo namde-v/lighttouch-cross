@@ -7,6 +7,8 @@ import Testing
 /// Every Music-library tag and the cover reach the staged metadata (what itmedia hands MusicLibrary): an MP3 and
 /// raw ADTS AAC with the ID3v2.3 frames iTunes writes (TCMP, TPE2, a "(17)" TCON, a JPEG APIC), and an M4A with
 /// iTunes atoms and a PNG cover. The guest's own mapping of that plist (itmedia.c) is qemu-ios's to test.
+// The fixtures need ffmpeg, which Windows CI doesn't have.
+#if !os(Windows)
 struct MediaTagsTests {
     static let quadrants: [((Double, Double), MediaFixtures.RGBA)] = [
         ((0.25, 0.25), (200, 40, 40, 255)), ((0.75, 0.25), (40, 180, 60, 255)),
@@ -146,3 +148,4 @@ struct MediaTagsTests {
         }
     }
 }
+#endif
