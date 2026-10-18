@@ -92,7 +92,7 @@ jobs:
       # carries swift's exit code, so failures still fail the step.
       - name: Build
         run: |
-          swift build --configuration release --build-tests 2>&1 | Tee-Object -FilePath build.log
+          swift build --configuration release --build-tests -Xswiftc -enable-testing 2>&1 | Tee-Object -FilePath build.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # The test binary links XCTest.dll and Testing.dll, which live in the
