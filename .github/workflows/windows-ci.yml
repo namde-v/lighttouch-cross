@@ -180,7 +180,6 @@ jobs:
             Write-Host "DIAG [$label]: runner-started-seen=$started"
           }
           Run-Binary "help" @("--help") 30
-          Run-Binary "run" @("--testing-library", "swift-testing") 240
           Get-ChildItem -Filter *.dmp -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ("DIAG: crash dump {0} ({1} bytes)" -f $_.Name, $_.Length) }
 
       - name: Test
@@ -189,8 +188,25 @@ jobs:
           # Headless CI: a crashing test binary must surface as an exit code,
           # never a WER dialog that looks like a hang (cf. the 0xC000007B saga).
           Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting" -Name "DontShowUI" -Value 1 -ErrorAction SilentlyContinue
-          swift test --configuration release --skip-build 2>&1 | Tee-Object -FilePath test.log
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ("${{ matrix.package }}" -eq "LightTouchCore") {
+            # Run the test binary directly: swift-testing reports to stderr and
+            # swift test's forwarding drops it on this toolchain. Capture the
+            # full output for triage; the binary's exit code is the verdict.
+            # 20-min budget inside the 30-min job timeout.
+            $bin = ".build\x86_64-unknown-windows-msvc\release\LightTouchCorePackageTests.xctest"
+            $p = Start-Process -FilePath $bin -ArgumentList "--testing-library", "swift-testing" -RedirectStandardOutput "full-stdout.log" -RedirectStandardError "full-stderr.log" -NoNewWindow -PassThru
+            if (-not $p.WaitForExit(1200000)) {
+              Write-Host "TEST RESULT: TIMEOUT after 20 min (suite too slow for the 30-min job)"
+              $p.Kill()
+              exit 1
+            }
+            Write-Host ("TEST RESULT: exited, code={0}" -f $p.ExitCode)
+            Get-Content "full-stderr.log" | Tee-Object -FilePath test.log | Select-Object -Last 5 | Write-Host
+            if ($p.ExitCode -ne 0) { exit $p.ExitCode }
+          } else {
+            swift test --configuration release --skip-build 2>&1 | Tee-Object -FilePath test.log
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
 
       # if: always() — binaries AND logs upload on every run, pass or fail.
       # if-no-files-found: warn (not error): a failed build legitimately has
@@ -216,5 +232,7 @@ jobs:
           path: |
             Packages/${{ matrix.package }}/build.log
             Packages/${{ matrix.package }}/test.log
+            Packages/${{ matrix.package }}/full-stdout.log
+            Packages/${{ matrix.package }}/full-stderr.log
           if-no-files-found: warn
           retention-days: 30
