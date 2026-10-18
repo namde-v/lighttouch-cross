@@ -96,7 +96,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Test
-        timeout-minutes: 60
+        timeout-minutes: 30
         run: |
           swift test --configuration release 2>&1 | Tee-Object -FilePath test.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
