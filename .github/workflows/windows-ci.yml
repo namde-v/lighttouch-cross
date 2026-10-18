@@ -148,7 +148,7 @@ jobs:
           $releaseDir = ".build\x86_64-unknown-windows-msvc\release"
           $bin = Join-Path $releaseDir "LightTouchCorePackageTests.xctest"
           Write-Host "DIAG: building test binary (swift test would do this)..."
-          swift build --build-tests --configuration release 2>&1 | Select-Object -Last 3
+          swift build --build-tests --configuration release -Xswiftc -enable-testing 2>&1 | Select-Object -Last 3
           if ($LASTEXITCODE -ne 0) { Write-Host "DIAG: build-tests failed"; exit 0 }
           Write-Host "DIAG: release dir test artifacts:"
           Get-ChildItem -Path $releaseDir -Include *.xctest, *.dll | ForEach-Object { Write-Host ("  {0} ({1} bytes)" -f $_.Name, $_.Length) }
@@ -187,6 +187,9 @@ jobs:
       - name: Test
         timeout-minutes: 30
         run: |
+          # Headless CI: a crashing test binary must surface as an exit code,
+          # never a WER dialog that looks like a hang (cf. the 0xC000007B saga).
+          Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting" -Name "DontShowUI" -Value 1 -ErrorAction SilentlyContinue
           swift test --configuration release --skip-build 2>&1 | Tee-Object -FilePath test.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
