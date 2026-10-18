@@ -13,6 +13,7 @@ on:
   push:
     branches: [main, port/**]
   pull_request:
+  workflow_dispatch:
 
 env:
   SWIFT_VERSION: "6.4.1"
