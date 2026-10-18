@@ -32,6 +32,12 @@ public nonisolated final class RotatingLog: @unchecked Sendable {
     // No dev_t/ino_t or stat(2) on Windows: the file's identity is its volume
     // serial + file index (GetFileInformationByHandle).
     private var volumeSerial: DWORD = 0, fileIndex: UInt64 = 0
+    // The Win32 HANDLE behind fd, for WriteFile. FileHandle(fileDescriptor:)
+    // must not be used on Windows: its deinit closes the underlying HANDLE
+    // even with closeOnDealloc: false (swift-corelibs-foundation's
+    // _immediatelyClose ignores the flag on Windows), closing a handle this
+    // log still owns and failing later writes with NSCocoaErrorDomain 512.
+    private var writeHandle: UnsafeMutableRawPointer?
     #else
     private var device: dev_t = 0, inode: ino_t = 0
     #endif
@@ -57,7 +63,11 @@ public nonisolated final class RotatingLog: @unchecked Sendable {
                 try Self.rotate(url)
                 try openFile()
             }
+            #if os(Windows)
+            try writeViaHandle(bounded)
+            #else
             try FileHandle(fileDescriptor: fd).write(contentsOf: bounded)
+            #endif
             size += bounded.count
         } catch {
             closeFile()
@@ -105,6 +115,7 @@ public nonisolated final class RotatingLog: @unchecked Sendable {
         size = Int(UInt64(info.nFileSizeHigh) << 32 | UInt64(info.nFileSizeLow))
         volumeSerial = info.dwVolumeSerialNumber
         fileIndex = UInt64(info.nFileIndexHigh) << 32 | UInt64(info.nFileIndexLow)
+        writeHandle = handle
         #else
         let descriptor = open(url.path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard descriptor >= 0 else { throw StorageLocations.posixError() }
@@ -124,7 +135,33 @@ public nonisolated final class RotatingLog: @unchecked Sendable {
     private func closeFile() {
         if fd >= 0 { close(fd) }
         fd = -1
+        #if os(Windows)
+        // close(fd) closed the OS handle as well.
+        writeHandle = nil
+        #endif
     }
+
+    #if os(Windows)
+    /// WriteFile on the stored HANDLE (see writeHandle): FileHandle's deinit
+    /// closes the handle even when told not to, so FileHandle is bypassed.
+    private func writeViaHandle(_ data: Data) throws {
+        guard let handle = writeHandle else { throw StorageLocations.posixError() }
+        guard !data.isEmpty else { return }
+        try data.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) in
+            var remaining = buffer.count
+            var base = buffer.baseAddress!
+            while remaining > 0 {
+                var written: DWORD = 0
+                let chunk = DWORD(min(remaining, Int(DWORD.max)))
+                guard WriteFile(handle, base, chunk, &written, nil), written > 0 else {
+                    throw StorageLocations.posixError()
+                }
+                base = base.advanced(by: Int(written))
+                remaining -= Int(written)
+            }
+        }
+    }
+    #endif
 
     private func pathNamesOpenFile() -> Bool {
         #if os(Windows)
