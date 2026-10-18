@@ -126,19 +126,34 @@ jobs:
           Write-Host "DIAG: release dir test artifacts:"
           Get-ChildItem -Path $releaseDir -Include *.xctest, *.dll | ForEach-Object { Write-Host ("  {0} ({1} bytes)" -f $_.Name, $_.Length) }
           if (-not (Test-Path $bin)) { Write-Host "DIAG: $bin not found"; exit 0 }
-          # Mirror swift test's Swift Testing invocation. Use Start-Process for a
-          # reliable exit code (the loader failure code is the diagnostic).
-          Write-Host "DIAG: running $bin --testing-library swift-testing directly, 120s timeout"
+          # Mirror swift test's invocations: first XCTest (no args), then Swift Testing.
+          # Use Start-Process for a reliable exit code.
+          Write-Host "DIAG: running $bin (XCTest invocation, no args) directly, 60s timeout"
           # Disable WER UI so a crash surfaces as an exit code, not a dialog.
           Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting" -Name "DontShowUI" -Value 1 -ErrorAction SilentlyContinue
+          $p1 = Start-Process -FilePath (Resolve-Path $bin).Path -PassThru -NoNewWindow -RedirectStandardOutput direct-stdout-xctest.log -RedirectStandardError direct-stderr-xctest.log -WorkingDirectory (Get-Location).Path
+          $exited1 = $p1.WaitForExit(60000)
+          if ($exited1) {
+            $code1 = $p1.ExitCode
+            $hex1 = "0x{0:X8}" -f ($code1 -band 0xFFFFFFFF)
+            Write-Host "DIAG RESULT (XCTest): exited within 60s, exit=$code1 ($hex1)"
+          } else {
+            Write-Host "DIAG RESULT (XCTest): NO EXIT IN 60s (hang)"
+            $p1.Kill()
+          }
+          Write-Host "=== direct-stdout-xctest.log ==="
+          Get-Content direct-stdout-xctest.log -TotalCount 20 -ErrorAction SilentlyContinue | Write-Host
+          Write-Host "=== direct-stderr-xctest.log ==="
+          Get-Content direct-stderr-xctest.log -TotalCount 20 -ErrorAction SilentlyContinue | Write-Host
+          Write-Host "DIAG: running $bin --testing-library swift-testing directly, 120s timeout"
           $p = Start-Process -FilePath (Resolve-Path $bin).Path -ArgumentList "--testing-library","swift-testing" -PassThru -NoNewWindow -RedirectStandardOutput direct-stdout.log -RedirectStandardError direct-stderr.log -WorkingDirectory (Get-Location).Path
           $exited = $p.WaitForExit(120000)
           if ($exited) {
             $code = $p.ExitCode
             $hex = "0x{0:X8}" -f ($code -band 0xFFFFFFFF)
-            Write-Host "DIAG RESULT: exited within 120s, exit=$code ($hex)"
+            Write-Host "DIAG RESULT (SwiftTesting): exited within 120s, exit=$code ($hex)"
           } else {
-            Write-Host "DIAG RESULT: NO EXIT IN 120s (hang after launch, or slow start)"
+            Write-Host "DIAG RESULT (SwiftTesting): NO EXIT IN 120s (hang after launch, or slow start)"
             $p.Kill()
           }
           $started = $false
