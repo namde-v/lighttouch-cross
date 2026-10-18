@@ -92,12 +92,12 @@ jobs:
       # carries swift's exit code, so failures still fail the step.
       - name: Build
         run: |
-          swift build --configuration release 2>&1 | Tee-Object -FilePath build.log
+          swift build --configuration release --build-tests 2>&1 | Tee-Object -FilePath build.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Test
         run: |
-          swift test --configuration release 2>&1 | Tee-Object -FilePath test.log
+          swift test --configuration release --skip-build 2>&1 | Tee-Object -FilePath test.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # if: always() — binaries AND logs upload on every run, pass or fail.
