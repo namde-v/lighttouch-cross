@@ -150,39 +150,38 @@ jobs:
           Write-Host "DIAG: building test binary (swift test would do this)..."
           swift build --build-tests --configuration release -Xswiftc -enable-testing 2>&1 | Select-Object -Last 3
           if ($LASTEXITCODE -ne 0) { Write-Host "DIAG: build-tests failed"; exit 0 }
-          Write-Host "DIAG: release dir test artifacts:"
-          Get-ChildItem -Path $releaseDir -Include *.xctest, *.dll | ForEach-Object { Write-Host ("  {0} ({1} bytes)" -f $_.Name, $_.Length) }
-          if (-not (Test-Path $bin)) { Write-Host "DIAG: $bin not found"; exit 0 }
+          $item = Get-Item $bin -ErrorAction SilentlyContinue
+          if (-not $item) { Write-Host "DIAG: $bin not found"; exit 0 }
+          Write-Host ("DIAG: binary {0} bytes" -f $item.Length)
           # Headless CI: a crash must surface as an exit code, never a WER dialog.
+          # Also collect a crash dump so a startup crash can be post-mortemed.
           Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting" -Name "DontShowUI" -Value 1 -ErrorAction SilentlyContinue
-          # Mirror swift test's Swift Testing invocation.
-          Write-Host "DIAG: running $bin --testing-library swift-testing directly, 120s timeout"
-          $job = Start-Job -ScriptBlock {
-            param($b, $dir)
-            Set-Location $dir
-            & $b --testing-library swift-testing > direct-stdout.log 2> direct-stderr.log
-            "DIAG-INNER: exit=$LASTEXITCODE"
-          } -ArgumentList (Resolve-Path $bin).Path, (Get-Location).Path
-          $done = Wait-Job $job -Timeout 120
-          Receive-Job $job | Write-Host
-          if (-not $done) {
-            Write-Host "DIAG RESULT: NO EXIT IN 120s (hang after launch, or slow start)"
-            Stop-Job $job | Out-Null
-          } else {
-            Write-Host "DIAG RESULT: process exited within 120s"
+          New-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps" -Force -ErrorAction SilentlyContinue | Out-Null
+          Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps" -Name "DumpFolder" -Value (Get-Location).Path -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps" -Name "DumpType" -Value 1 -ErrorAction SilentlyContinue
+          function Run-Binary([string]$label, [string[]]$arguments, [int]$timeoutSec) {
+            Write-Host "DIAG: [$label] launching, ${timeoutSec}s timeout"
+            $p = Start-Process -FilePath $bin -ArgumentList $arguments -RedirectStandardOutput "diag-$label-stdout.log" -RedirectStandardError "diag-$label-stderr.log" -NoNewWindow -PassThru
+            $exited = $p.WaitForExit($timeoutSec * 1000)
+            if ($exited) {
+              Write-Host ("DIAG RESULT [$label]: exited, code={0}" -f $p.ExitCode)
+            } else {
+              Write-Host "DIAG RESULT [$label]: NO EXIT (hang)"
+              $p.Kill()
+            }
+            $so = Get-Item "diag-$label-stdout.log" -ErrorAction SilentlyContinue
+            $se = Get-Item "diag-$label-stderr.log" -ErrorAction SilentlyContinue
+            Write-Host ("DIAG [$label]: stdout bytes={0}" -f ($so ? $so.Length : -1))
+            if ($so -and $so.Length -gt 0) { Get-Content "diag-$label-stdout.log" -TotalCount 25 | Write-Host }
+            Write-Host ("DIAG [$label]: stderr bytes={0}" -f ($se ? $se.Length : -1))
+            if ($se -and $se.Length -gt 0) { Get-Content "diag-$label-stderr.log" -Tail 25 | Write-Host }
+            $started = $false
+            if ($so -and $so.Length -gt 0) { $started = Select-String -Path "diag-$label-stdout.log" -Pattern "Test run started|Test Suite 'All tests' started" -Quiet }
+            Write-Host "DIAG [$label]: runner-started-seen=$started"
           }
-          Remove-Job $job -Force
-          $started = $false
-          if (Test-Path direct-stdout.log) {
-            $started = (Select-String -Path direct-stdout.log -Pattern "Test run started|Test Suite 'All tests' started" -Quiet)
-            Write-Host "DIAG: runner-started-seen=$started"
-            Write-Host "=== direct-stdout.log (first 60 lines) ==="
-            Get-Content direct-stdout.log -TotalCount 60 | Write-Host
-          }
-          if (Test-Path direct-stderr.log) {
-            Write-Host "=== direct-stderr.log (last 40 lines) ==="
-            Get-Content direct-stderr.log -Tail 40 | Write-Host
-          }
+          Run-Binary "help" @("--help") 30
+          Run-Binary "run" @("--testing-library", "swift-testing") 240
+          Get-ChildItem -Filter *.dmp -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ("DIAG: crash dump {0} ({1} bytes)" -f $_.Name, $_.Length) }
 
       - name: Test
         timeout-minutes: 30
