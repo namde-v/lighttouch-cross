@@ -7,8 +7,9 @@ import Testing
 // DIAGNOSTIC (win/w-ltc-startup2): the test binary hangs with zero output.
 // This file-scope initializer runs before main(): if it prints, Swift global
 // init was reached; if only the C constructor markers print, the hang is in
-// the Swift runtime init between them.
-private let _ltcStartupMarker: () = {
+// the Swift runtime init between them. nonisolated: the marker itself must
+// not depend on the MainActor executor.
+private nonisolated let _ltcStartupMarker: () = {
     FileHandle.standardError.write(Data("[Swift] test-target global init\n".utf8))
 }()
 
