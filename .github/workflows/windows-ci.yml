@@ -155,25 +155,21 @@ jobs:
           Write-Host "DIAG: release dir test artifacts:"
           Get-ChildItem -Path $releaseDir -Include *.xctest, *.dll | ForEach-Object { Write-Host ("  {0} ({1} bytes)" -f $_.Name, $_.Length) }
           if (-not (Test-Path $bin)) { Write-Host "DIAG: $bin not found"; exit 0 }
-          # Headless CI: a crash must surface as an exit code, never a WER dialog.
-          Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting" -Name "DontShowUI" -Value 1 -ErrorAction SilentlyContinue
-          # Mirror swift test's Swift Testing invocation.
+          # Mirror swift test's Swift Testing invocation. Use Start-Process for a
+          # reliable exit code (the loader failure code is the diagnostic).
           Write-Host "DIAG: running $bin --testing-library swift-testing directly, 120s timeout"
-          $job = Start-Job -ScriptBlock {
-            param($b, $dir)
-            Set-Location $dir
-            & $b --testing-library swift-testing > direct-stdout.log 2> direct-stderr.log
-            "DIAG-INNER: exit=$LASTEXITCODE"
-          } -ArgumentList (Resolve-Path $bin).Path, (Get-Location).Path
-          $done = Wait-Job $job -Timeout 120
-          Receive-Job $job | Write-Host
-          if (-not $done) {
-            Write-Host "DIAG RESULT: NO EXIT IN 120s (hang after launch, or slow start)"
-            Stop-Job $job | Out-Null
+          # Disable WER UI so a crash surfaces as an exit code, not a dialog.
+          Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting" -Name "DontShowUI" -Value 1 -ErrorAction SilentlyContinue
+          $p = Start-Process -FilePath (Resolve-Path $bin).Path -ArgumentList "--testing-library","swift-testing" -PassThru -NoNewWindow -RedirectStandardOutput direct-stdout.log -RedirectStandardError direct-stderr.log -WorkingDirectory (Get-Location).Path
+          $exited = $p.WaitForExit(120000)
+          if ($exited) {
+            $code = $p.ExitCode
+            $hex = "0x{0:X8}" -f ($code -band 0xFFFFFFFF)
+            Write-Host "DIAG RESULT: exited within 120s, exit=$code ($hex)"
           } else {
-            Write-Host "DIAG RESULT: process exited within 120s"
+            Write-Host "DIAG RESULT: NO EXIT IN 120s (hang after launch, or slow start)"
+            $p.Kill()
           }
-          Remove-Job $job -Force
           $started = $false
           if (Test-Path direct-stdout.log) {
             $started = (Select-String -Path direct-stdout.log -Pattern "Test run started|Test Suite 'All tests' started" -Quiet)
