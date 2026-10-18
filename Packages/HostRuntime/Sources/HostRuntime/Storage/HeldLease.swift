@@ -10,10 +10,13 @@ import Synchronization
 
 #if os(Windows)
 /// strerror() is deprecated in the UCRT (unsafe); strerror_s is the conformant spelling.
+/// String(cString:) is likewise deprecated in Swift's Windows overlay, so the
+/// null-terminated buffer is decoded explicitly.
 private func errnoDescription(_ code: Int32) -> String {
     var buffer = [CChar](repeating: 0, count: 256)
     _ = strerror_s(&buffer, buffer.count, code)
-    return String(cString: buffer)
+    let bytes = buffer.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }
+    return String(decoding: bytes, as: UTF8.self)
 }
 #else
 private func errnoDescription(_ code: Int32) -> String { String(cString: strerror(code)) }
