@@ -33,7 +33,7 @@ jobs:
   qt-tests:
     name: Qt offscreen tests (Windows)
     runs-on: windows-latest
-    timeout-minutes: 120
+    timeout-minutes: 30
     defaults:
       run:
         shell: pwsh
