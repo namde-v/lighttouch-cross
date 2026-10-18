@@ -103,11 +103,40 @@ jobs:
       # copies. A blind "first match" previously staged the 32-bit DLLs, and a
       # 32-bit DLL in a 64-bit process's directory fails the load with
       # 0xC000007B. Select by PE machine type (0x8664 = x86_64) instead.
-      # NOTE: DLL staging removed (was DEAD): SwiftPM 6.2's constructTestEnvironment
-      # already prepends the toolchain's XCTest/Testing paths to the child's
-      # PATH. Staging Platform DLLs next to the binary risked loading
-      # incompatible DLL versions (Platform vs Toolchain mismatch), which
-      # crashes the binary at load time (before any code runs).
+      - name: Stage test runner DLLs
+        run: |
+          $releaseDir = ".build\x86_64-unknown-windows-msvc\release"
+          $roots = @(
+            (Join-Path $env:LOCALAPPDATA "Programs\Swift\Platforms"),
+            (Join-Path $env:LOCALAPPDATA "Programs\Swift\Toolchains")
+          ) | Where-Object { Test-Path $_ }
+          function Get-PeMachine([string]$path) {
+            $s = [System.IO.File]::OpenRead($path)
+            try {
+              $r = New-Object System.IO.BinaryReader($s)
+              $s.Position = 0x3C
+              $e_lfanew = $r.ReadInt32()
+              $s.Position = $e_lfanew + 4
+              return $r.ReadUInt16()
+            } finally { $s.Close() }
+          }
+          $dllDirs = @()
+          foreach ($name in @("XCTest.dll", "Testing.dll")) {
+            $cands = foreach ($root in $roots) {
+              Get-ChildItem -Path $root -Recurse -Filter $name -ErrorAction SilentlyContinue
+            }
+            foreach ($c in $cands) {
+              Write-Host ("candidate: {0} machine=0x{1:X4}" -f $c.FullName, (Get-PeMachine $c.FullName))
+            }
+            $pick = $cands | Where-Object { (Get-PeMachine $_.FullName) -eq 0x8664 } | Select-Object -First 1
+            if (-not $pick) { Write-Host "::error::no x86_64 $name found under $($roots -join ', ')"; exit 1 }
+            Copy-Item $pick.FullName $releaseDir -Force
+            Write-Host "staged $name (x64) from $($pick.FullName)"
+            $dllDirs += Split-Path $pick.FullName -Parent
+          }
+          $dllDirs = $dllDirs | Select-Object -Unique
+          Add-Content -Path $env:GITHUB_PATH -Value ($dllDirs -join ";")
+          Write-Host ("PATH += " + ($dllDirs -join ";"))
 
       # DIAGNOSTIC (LightTouchCore only): build the test binary and run it
       # directly to separate "the binary won't start" from "swift test won't
