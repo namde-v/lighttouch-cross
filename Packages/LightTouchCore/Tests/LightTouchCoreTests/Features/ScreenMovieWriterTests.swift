@@ -135,7 +135,6 @@ private func near(_ a: [Int], _ b: [Int], _ tolerance: Int = 30) -> Bool {
 /// The production movie writer: native dimensions through portrait, landscape and rotation, the canvas background,
 /// stereo audio on the capture's clock with its pause kept, and a take that survives a crash.
 // The fixtures need ffmpeg, which Windows CI doesn't have.
-#if !os(Windows)
 struct ScreenMovieWriterTests {
     enum Mode: String, CaseIterable { case portrait, landscape, rotated, canvas }
     static let orange = [255, 64, 0], blue = [0, 128, 255]
@@ -219,4 +218,3 @@ struct ScreenMovieWriterTests {
         }
     }
 }
-#endif

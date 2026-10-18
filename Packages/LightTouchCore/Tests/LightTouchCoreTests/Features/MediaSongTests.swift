@@ -7,7 +7,6 @@ import Testing
 /// AAC becomes an M4A whose identity survives a second conversion, malformed audio is refused and cancellation
 /// honored. The sources are six seconds each: AAC and Apple Lossless M4A, PCM WAV and silent MP3.
 // The fixtures need ffmpeg, which Windows CI doesn't have.
-#if !os(Windows)
 struct MediaSongTests {
     static func write(_ name: String, to url: URL) async throws {
         switch name {
@@ -79,4 +78,3 @@ struct MediaSongTests {
         }
     }
 }
-#endif

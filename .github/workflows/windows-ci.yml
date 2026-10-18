@@ -95,6 +95,26 @@ jobs:
           swift build --configuration release 2>&1 | Tee-Object -FilePath build.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      # The test binary links XCTest.dll and Testing.dll, which live in the
+      # toolchain's Platforms tree, NOT on the loader's search path. Stage them
+      # next to the binary and add their dirs to PATH.
+      - name: Stage test runner DLLs
+        run: |
+          $releaseDir = ".build\x86_64-unknown-windows-msvc\release"
+          $platforms = Join-Path $env:LOCALAPPDATA "Programs\Swift\Platforms"
+          $dllDirs = @()
+          foreach ($name in @("XCTest.dll", "Testing.dll")) {
+            $src = Get-ChildItem -Path $platforms -Recurse -Filter $name -ErrorAction SilentlyContinue |
+                   Select-Object -First 1 -ExpandProperty FullName
+            if ($src) {
+              Copy-Item $src $releaseDir -Force
+              Write-Host "staged $name"
+              $dllDirs += Split-Path $src -Parent
+            }
+          }
+          $dllDirs = $dllDirs | Select-Object -Unique
+          if ($dllDirs) { Add-Content -Path $env:GITHUB_PATH -Value ($dllDirs -join ";") }
+
       - name: Test
         timeout-minutes: 60
         run: |
