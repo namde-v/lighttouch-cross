@@ -8,7 +8,6 @@
 #define _CRT_SECURE_NO_WARNINGS // silence UCRT deprecation warnings (getenv, snprintf, ...)
 #include <windows.h>
 #include <direct.h>
-#include <io.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -94,15 +93,6 @@ static void cleanup(void) {
 }
 
 __attribute__((constructor)) static void isolate(void) {
-    // DIAGNOSTIC (win/w-ltc-startup2): the test binary hangs with zero output.
-    // Unbuffered markers bisect loader vs constructor vs post-constructor hang.
-    // write(2) is a direct syscall: unbuffered even if the CRT isn't fully up.
-    write(2, "[TestIsolation] constructor enter\n", 34);
-    // Unbuffer stdout/stderr so the log shows exactly how far the runner got
-    // (when stdout is a pipe the CRT block-buffers it and the hang location
-    // never reaches the log).
-    setvbuf(stdout, NULL, _IONBF, 0);
-    setvbuf(stderr, NULL, _IONBF, 0);
     // An exit test's child process (#expect(processExitsWith:)) inherits this environment and dies without atexit:
     // it uses its parent's root, which the parent removes.
     if (getenv("LTM_TEST_ROOT")) {
@@ -111,7 +101,6 @@ __attribute__((constructor)) static void isolate(void) {
             h = getenv("USERPROFILE");
         if (h)
             snprintf(home, sizeof home, "%s", h);
-        fprintf(stderr, "[TestIsolation] constructor exit (child)\n");
         return;
     }
     char tmp[PATH_MAX];
@@ -136,7 +125,6 @@ __attribute__((constructor)) static void isolate(void) {
     win_setenv("LTM_STATE_DIR", state, 1);
     win_setenv("LTM_TEST_ROOT", root, 1);
     atexit(cleanup);
-    fprintf(stderr, "[TestIsolation] constructor exit (root=%s)\n", root);
 }
 
 const char *ltm_test_home(void) { return home; }
