@@ -138,30 +138,35 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value ($dllDirs -join ";")
           Write-Host ("PATH += " + ($dllDirs -join ";"))
 
-      # DIAGNOSTIC (LightTouchCore only): run the test binary directly to
-      # separate "the binary won't start" from "swift test won't launch it".
-      # Informational: never fails the job; the Test step below is the verdict.
+      # DIAGNOSTIC (LightTouchCore only): build the test binary and run it
+      # directly to separate "the binary won't start" from "swift test won't
+      # launch it". Informational: never fails the job; the Test step below
+      # is the verdict.
       - name: "DIAG: direct test-binary run"
         if: matrix.package == 'LightTouchCore'
         run: |
           $releaseDir = ".build\x86_64-unknown-windows-msvc\release"
           $bin = Join-Path $releaseDir "LightTouchCorePackageTests.xctest"
-          Write-Host "DIAG: release dir:"
-          Get-ChildItem -Path $releaseDir | ForEach-Object { Write-Host ("  {0} ({1} bytes)" -f $_.Name, $_.Length) }
+          Write-Host "DIAG: building test binary (swift test would do this)..."
+          swift build --build-tests --configuration release 2>&1 | Select-Object -Last 3
+          if ($LASTEXITCODE -ne 0) { Write-Host "DIAG: build-tests failed"; exit 0 }
+          Write-Host "DIAG: release dir test artifacts:"
+          Get-ChildItem -Path $releaseDir -Include *.xctest, *.dll | ForEach-Object { Write-Host ("  {0} ({1} bytes)" -f $_.Name, $_.Length) }
           if (-not (Test-Path $bin)) { Write-Host "DIAG: $bin not found"; exit 0 }
           # Headless CI: a crash must surface as an exit code, never a WER dialog.
           Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting" -Name "DontShowUI" -Value 1 -ErrorAction SilentlyContinue
-          Write-Host "DIAG: running $bin directly, 120s timeout"
+          # Mirror swift test's Swift Testing invocation.
+          Write-Host "DIAG: running $bin --testing-library swift-testing directly, 120s timeout"
           $job = Start-Job -ScriptBlock {
             param($b, $dir)
             Set-Location $dir
-            & $b > direct-stdout.log 2> direct-stderr.log
+            & $b --testing-library swift-testing > direct-stdout.log 2> direct-stderr.log
             "DIAG-INNER: exit=$LASTEXITCODE"
           } -ArgumentList (Resolve-Path $bin).Path, (Get-Location).Path
           $done = Wait-Job $job -Timeout 120
           Receive-Job $job | Write-Host
           if (-not $done) {
-            Write-Host "DIAG RESULT: TRUE STARTUP HANG (no exit in 120s)"
+            Write-Host "DIAG RESULT: NO EXIT IN 120s (hang after launch, or slow start)"
             Stop-Job $job | Out-Null
           } else {
             Write-Host "DIAG RESULT: process exited within 120s"
@@ -169,8 +174,8 @@ jobs:
           Remove-Job $job -Force
           $started = $false
           if (Test-Path direct-stdout.log) {
-            $started = (Select-String -Path direct-stdout.log -Pattern "Test run started" -Quiet)
-            Write-Host "DIAG: test-run-started-seen=$started"
+            $started = (Select-String -Path direct-stdout.log -Pattern "Test run started|Test Suite 'All tests' started" -Quiet)
+            Write-Host "DIAG: runner-started-seen=$started"
             Write-Host "=== direct-stdout.log (first 60 lines) ==="
             Get-Content direct-stdout.log -TotalCount 60 | Write-Host
           }
