@@ -344,9 +344,14 @@ public enum DiskImage {
         try Task.checkCancellation()
         let status: Int32 =
             switch result.terminationStatus {
-            case .exited(let code): Int32(bitPattern: code)
+            case .exited(let code):
+                #if os(Windows)
+                Int32(bitPattern: code) // TerminationStatus.Code == DWORD (UInt32) on Windows
+                #else
+                code // TerminationStatus.Code == CInt (Int32) elsewhere
+                #endif
             #if !os(Windows)
-            case .signaled(let signal): -Int32(bitPattern: signal)
+            case .signaled(let signal): -signal
             #endif
             }
         return (status, result.standardOutput + result.standardError)
