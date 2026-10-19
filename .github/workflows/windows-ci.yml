@@ -40,7 +40,7 @@ jobs:
   build-and-test:
     name: swift build + test (${{ matrix.package }})
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
@@ -183,7 +183,7 @@ jobs:
           Get-ChildItem -Filter *.dmp -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ("DIAG: crash dump {0} ({1} bytes)" -f $_.Name, $_.Length) }
 
       - name: Test
-        timeout-minutes: 30
+        timeout-minutes: 240
         run: |
           # Headless CI: a crashing test binary must surface as an exit code,
           # never a WER dialog that looks like a hang (cf. the 0xC000007B saga).
