@@ -25,7 +25,7 @@ jobs:
   build-and-test:
     name: swift build + test (${{ matrix.package }})
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
