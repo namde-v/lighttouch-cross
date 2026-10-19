@@ -11,7 +11,7 @@ name: Linux CI
 
 on:
   push:
-    branches: [main, port/**]
+    branches: [main, port/**, win/**]
   pull_request:
 
 env:
