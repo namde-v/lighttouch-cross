@@ -192,11 +192,11 @@ jobs:
             # Run the test binary directly: swift-testing reports to stderr and
             # swift test's forwarding drops it on this toolchain. Capture the
             # full output for triage; the binary's exit code is the verdict.
-            # 20-min budget inside the 30-min job timeout.
+            # 220-min budget inside the 4h job timeout (user order 2026-10-19).
             $bin = ".build\x86_64-unknown-windows-msvc\release\LightTouchCorePackageTests.xctest"
             $p = Start-Process -FilePath $bin -ArgumentList "--testing-library", "swift-testing" -RedirectStandardOutput "full-stdout.log" -RedirectStandardError "full-stderr.log" -NoNewWindow -PassThru
-            if (-not $p.WaitForExit(1200000)) {
-              Write-Host "TEST RESULT: TIMEOUT after 20 min (suite too slow for the 30-min job)"
+            if (-not $p.WaitForExit(13200000)) {
+              Write-Host "TEST RESULT: TIMEOUT after 220 min (suite too slow for the 4h job)"
               $p.Kill()
               exit 1
             }
