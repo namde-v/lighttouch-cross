@@ -195,8 +195,41 @@ jobs:
             # 220-min budget inside the 4h job timeout (user order 2026-10-19).
             $bin = ".build\x86_64-unknown-windows-msvc\release\LightTouchCorePackageTests.xctest"
             $p = Start-Process -FilePath $bin -ArgumentList "--testing-library", "swift-testing" -RedirectStandardOutput "full-stdout.log" -RedirectStandardError "full-stderr.log" -NoNewWindow -PassThru
-            if (-not $p.WaitForExit(13200000)) {
-              Write-Host "TEST RESULT: TIMEOUT after 220 min (suite too slow for the 4h job)"
+            # Progress watchdog (2026-10-21): the suite froze ~6s after launch on
+            # 2026-10-21 (35/1517 completions, then 3h40m silence) and 2026-10-19.
+            # If full-stderr.log stops growing for 10 min, the suite has frozen —
+            # capture a minidump for forensics, then kill. Don't burn 220 min.
+            $lastSize = -1
+            $stalledSince = [DateTime]::UtcNow
+            $deadline = [DateTime]::UtcNow.AddMinutes(220)
+            $reason = ""
+            while (-not $p.HasExited) {
+              Start-Sleep -Seconds 30
+              if ([DateTime]::UtcNow -ge $deadline) {
+                $reason = "TIMEOUT after 220 min (suite too slow for the 4h job)"
+                break
+              }
+              $logFile = Get-Item "full-stderr.log" -ErrorAction SilentlyContinue
+              $size = if ($null -eq $logFile) { 0 } else { $logFile.Length }
+              if ($size -gt $lastSize) {
+                $lastSize = $size
+                $stalledSince = [DateTime]::UtcNow
+              } elseif ([DateTime]::UtcNow - $stalledSince -gt [TimeSpan]::FromMinutes(10)) {
+                $reason = "STALLED — no test output for 10 min (last size $lastSize bytes)"
+                break
+              }
+            }
+            if (-not $p.HasExited) {
+              Write-Host "TEST RESULT: $reason"
+              # Capture a minidump BEFORE killing: reveals the exact blocking
+              # stack of the frozen suite (cf. ltc-suite-analysis/ANALYSIS.md).
+              # procdump ships on GitHub Windows runners; failure is non-fatal.
+              try {
+                & procdump -accepteula -ma $p.Id "ltc-freeze.dmp" 2>&1 | Write-Host
+                Write-Host "Minidump captured: ltc-freeze.dmp"
+              } catch {
+                Write-Host "procdump failed (non-fatal): $_"
+              }
               $p.Kill()
               exit 1
             }
@@ -234,5 +267,6 @@ jobs:
             Packages/${{ matrix.package }}/test.log
             Packages/${{ matrix.package }}/full-stdout.log
             Packages/${{ matrix.package }}/full-stderr.log
+            Packages/${{ matrix.package }}/ltc-freeze.dmp
           if-no-files-found: warn
           retention-days: 30
