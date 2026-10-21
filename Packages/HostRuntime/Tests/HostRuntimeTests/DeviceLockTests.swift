@@ -59,7 +59,7 @@ struct DeviceLockTests {
 
     /// Decoded once while the file is unchanged; a rewrite is read again.
     @Test func readIsCachedUntilTheFileChanges() throws {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(Foundation.UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
         let url = dir.appendingPathComponent(DeviceLock.fileName)

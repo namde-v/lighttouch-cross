@@ -13,7 +13,9 @@
 
 import Crypto
 import Foundation
+#if !os(Windows)
 import CZlibFK
+#endif
 
 public enum N45NOR {
     static let size = 0x100000, block = 0x40, directory = 0x8400, firstBlock = 1040, nvram = 0xFC000
@@ -174,12 +176,18 @@ struct AESCore {
             s = s.map { Self.sbox[Int($0)] }
             s = (0..<16).map { s[($0 + 4 * ($0 % 4)) % 16] }  // ShiftRows over column-major state
             if r != rounds {
-                s = stride(from: 0, to: 16, by: 4).flatMap { c -> [UInt8] in
-                    let a = Array(s[c..<c + 4])
-                    return (0..<4).map { i in
-                        Self.mul(a[i], 2) ^ Self.mul(a[(i + 1) % 4], 3) ^ a[(i + 2) % 4] ^ a[(i + 3) % 4]
-                    }
+                // MixColumns, spelled out: the nested-closure form times out
+                // Swift 6.2.4's Windows type checker.
+                var mixed = [UInt8]()
+                mixed.reserveCapacity(16)
+                for c in stride(from: 0, to: 16, by: 4) {
+                    let a0 = s[c], a1 = s[c + 1], a2 = s[c + 2], a3 = s[c + 3]
+                    mixed.append(Self.mul(a0, 2) ^ Self.mul(a1, 3) ^ a2 ^ a3)
+                    mixed.append(Self.mul(a1, 2) ^ Self.mul(a2, 3) ^ a3 ^ a0)
+                    mixed.append(Self.mul(a2, 2) ^ Self.mul(a3, 3) ^ a0 ^ a1)
+                    mixed.append(Self.mul(a3, 2) ^ Self.mul(a0, 3) ^ a1 ^ a2)
                 }
+                s = mixed
             }
             s = zip(s, keys[r]).map { $0 ^ $1 }
         }

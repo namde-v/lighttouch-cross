@@ -27,6 +27,7 @@ enum N72Keybag {
     static let bootArgs = "rd=md0 serial=3 debug=0x8 -v amfi_allow_any_signature=1 cs_enforcement_disable=1"
     static let physBase: UInt32 = 0x0800_0000, cmdlineOffset = 0x38, cmdlineLength = 256
 
+    #if !os(Windows)
     /// `out` holds nand/, nor.bin, iBoot.bin and gid-blobs.bin (writable); `dec` the decrypt cache (the kernelcache);
     /// `ramdisk` the decrypted restore ramdisk to boot (this build's, or a sibling's: Recipe.keybagRamdisk).
     nonisolated(nonsending) static func run(
@@ -102,6 +103,7 @@ enum N72Keybag {
         log("keybag boot: effaceable in nor.bin, \(pages) NAND pages folded in")
         return pages
     }
+    #endif
 
     /// (entry pc, link base): LC_UNIXTHREAD's pc and __TEXT's vmaddr top nibble.
     static func kernelEntry(_ d: Data) throws -> (pc: UInt32, base: UInt32) {
@@ -143,6 +145,7 @@ enum N72Keybag {
         return dt.data
     }
 
+    #if !os(Windows)
     /// Stop at the kernel's entry and give it the ramdisk the way iBoot's restore path does.
     static func handoff(_ gdb: GDBRemote, kernelcache: Data, ramdisk: Data) throws -> String {
         let (pc, base) = try kernelEntry(kernelcache)
@@ -198,6 +201,7 @@ enum N72Keybag {
             bootArgs
         )
     }
+    #endif
 
     /// ipod2g_keybag.fold_overlay: the overlay's page files over the device's.
     static func foldOverlay(_ ovl: URL, into nand: URL) throws -> Int {
@@ -220,6 +224,8 @@ enum N72Keybag {
 }
 
 /// Just enough of the gdb remote protocol (QEMU's gdbstub): breakpoints, registers, memory, continue.
+/// Windows has no QEMU helper here; the keybag one-shot is unavailable.
+#if !os(Windows)
 final class GDBRemote {
     let fd: Int32
     var buffer: [UInt8] = []
@@ -365,7 +371,9 @@ final class GDBRemote {
         return stride(from: s.startIndex, to: s.endIndex - 1, by: 2).map { v(s[$0]) << 4 | v(s[$0 + 1]) }
     }
 }
+#endif
 
+#if !os(Windows)
 // Glibc imports SOCK_STREAM as __socket_type, not Int32 (HostRuntime's DebugPort hit the same).
 private let sockType: Int32 = {
     #if os(Linux)
@@ -380,9 +388,8 @@ private let sockType: Int32 = {
 private func posixSend(_ fd: Int32, _ buf: UnsafeRawPointer?, _ count: Int, _ flags: Int32) -> Int {
     #if os(Linux)
         Glibc.send(fd, buf, count, flags)
-    #elseif os(Windows)
-        WinSDK.send(fd, buf, count, flags)
     #else
         Darwin.send(fd, buf, count, flags)
     #endif
 }
+#endif

@@ -153,11 +153,15 @@ struct JailbreakTests {
         let hash = ActivationTests.cd + 52
         #expect(Array(copy[hash..<(hash + 20)]) == Array(Insecure.SHA1.hash(data: Data(copy[0..<256]))))
         #expect(try Data(contentsOf: root.appendingPathComponent(SystemEdits.afcd)) == Data(afcd), "afcd is untouched")
+        #if os(Windows)
+        // No executable bit on Windows; the content checks above are the coverage.
+        #else
         let mode =
             try FileManager.default.attributesOfItem(atPath: root.appendingPathComponent(SystemEdits.afc2d).path)[
                 .posixPermissions
             ] as? Int
         #expect(mode == 0o755)
+        #endif
     }
 
     /// An afcd with neither --lockdown nor the 7.1 strings is refused rather than given an entry that cannot run.
@@ -286,6 +290,8 @@ struct CydiaInstallTests {
         return try #require(PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any])
     }
 
+    #if !os(Windows)
+    // The bootstrap fixture needs /usr/bin/tar; not available on Windows.
     @Test func cydiaLandsBesideTheFirmwaresOwnFiles() throws {
         let dir = fm.temporaryDirectory.appendingPathComponent("ltm-cydia-\(UUID().uuidString)")
         defer { try? fm.removeItem(at: dir) }
@@ -318,6 +324,7 @@ struct CydiaInstallTests {
             ]
         )
     }
+    #endif
 
     /// cydo, which Cydia runs for every root operation (dpkg, the /etc/apt/sources.list.d/cydia.list link), keeps its
     /// set-user-ID bit: tar, not root, drops it, so the catalog gets the archive's mode.
@@ -351,6 +358,8 @@ struct CydiaInstallTests {
 
     /// Cydia's first launch takes its sources from metadata.plist (Version 1: none of its 1.1.30 defaults added), so
     /// none of the dead ones (apt.modmyi.com, cydia.zodttd.com, repo666.ultrasn0w.com) is ever refreshed.
+    #if !os(Windows)
+    // The bootstrap fixture needs /usr/bin/tar; not available on Windows.
     @Test func cydiasSourcesAreTheOnesThatAnswerToday() throws {
         let dir = fm.temporaryDirectory.appendingPathComponent("ltm-cydia-\(UUID().uuidString)")
         defer { try? fm.removeItem(at: dir) }
@@ -375,7 +384,10 @@ struct CydiaInstallTests {
         #expect(try fm.attributesOfItem(atPath: u.path)[.posixPermissions] as? Int == 0o644, "mobile reads it")
         #expect(r.root.contains("private/var/lib/cydia/metadata.plist"))
     }
+    #endif
 
+    #if !os(Windows)
+    // The bootstrap fixture needs /usr/bin/tar; not available on Windows.
     @Test func theFirmwaresSpringBoardPreferencesGainTheKey() throws {
         let dir = fm.temporaryDirectory.appendingPathComponent("ltm-cydia-\(UUID().uuidString)")
         defer { try? fm.removeItem(at: dir) }
@@ -386,10 +398,13 @@ struct CydiaInstallTests {
         #expect(prefs["SBAutoLockTime"] as? Int == 60)
         #expect(r.mobile.isEmpty, "mobile's own preferences keep their owner")
     }
+    #endif
 
     /// Substrate's AutoInstall package on 3.x to 6.x and HTTPatch's on 3.x, as Legacy iOS Kit's restores add them
     /// (and 6.x, which its restores leave to Cydia); none on 7.x; Patcyh (iOS 8.3 and later) out of the files and
     /// dpkg's records everywhere.
+    #if !os(Windows)
+    // The bootstrap fixture needs /usr/bin/tar; not available on Windows.
     @Test(arguments: ["3.1.3", "4.2.1", "5.1.1", "6.1.6", "7.1.2"])
     func substrateAndHTTPatchByVersion(_ version: String) throws {
         let dir = fm.temporaryDirectory.appendingPathComponent("ltm-cydia-\(UUID().uuidString)")
@@ -417,6 +432,7 @@ struct CydiaInstallTests {
             )
         }
     }
+    #endif
 
     @Test func aBootstrapOfOtherBytesIsRefused() throws {
         let dir = fm.temporaryDirectory.appendingPathComponent("ltm-cydia-\(UUID().uuidString)")

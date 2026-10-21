@@ -51,7 +51,13 @@ import Testing
         try Oracle.withTemp { dir in
             let out = dir.appendingPathComponent("rootfs.dmg")
             try Oracle.time("vfdecrypt (streamed from the IPSW) \(fw.entryID)") {
+                #if os(Windows)
+                // FileHandle.fileDescriptor is unavailable on Windows; the
+                // FileHandle overload reads through the handle instead.
+                try ipsw.stream(os) { try VFDecrypt.decrypt(from: $0, output: out, key: key) }
+                #else
                 try ipsw.stream(os) { try VFDecrypt.decrypt(from: $0.fileDescriptor, output: out, key: key) }
+                #endif
             }
             #expect(try Oracle.sha256(file: out) == fw.rootfsDMG)
         }

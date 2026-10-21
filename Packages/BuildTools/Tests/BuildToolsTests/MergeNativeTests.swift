@@ -8,6 +8,9 @@ import Testing
 ///
 /// On Linux the merge itself needs macOS tools (lipo, install_name_tool, codesign), so the fixture test below is
 /// macOS-only; the tool-free helpers (path relocation, skip rules) and the honest stub error are tested on Linux.
+#if os(Windows)
+@Suite(.serialized)
+#endif
 struct MergeNativeTests {
     func sh(_ arguments: String...) throws -> String { try output(arguments) }
 

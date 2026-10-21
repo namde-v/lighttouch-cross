@@ -95,6 +95,8 @@ struct EarlyAppSyncTests {
             put(32, 48)
             let target = root.appendingPathComponent("modern.dylib")
             try bytes.write(to: target)
+            // The Windows fallback parses the Mach-O header directly (no
+            // MachOKit); it detects the newer-dyld command like the rest.
             #expect(MachOSignature.earlyARMProblem(target)?.contains("newer dyld") == true)
         }
     }

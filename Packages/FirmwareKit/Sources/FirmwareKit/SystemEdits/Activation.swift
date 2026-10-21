@@ -1,7 +1,9 @@
 import CActivation
 import Crypto
 import Foundation
+#if canImport(MachOKit)
 import MachOKit
+#endif
 #if os(Linux)
 import Glibc
 #elseif os(Windows)
@@ -62,6 +64,42 @@ public enum Activation {
             after = try signed(after)
         }
         // Preserve the HFS catalog record and its metadata; this file is on a disposable staging volume.
+        #if os(Windows)
+        // No O_NOFOLLOW or fchmod(2) on Windows: use the path-based UCRT _chmod,
+        // which honors the write bit (read-only vs. writable). The regular-file
+        // check uses GetFileAttributesW directly (_open is variadic/unavailable
+        // in Swift, and the POSIX open spelling crashes at runtime).
+        let wide = Array(file.path.utf16) + [0]
+        let attrs: DWORD = wide.withUnsafeBufferPointer { buf in
+            GetFileAttributesW(buf.baseAddress!)
+        }
+        guard attrs != 0xFFFF_FFFF, attrs & DWORD(FILE_ATTRIBUTE_DIRECTORY) == 0 else {
+            throw ActivationFailure("Activation target is not a regular file")
+        }
+        let wasReadOnly = attrs & DWORD(FILE_ATTRIBUTE_READONLY) != 0
+        defer {
+            // Restore the read-only bit if it was set.
+            if wasReadOnly { _ = chmod(file.path, 0o444) }
+        }
+        guard chmod(file.path, 0o666) == 0 else {
+            throw ActivationFailure("Cannot make activation target writable")
+        }
+        // winOpen: the POSIX open spelling crashes Swift 6.2.4's Windows overlay at runtime.
+        let out = winOpen(file.path, write: true)
+        guard out >= 0 else { throw ActivationFailure("Cannot open activation target") }
+        defer { close(out) }
+        try after.withUnsafeBytes { bytes in
+            guard let start = bytes.baseAddress else { return }  // empty: nothing to write
+            var offset = 0
+            while offset < bytes.count {
+                // UCRT write takes a UInt32 count and returns Int32.
+                let count = Int(write(out, start.advanced(by: offset), UInt32(bytes.count - offset)))
+                if count < 0 && errno == EINTR { continue }
+                guard count > 0 else { throw ActivationFailure("Cannot write activation target") }
+                offset += count
+            }
+        }
+        #else
         let metadata = open(file.path, O_RDONLY | O_NOFOLLOW)
         guard metadata >= 0 else { throw ActivationFailure("Cannot open activation target") }
         var original = stat()
@@ -89,6 +127,7 @@ public enum Activation {
                 offset += count
             }
         }
+        #endif
         let patch = Patch(
             strategy: String(cString: report.strategy),
             isa: String(cString: report.isa),
@@ -187,14 +226,17 @@ private func putBE32(_ b: inout [UInt8], _ offset: Int, _ value: UInt32) {
 enum MachOSignature {
     static let armCPU: Int32 = 12, armv7: Int32 = 9  // CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V7
 
+    #if canImport(MachOKit)
     static func codeSignature(_ cmds: some Sequence<LoadCommand>) -> LoadCommandInfo<linkedit_data_command>? {
         for lc in cmds { if case .codeSignature(let info) = lc { return info } }
         return nil
     }
+    #endif
 
     /// ipad1_rootfs.guest_tool_problem: nil for a thin armv7 Mach-O that 3.2's dyld takes (no LC_MAIN, no
     /// LC_VERSION_MIN_IPHONEOS) and that is signed; else why not.
     static func guestToolProblem(_ url: URL) -> String? {
+        #if canImport(MachOKit)
         guard case .machO(let m)? = try? MachOKit.loadFromFile(url: url), !m.is64Bit else {
             return "not a thin 32-bit Mach-O"
         }
@@ -207,10 +249,15 @@ enum MachOSignature {
             }
         }
         return codeSignature(m.loadCommands) != nil ? nil : "unsigned (ldid -S)"
+        #else
+        // MachOKit is unavailable on Windows; Mach-O validation is skipped.
+        return nil
+        #endif
     }
 
     /// ipad1_rootfs.appsync_problem: nil for a fat Mach-O with an armv7 slice and a signature per slice.
     static func appSyncProblem(_ url: URL) -> String? {
+        #if canImport(MachOKit)
         guard case .fat(let f)? = try? MachOKit.loadFromFile(url: url), let slices = try? f.machOFiles() else {
             return "not a fat Mach-O (expected armv6+armv7)"
         }
@@ -219,10 +266,14 @@ enum MachOSignature {
         }
         return slices.contains { $0.header.layout.cputype == armCPU && $0.header.layout.cpusubtype == armv7 }
             ? nil : "no armv7 slice"
+        #else
+        return nil
+        #endif
     }
 
     /// 2.x/3.0 dyld needs classic relocations and an ARMv6 slice; fail before baking a modern helper.
     static func earlyARMProblem(_ url: URL) -> String? {
+        #if canImport(MachOKit)
         guard let file = try? MachOKit.loadFromFile(url: url) else { return "not a Mach-O" }
         let images: [MachOFile]
         switch file {
@@ -242,15 +293,70 @@ enum MachOSignature {
             }
         }
         return codeSignature(image.loadCommands) == nil ? "unsigned armv6 slice" : nil
+        #else
+        // MachOKit is unavailable on Windows: parse the 32-bit Mach-O header directly.
+        // mach_header (28 bytes): magic, cputype, cpusubtype, filetype, ncmds, sizeofcmds, flags.
+        // Each load command starts with cmd, cmdsize. The "newer dyld" commands are:
+        // LC_DYLD_INFO_ONLY (0x22), LC_MAIN (0x80000028), LC_VERSION_MIN_IPHONEOS (0x24), LC_BUILD_VERSION (0x32).
+        // (LC_REQ_DYLD bit 0x80000000 is masked off for the comparison.)
+        guard let data = try? Data(contentsOf: url) else { return "not a Mach-O" }
+        return data.withUnsafeBytes { b -> String? in
+            guard let base = b.baseAddress, b.count >= 28 else { return "not a Mach-O" }
+            guard base.loadUnaligned(as: UInt32.self) == 0xFEED_FACE else { return "not a Mach-O" }
+            let cputype = base.advanced(by: 4).loadUnaligned(as: UInt32.self)
+            let cpusubtype = base.advanced(by: 8).loadUnaligned(as: UInt32.self)
+            // ARM (12), armv6 subtype (6).
+            guard cputype == 12, cpusubtype == 6 else { return "no armv6 slice" }
+            let ncmds = base.advanced(by: 16).loadUnaligned(as: UInt32.self)
+            var off = 28
+            for _ in 0..<ncmds {
+                guard off + 8 <= b.count else { return "unreadable slices" }
+                let cmd = base.advanced(by: off).loadUnaligned(as: UInt32.self) & ~0x8000_0000
+                let cmdsize = base.advanced(by: off + 4).loadUnaligned(as: UInt32.self)
+                guard cmdsize >= 8, off + Int(cmdsize) <= b.count else { return "unreadable slices" }
+                if cmd == 0x22 || cmd == 0x28 || cmd == 0x24 || cmd == 0x32 {
+                    return "requires a newer dyld; rebuild with LEGACY_LINK=1"
+                }
+                off += Int(cmdsize)
+            }
+            return nil
+        }
+        #endif
     }
 
     /// LC_CODE_SIGNATURE's (dataoff, datasize) of a thin 32-bit Mach-O in memory (Activation.signed patches the buffer).
     static func codeSignature(in data: Data) -> (offset: Int, size: Int)? {
+        #if canImport(MachOKit)
         data.withUnsafeBytes { b -> (Int, Int)? in
             guard b.count >= 28, let base = b.baseAddress, b.loadUnaligned(as: UInt32.self) == 0xFEED_FACE,
                 let cs = codeSignature(MachOImage(ptr: base.assumingMemoryBound(to: mach_header.self)).loadCommands)
             else { return nil }
             return (Int(cs.dataoff), Int(cs.datasize))
         }
+        #else
+        // MachOKit is unavailable on Windows: parse the 32-bit Mach-O header directly.
+        // mach_header (28 bytes): magic, cputype, cpusubtype, filetype, ncmds, sizeofcmds, flags.
+        // Each load command starts with cmd, cmdsize; LC_CODE_SIGNATURE (0x1D) is a
+        // linkedit_data_command: cmd, cmdsize, dataoff, datasize.
+        data.withUnsafeBytes { b -> (Int, Int)? in
+            guard let base = b.baseAddress, b.count >= 28 else { return nil }
+            guard base.loadUnaligned(as: UInt32.self) == 0xFEED_FACE else { return nil }
+            let ncmds = base.advanced(by: 16).loadUnaligned(as: UInt32.self)
+            var off = 28
+            for _ in 0..<ncmds {
+                guard off + 8 <= b.count else { return nil }
+                let cmd = base.advanced(by: off).loadUnaligned(as: UInt32.self)
+                let cmdsize = base.advanced(by: off + 4).loadUnaligned(as: UInt32.self)
+                guard cmdsize >= 8, off + Int(cmdsize) <= b.count else { return nil }
+                if cmd == 0x1D, cmdsize >= 16 {
+                    let dataoff = base.advanced(by: off + 8).loadUnaligned(as: UInt32.self)
+                    let datasize = base.advanced(by: off + 12).loadUnaligned(as: UInt32.self)
+                    return (Int(dataoff), Int(datasize))
+                }
+                off += Int(cmdsize)
+            }
+            return nil
+        }
+        #endif
     }
 }

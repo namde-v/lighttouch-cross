@@ -1,6 +1,8 @@
 // The byte readers and writers FirmwareKit's formats share: integers at offsets of an image, hex, zlib's CRC-32.
 import Foundation
+#if !os(Windows)
 import CZlibFK
+#endif
 
 func le16(_ b: [UInt8], _ o: Int) -> UInt16 { UInt16(b[o]) | UInt16(b[o + 1]) << 8 }
 
@@ -24,9 +26,23 @@ func put32(_ b: inout [UInt8], _ o: Int, _ v: UInt32) {
 }
 
 /// zlib's CRC-32 of `b`.
+#if os(Windows)
+// zlib is unavailable on Windows; a small pure-Swift CRC-32 (IEEE).
+func crc(_ b: ArraySlice<UInt8>) -> UInt32 {
+    var crc: UInt32 = 0xFFFF_FFFF
+    for byte in b {
+        crc ^= UInt32(byte)
+        for _ in 0..<8 {
+            crc = (crc & 1) == 1 ? (crc >> 1) ^ 0xEDB8_8320 : crc >> 1
+        }
+    }
+    return crc ^ 0xFFFF_FFFF
+}
+#else
 func crc(_ b: ArraySlice<UInt8>) -> UInt32 {
     UInt32(b.withUnsafeBufferPointer { CZlibFK.crc32(0, $0.baseAddress, uInt($0.count)) })
 }
+#endif
 
 extension Sequence<UInt8> {
     /// Lowercase hex, two digits a byte.

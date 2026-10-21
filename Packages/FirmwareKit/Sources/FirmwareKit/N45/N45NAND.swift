@@ -20,7 +20,9 @@
 //   N45NAND.location(lpn:)                         // (bank, page) of a logical page
 
 import Foundation
+#if !os(Windows)
 import CZlibFK
+#endif
 
 public enum N45NAND {
     /// `banks`: the N45's eight chip enables; the M68 populates four (its DT disk reg 0x0f), and every layout

@@ -43,7 +43,9 @@ struct RARSourceTests {
         ]
     }
 
-    @Test func extractsTheCheckedMember() throws {
+    // RAR extraction is unsupported on Windows (Unrar doesn't link there).
+    #if !os(Windows)
+        @Test func extractsTheCheckedMember() throws {
         let (archive, out) = try Self.files()
         let source = Self.source()
         #expect(source.isArchive && source.downloadSHA1 == source.archiveSHA1 && source.downloadBytes == 107)
@@ -74,6 +76,7 @@ struct RARSourceTests {
         }
         #expect(try Self.untouched(archive))
     }
+    #endif
 
     /// An "ipsw" source downloads and checks the IPSW itself.
     @Test func plainSourceIsTheIPSW() throws {

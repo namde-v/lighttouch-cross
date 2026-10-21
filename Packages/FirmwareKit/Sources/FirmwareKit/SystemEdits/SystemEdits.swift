@@ -687,11 +687,20 @@ public enum SystemEdits {
         }
         let dir = m.appendingPathComponent(dyldOverride).deletingLastPathComponent().path
         var st = stat()
+        #if os(Windows)
+        // st_mode is UInt16 on Windows; UCRT _chmod honors the write bit only.
+        guard stat(dir, &st) == 0, chmod(dir, Int32(st.st_mode & 0o7777 | 0o200)) == 0 else {
+            throw FirmwareError(.internal, "chmod \(dir)")
+        }
+        try put(Data(), m.appendingPathComponent(dyldOverride))
+        chmod(dir, Int32(st.st_mode & 0o7777))
+        #else
         guard stat(dir, &st) == 0, chmod(dir, st.st_mode & 0o7777 | 0o200) == 0 else {
             throw FirmwareError(.internal, "chmod \(dir)")
         }
         try put(Data(), m.appendingPathComponent(dyldOverride))
         chmod(dir, st.st_mode & 0o7777)
+        #endif
     }
 
     // MARK: - Plist edits (ipad1_rootfs.springboard_env, dyld_insert, wifi_proxy_prefs)
@@ -795,9 +804,10 @@ public enum SystemEdits {
         moveFirst(dict(dict(net, "Global"), "IPv4"), "ServiceOrder", wifiService)
     }
 
-    #if os(Linux)
-        /// corelibs-foundation ignores `.mutableContainersAndLeaves`, returning Swift value types even for
-        /// dictionaries; deep-convert to the mutable Foundation containers the edit closures expect.
+    #if os(Linux) || os(Windows)
+        /// corelibs-foundation (Linux) and swift-foundation (Windows) ignore `.mutableContainersAndLeaves`,
+        /// returning Swift value types even for dictionaries; deep-convert to the mutable Foundation containers
+        /// the edit closures expect.
         static func mutablePlistValue(_ raw: Any) -> Any {
             if let dict = raw as? [AnyHashable: Any] {
                 let m = NSMutableDictionary(capacity: dict.count)
@@ -821,7 +831,7 @@ public enum SystemEdits {
             options: .mutableContainersAndLeaves,
             format: &fmt
         )
-        #if os(Linux)
+        #if os(Linux) || os(Windows)
             guard let d = mutablePlistValue(raw) as? NSMutableDictionary else {
                 throw FirmwareError(.unsupported, "\(url.lastPathComponent) is not a dictionary plist")
             }
@@ -851,14 +861,29 @@ public enum SystemEdits {
     /// Writes `data` into `url` in place (truncating an existing file, so it keeps its catalog record), creating
     /// it 0666 & ~umask if absent; with `mode`, then sets the permission bits.
     static func put(_ data: Data, _ url: URL, mode: mode_t? = nil) throws {
+        #if os(Windows)
+        // winOpen: the POSIX open spelling crashes Swift 6.2.4's Windows overlay at runtime.
+        let fd = winOpen(url.path, write: true, create: true, truncate: true)
+        #else
         let fd = open(url.path, O_WRONLY | O_CREAT | O_TRUNC, 0o666)
+        #endif
         guard fd >= 0 else { throw FirmwareError(.internal, "open \(url.path): \(String(cString: strerror(errno)))") }
         defer { close(fd) }
+        #if os(Windows)
+        // UCRT write takes a UInt32 count and returns Int32.
+        let n = data.withUnsafeBytes { data.isEmpty ? 0 : Int(write(fd, $0.baseAddress, UInt32($0.count))) }
+        #else
         let n = data.withUnsafeBytes { data.isEmpty ? 0 : write(fd, $0.baseAddress, $0.count) }
+        #endif
         guard n == data.count else {
             throw FirmwareError(.internal, "write \(url.path): \(String(cString: strerror(errno)))")
         }
+        #if os(Windows)
+        // No fchmod(2): the UCRT _chmod honors the write bit (read-only vs. writable), ignoring the rest.
+        if let mode, chmod(url.path, Int32(mode)) != 0 { throw FirmwareError(.internal, "chmod \(url.path)") }
+        #else
         if let mode, fchmod(fd, mode) != 0 { throw FirmwareError(.internal, "chmod \(url.path)") }
+        #endif
     }
 
     /// mkdir -p with 0777 & ~umask for each directory created.
@@ -866,15 +891,22 @@ public enum SystemEdits {
         var isDir: ObjCBool = false
         if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) { return }
         try mkdirs(url.deletingLastPathComponent())
+        #if os(Windows)
+        // UCRT _mkdir takes only the path; permissions are ACLs.
+        guard _mkdir(url.path) == 0 || errno == EEXIST else {
+            throw FirmwareError(.internal, "mkdir \(url.path): \(String(cString: strerror(errno)))")
+        }
+        #else
         guard mkdir(url.path, 0o777) == 0 || errno == EEXIST else {
             throw FirmwareError(.internal, "mkdir \(url.path): \(String(cString: strerror(errno)))")
         }
+        #endif
     }
 
     static func permissions(_ url: URL) throws -> mode_t {
         var st = stat()
         guard stat(url.path, &st) == 0 else { throw FirmwareError(.internal, "stat \(url.path)") }
-        return st.st_mode & 0o7777
+        return mode_t(st.st_mode) & 0o7777
     }
 
     /// shutil.copytree(symlinks=True, dirs_exist_ok=True) with copy2: symlinks as symlinks, file content
@@ -894,9 +926,15 @@ public enum SystemEdits {
             return
         case .typeDirectory?:
             if !fm.fileExists(atPath: dst.path) {
+                #if os(Windows)
+                guard _mkdir(dst.path) == 0 else {
+                    throw FirmwareError(.internal, "mkdir \(dst.path): \(String(cString: strerror(errno)))")
+                }
+                #else
                 guard mkdir(dst.path, 0o777) == 0 else {
                     throw FirmwareError(.internal, "mkdir \(dst.path): \(String(cString: strerror(errno)))")
                 }
+                #endif
             }
             for n in try fm.contentsOfDirectory(atPath: src.path) {
                 try copyTree(src.appendingPathComponent(n), dst.appendingPathComponent(n))

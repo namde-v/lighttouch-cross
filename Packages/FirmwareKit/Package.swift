@@ -101,12 +101,19 @@ let package = Package(
         .target(
             name: "FirmwareKit",
             dependencies: [
-                "CActivation", "FirmwareSchema", "CZlibFK", "CSQLite3",
+                "CActivation", "FirmwareSchema",
+                // CZlibFK/CSQLite3 only where zlib/SQLite exist: their modulemaps'
+                // link directives break the Windows link (no z.lib/sqlite3.lib).
+                // Imports are gated with #if !os(Windows) to match.
+                .target(name: "CZlibFK", condition: .when(platforms: [.macOS, .linux])),
+                .target(name: "CSQLite3", condition: .when(platforms: [.macOS, .linux])),
                 .product(name: "HostRuntime", package: "HostRuntime"),
                 .product(name: "ZIPFoundation", package: "ZIPFoundation"),
-                .product(name: "MachOKit", package: "MachOKit"),
+                .product(name: "MachOKit", package: "MachOKit", condition: .when(platforms: [.macOS, .linux])),
                 .product(name: "Subprocess", package: "swift-subprocess"),
-                .product(name: "Unrar", package: "Unrar.swift"),
+                // Unrar only where its C++ links: the Windows MSVC build has
+                // undefined symbols (MarkOfTheWeb etc.); RARSource is gated out there.
+                .product(name: "Unrar", package: "Unrar.swift", condition: .when(platforms: [.macOS, .linux])),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "_CryptoExtras", package: "swift-crypto"),
                 .product(name: "SystemPackage", package: "swift-system"),
@@ -115,7 +122,9 @@ let package = Package(
         .testTarget(
             name: "FirmwareKitTests",
             dependencies: [
-                "FirmwareKit", "FirmwareSchema", "CSQLite3", "CZlibFK",
+                "FirmwareKit", "FirmwareSchema",
+                .target(name: "CZlibFK", condition: .when(platforms: [.macOS, .linux])),
+                .target(name: "CSQLite3", condition: .when(platforms: [.macOS, .linux])),
                 .product(name: "HostRuntime", package: "HostRuntime"),
                 .product(name: "Crypto", package: "swift-crypto"),
             ]

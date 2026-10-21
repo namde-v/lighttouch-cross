@@ -9,6 +9,10 @@ import WinSDK
 #else
 import Darwin
 #endif
+import HostServiceWire
+#if os(Windows)
+import HostRuntime  // winOpen (CreateFileW + _open_osfhandle); POSIX open() is broken on this toolchain.
+#endif
 
 
 /// Synchronous low-level writer shared by pipe readers. The lock protects the
@@ -24,7 +28,19 @@ public nonisolated final class RotatingLog: @unchecked Sendable {
     private var failed = false
     private var fd: Int32 = -1
     private var size = 0
+    #if os(Windows)
+    // No dev_t/ino_t or stat(2) on Windows: the file's identity is its volume
+    // serial + file index (GetFileInformationByHandle).
+    private var volumeSerial: DWORD = 0, fileIndex: UInt64 = 0
+    // The Win32 HANDLE behind fd, for WriteFile. FileHandle(fileDescriptor:)
+    // must not be used on Windows: its deinit closes the underlying HANDLE
+    // even with closeOnDealloc: false (swift-corelibs-foundation's
+    // _immediatelyClose ignores the flag on Windows), closing a handle this
+    // log still owns and failing later writes with NSCocoaErrorDomain 512.
+    private var writeHandle: UnsafeMutableRawPointer?
+    #else
     private var device: dev_t = 0, inode: ino_t = 0
+    #endif
     private static let logger = LTMLogger(subsystem: StorageLocations.bundleIdentifier, category: "log-storage")
 
     public init(url: URL, limit: Int = StorageLocations.logLimit) {
@@ -47,7 +63,11 @@ public nonisolated final class RotatingLog: @unchecked Sendable {
                 try Self.rotate(url)
                 try openFile()
             }
+            #if os(Windows)
+            try writeViaHandle(bounded)
+            #else
             try FileHandle(fileDescriptor: fd).write(contentsOf: bounded)
+            #endif
             size += bounded.count
         } catch {
             closeFile()
@@ -64,6 +84,39 @@ public nonisolated final class RotatingLog: @unchecked Sendable {
         if let type = attributes?[.type] as? FileAttributeType, type != .typeRegular {
             throw CocoaError(.fileWriteUnknown)
         }
+        #if os(Windows)
+        // No O_CLOEXEC/O_NOFOLLOW/lstat(2)/fchmod(2) on Windows: refuse
+        // reparse points (symlinks, junctions) up front, open append-only
+        // without inheriting the descriptor, and identify the file by volume
+        // serial + file index. A file the app creates in its own log
+        // directory is owner-only by default ACL.
+        let wide = Array(url.path.utf16) + [0]
+        let fileAttributes: DWORD = wide.withUnsafeBufferPointer { GetFileAttributesW($0.baseAddress!) }
+        if fileAttributes != DWORD(bitPattern: Int32(-1)),
+            fileAttributes & DWORD(FILE_ATTRIBUTE_REPARSE_POINT) != 0
+        {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let descriptor = winOpen(url.path, write: true, create: true, append: true)
+        guard descriptor >= 0 else { throw StorageLocations.posixError() }
+        let raw = _get_osfhandle(descriptor)
+        guard raw != -1, let handle = UnsafeMutableRawPointer(bitPattern: raw) else {
+            close(descriptor)
+            throw StorageLocations.posixError()
+        }
+        var info = BY_HANDLE_FILE_INFORMATION()
+        guard GetFileInformationByHandle(handle, &info),
+            info.dwFileAttributes & DWORD(FILE_ATTRIBUTE_DIRECTORY) == 0
+        else {
+            close(descriptor)
+            throw CocoaError(.fileWriteUnknown)
+        }
+        fd = descriptor
+        size = Int(UInt64(info.nFileSizeHigh) << 32 | UInt64(info.nFileSizeLow))
+        volumeSerial = info.dwVolumeSerialNumber
+        fileIndex = UInt64(info.nFileIndexHigh) << 32 | UInt64(info.nFileIndexLow)
+        writeHandle = handle
+        #else
         let descriptor = open(url.path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard descriptor >= 0 else { throw StorageLocations.posixError() }
         var st = Glibc.stat()
@@ -76,16 +129,57 @@ public nonisolated final class RotatingLog: @unchecked Sendable {
         size = Int(st.st_size)
         device = st.st_dev
         inode = st.st_ino
+        #endif
     }
 
     private func closeFile() {
         if fd >= 0 { close(fd) }
         fd = -1
+        #if os(Windows)
+        // close(fd) closed the OS handle as well.
+        writeHandle = nil
+        #endif
     }
 
+    #if os(Windows)
+    /// WriteFile on the stored HANDLE (see writeHandle): FileHandle's deinit
+    /// closes the handle even when told not to, so FileHandle is bypassed.
+    private func writeViaHandle(_ data: Data) throws {
+        guard let handle = writeHandle else { throw StorageLocations.posixError() }
+        guard !data.isEmpty else { return }
+        try data.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) in
+            var remaining = buffer.count
+            var base = buffer.baseAddress!
+            while remaining > 0 {
+                var written: DWORD = 0
+                let chunk = DWORD(min(remaining, Int(DWORD.max)))
+                guard WriteFile(handle, base, chunk, &written, nil), written > 0 else {
+                    throw StorageLocations.posixError()
+                }
+                base = base.advanced(by: Int(written))
+                remaining -= Int(written)
+            }
+        }
+    }
+    #endif
+
     private func pathNamesOpenFile() -> Bool {
+        #if os(Windows)
+        // The open file is still the path's file when a fresh open of the
+        // path yields the same volume serial + file index.
+        let descriptor = winOpen(url.path, read: true)
+        guard descriptor >= 0 else { return false }
+        defer { close(descriptor) }
+        let raw = _get_osfhandle(descriptor)
+        guard raw != -1, let handle = UnsafeMutableRawPointer(bitPattern: raw) else { return false }
+        var info = BY_HANDLE_FILE_INFORMATION()
+        guard GetFileInformationByHandle(handle, &info) else { return false }
+        return info.dwVolumeSerialNumber == volumeSerial
+            && (UInt64(info.nFileIndexHigh) << 32 | UInt64(info.nFileIndexLow)) == fileIndex
+        #else
         var st = Glibc.stat()
         return lstat(url.path, &st) == 0 && st.st_dev == device && st.st_ino == inode
+        #endif
     }
 
     public static func rotate(_ url: URL) throws {
@@ -100,18 +194,57 @@ public nonisolated final class RotatingLog: @unchecked Sendable {
 /// callback drains at most one bounded chunk; no unbounded async Data queue or
 /// per-line allocation can accumulate behind a noisy native writer.
 public nonisolated final class LogPipeReader: @unchecked Sendable {
+    #if os(Windows)
+    // DispatchSource.read never fires for Windows pipes: libdispatch is handed
+    // the CRT fd rather than a HANDLE, and pipe HANDLEs trip its known Windows
+    // bugs (read-side spin, write-side block). A dedicated thread does blocking
+    // reads instead; closing the descriptor unblocks it. `stopped` also guards
+    // the idempotent close: finish() and deinit may both run.
+    //
+    // A class (not Synchronization.Mutex, which is non-copyable and cannot be
+    // captured by the thread): the thread must not retain self, or a reader
+    // dropped without finish() would leak the blocked thread.
+    private final class ReaderState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stopped = false
+        private var watch: LogWatch?
+        var isStopped: Bool {
+            lock.lock(); defer { lock.unlock() }; return stopped
+        }
+        func setWatch(_ watch: LogWatch?) {
+            lock.lock(); defer { lock.unlock() }; self.watch = watch
+        }
+        func scan(_ chunk: Data) {
+            lock.lock(); defer { lock.unlock() }; watch?.scan(chunk)
+        }
+        /// Marks stopped; returns true for the first caller, which closes the
+        /// descriptor to unblock the reader thread.
+        func stopFirst() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            defer { stopped = true }
+            return !stopped
+        }
+        func markStopped() {
+            lock.lock(); defer { lock.unlock() }; stopped = true
+        }
+    }
+    private let readerState = ReaderState()
+    #else
     private let source: any DispatchSourceRead
     private let queue: DispatchQueue
-    private let descriptor: Int32
-    private let cancellation = DispatchGroup()
-    private let log: RotatingLog
     // Accessed only on queue, including EOF and explicit teardown.
     private var stopped = false
     /// Phrases to report the first time they pass through (LogWatch), on the reader's queue.
     private var watch: LogWatch?
+    #endif
+    private let descriptor: Int32
+    private let cancellation = DispatchGroup()
+    private let log: RotatingLog
 
     /// Bytes in, `onMatch(phrase)` once per phrase, across chunk boundaries.
-    public nonisolated final class LogWatch {
+    /// Thread-safe: on Windows the reader thread and flush() may scan concurrently.
+    public nonisolated final class LogWatch: @unchecked Sendable {
+        private let lock = NSLock()
         private var pending: [Data]
         private var tail = Data()
         private let onMatch: @Sendable (String) -> Void
@@ -120,6 +253,8 @@ public nonisolated final class LogPipeReader: @unchecked Sendable {
             self.onMatch = onMatch
         }
         public func scan(_ chunk: Data) {
+            lock.lock()
+            defer { lock.unlock() }
             guard !pending.isEmpty else { return }
             let window = tail + chunk
             for phrase in pending where window.range(of: phrase) != nil {
@@ -134,12 +269,43 @@ public nonisolated final class LogPipeReader: @unchecked Sendable {
     public init(descriptor: Int32, log: RotatingLog, watch: LogWatch? = nil, cleanup: (@Sendable () -> Void)? = nil)
         throws
     {
+        #if os(Windows)
+        // No fcntl O_NONBLOCK on Windows; the reader thread blocks in read().
+        #else
         let flags = fcntl(descriptor, F_GETFL)
         guard flags >= 0, fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0 else {
             throw StorageLocations.posixError()
         }
+        #endif
         self.descriptor = descriptor
         self.log = log
+        #if os(Windows)
+        readerState.setWatch(watch)
+        // Capture state piecemeal: the thread must not retain self, or a
+        // reader dropped without finish() would leak the blocked thread.
+        let readerState = self.readerState
+        let cancellation = self.cancellation
+        let log = self.log
+        cancellation.enter()
+        let thread = Thread {
+            var bytes = [UInt8](repeating: 0, count: 32_768)
+            while !readerState.isStopped {
+                // UCRT read takes a UInt32 count and returns Int32; it blocks
+                // until bytes arrive or the write end closes (EOF, count 0).
+                let count = read(descriptor, &bytes, UInt32(bytes.count))
+                guard count > 0 else { break }
+                let chunk = Data(bytes.prefix(Int(count)))
+                log.append(chunk)
+                readerState.scan(chunk)
+            }
+            readerState.markStopped()
+            cleanup?()
+            cancellation.leave()
+        }
+        thread.name = "LightTouch.log.\(log.url.lastPathComponent)"
+        thread.qualityOfService = .utility
+        thread.start()
+        #else
         self.watch = watch
         self.queue = DispatchQueue(label: "LightTouch.log.\(log.url.lastPathComponent)", qos: .utility)
         source = DispatchSource.makeReadSource(fileDescriptor: descriptor, queue: queue)
@@ -152,14 +318,36 @@ public nonisolated final class LogPipeReader: @unchecked Sendable {
             cancellation.leave()
         }
         source.resume()
+        #endif
     }
 
+    #if os(Windows)
+    /// The first caller closes the descriptor, unblocking the reader thread's
+    /// read(); later callers (finish() after deinit, or vice versa) no-op.
+    private func stopReading() {
+        if readerState.stopFirst() { close(descriptor) }
+    }
+    #endif
+
+    #if os(Windows)
+    /// Bytes waiting in the pipe: the non-blocking read check (no O_NONBLOCK
+    /// on Windows).
+    private func availableBytes() -> DWORD {
+        let raw = _get_osfhandle(descriptor)
+        guard raw != -1, let handle = UnsafeMutableRawPointer(bitPattern: raw) else { return 0 }
+        var available: DWORD = 0
+        guard PeekNamedPipe(handle, nil, 0, nil, &available, nil) else { return 0 }
+        return available
+    }
+    #endif
+
+    #if !os(Windows)
     private func readChunk() {
         guard !stopped else { return }
         var bytes = [UInt8](repeating: 0, count: 32_768)
         let count = read(descriptor, &bytes, bytes.count)
         if count > 0 {
-            let chunk = Data(bytes.prefix(count))
+            let chunk = Data(bytes.prefix(Int(count)))
             log.append(chunk)
             watch?.scan(chunk)
         } else if count == 0 || (errno != EAGAIN && errno != EINTR) {
@@ -167,8 +355,22 @@ public nonisolated final class LogPipeReader: @unchecked Sendable {
             source.cancel()
         }
     }
+    #endif
 
     public func flush() {
+        #if os(Windows)
+        guard !readerState.isStopped else { return }
+        // The reader thread drains continuously; wait until the pipe is empty
+        // instead of reading here. A manual read() races the reader thread:
+        // availableBytes() can report bytes that the reader consumes before
+        // read() runs, and read() then blocks forever on the empty pipe.
+        let deadline = Date().addingTimeInterval(10)
+        while availableBytes() > 0 && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        // Settle: the reader thread may be appending a chunk it read just now.
+        Thread.sleep(forTimeInterval: 0.05)
+        #else
         queue.sync {
             guard !stopped else { return }
             var bytes = [UInt8](repeating: 0, count: 32_768)
@@ -176,24 +378,36 @@ public nonisolated final class LogPipeReader: @unchecked Sendable {
             for _ in 0..<32 {
                 let count = read(descriptor, &bytes, bytes.count)
                 guard count > 0 else { break }
-                let chunk = Data(bytes.prefix(count))
+                let chunk = Data(bytes.prefix(Int(count)))
                 log.append(chunk)
                 watch?.scan(chunk)
             }
         }
+        #endif
     }
 
     public func finish() {
+        #if os(Windows)
+        stopReading()
+        #else
         flush()
         queue.sync {
             guard !stopped else { return }
             stopped = true
             source.cancel()
         }
+        #endif
         cancellation.wait()
     }
 
+    #if os(Windows)
+    deinit {
+        stopReading()
+        // Don't wait: the thread exits on its own once the read unblocks.
+    }
+    #else
     deinit { source.cancel() }
+    #endif
 }
 
 /// The owning subprocess task holds this until its child has stopped. stdout
@@ -204,9 +418,17 @@ public nonisolated final class ProcessLogCapture: Sendable {
 
     public init(url: URL) throws {
         var descriptors: [Int32] = [-1, -1]
+        #if os(Windows)
+        // No pipe(2) on Windows: _pipe makes the pipe; _O_BINARY keeps bytes
+        // intact and _O_NOINHERIT keeps the descriptors out of children.
+        guard _pipe(&descriptors, 65536, _O_BINARY | _O_NOINHERIT) == 0 else {
+            throw StorageLocations.posixError()
+        }
+        #else
         guard pipe(&descriptors) == 0 else { throw StorageLocations.posixError() }
         _ = fcntl(descriptors[0], F_SETFD, FD_CLOEXEC)
         _ = fcntl(descriptors[1], F_SETFD, FD_CLOEXEC)
+        #endif
         do {
             reader = try LogPipeReader(descriptor: descriptors[0], log: RotatingLog(url: url))
             writeDescriptor = descriptors[1]
@@ -239,6 +461,11 @@ public nonisolated final class SerialLogCapture: Sendable {
         watch: [String] = [],
         onMatch: @escaping @Sendable (String) -> Void = { _ in }
     ) throws {
+        #if os(Windows)
+        // No FIFOs on Windows, and QEMU's pipe chardev backend isn't wired up
+        // there; nothing in the app constructs this on Windows.
+        throw DeviceToolsError.failed("Serial pipe capture isn't supported on Windows.")
+        #else
         let directory = temporaryRoot.appendingPathComponent(
             "LightTouch-serial-\(UUID().uuidString)",
             isDirectory: true
@@ -266,6 +493,7 @@ public nonisolated final class SerialLogCapture: Sendable {
             try? FileManager.default.removeItem(at: directory)
             throw error
         }
+        #endif
     }
 
     /// Normal app quit can leave QEMU running until process exit. Unlinking

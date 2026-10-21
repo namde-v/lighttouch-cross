@@ -66,7 +66,12 @@ struct KBootTests {
         func seg(_ name: String, _ vm: UInt32, _ vs: UInt32, _ fo: UInt32, _ fs: UInt32) -> Data {
             le([1, 56]) + DeviceTree.name32(name).prefix(16) + le([vm, vs, fo, fs, 7, 7, 0, 0])
         }
-        let thread = le([5, 16 + 64, 1, 16] + [UInt32](repeating: 0, count: 15) + [base + 0x1040])
+        // (built with appends: the Windows compiler mis-infers chained array `+`)
+        let threadTail = base + 0x1040
+        var threadWords: [UInt32] = [5, 16 + 64, 1, 16]
+        threadWords += [UInt32](repeating: 0, count: 15)
+        threadWords.append(threadTail)
+        let thread = le(threadWords)
         let cmds =
             seg("__TEXT", base + 0x1000, 0x2000, 0, 0x2000) + seg("__DATA", base + 0x3000, 0x1800, 0x2000, 0x10)
             + thread
@@ -102,7 +107,9 @@ struct KBootTests {
         let r0 = Int(img.bootArgsPA - img.loadPA)
         let image = img.image
         // rowbytes, w, h, depth | scale-1
-        #expect([0x1C, 0x20, 0x24, 0x28].map { Self.u32(image, r0 + $0) } == [640 * 4, 640, 960, 32 | 1 << 16])
+        // (explicit [UInt32]: the Windows compiler mis-infers the literal's element type inline)
+        let expectedRow: [UInt32] = [640 * 4, 640, 960, 32 | 1 << 16]
+        #expect([0x1C, 0x20, 0x24, 0x28].map { Self.u32(image, r0 + $0) } == expectedRow)
         let dtp = Int(Self.u32(image, r0 + 0x30)) - 0x8000_0000
         let dtlen = Int(Self.u32(image, r0 + 0x34))
         let dt = try DeviceTree(image[dtp..<dtp + dtlen])
@@ -177,7 +184,8 @@ struct KBootTests {
         )
         let r0 = Int(img.bootArgsPA - img.loadPA)
         let image = img.image
-        #expect([0x1C, 0x20, 0x24, 0x28].map { Self.u32(image, r0 + $0) } == [320 * 4, 320, 480, 32])
+        let expectedRow: [UInt32] = [320 * 4, 320, 480, 32]
+        #expect([0x1C, 0x20, 0x24, 0x28].map { Self.u32(image, r0 + $0) } == expectedRow)
         let dtp = Int(Self.u32(image, r0 + 0x30)) - 0x8000_0000
         let dtlen = Int(Self.u32(image, r0 + 0x34))
         let dt = try DeviceTree(image[dtp..<dtp + dtlen])
@@ -217,7 +225,8 @@ struct KBootTests {
         let r0 = Int(img.bootArgsPA - img.loadPA)
         let image = img.image
         // rowbytes, w, h, depth | scale-1
-        #expect([0x1C, 0x20, 0x24, 0x28].map { Self.u32(image, r0 + $0) } == [320 * 4, 320, 480, 32])
+        let expectedRow: [UInt32] = [320 * 4, 320, 480, 32]
+        #expect([0x1C, 0x20, 0x24, 0x28].map { Self.u32(image, r0 + $0) } == expectedRow)
         let dtp = Int(Self.u32(image, r0 + 0x30)) - 0x8000_0000
         let dtlen = Int(Self.u32(image, r0 + 0x34))
         let dt = try DeviceTree(image[dtp..<dtp + dtlen])

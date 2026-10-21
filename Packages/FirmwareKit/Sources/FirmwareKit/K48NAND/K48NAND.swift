@@ -202,7 +202,12 @@ public enum K48NAND {
             for b in 0..<geo.buses {
                 for c in 0..<geo.cePerBus {
                     let p = dir.appendingPathComponent("bus\(b)-ce\(c).pages").path
+                    #if os(Windows)
+                    // winOpen: the POSIX open spelling crashes Swift 6.2.4's Windows overlay at runtime.
+                    let fd = winOpen(p, read: true, write: true, create: true, truncate: true)
+                    #else
                     let fd = open(p, O_RDWR | O_CREAT | O_TRUNC, 0o644)
+                    #endif
                     guard fd >= 0, ftruncate(fd, off_t(geo.pagesPerCE * stride)) == 0 else {
                         throw FirmwareError(.internal, "\(p): \(String(cString: strerror(errno)))")
                     }
@@ -499,7 +504,12 @@ public enum K48NAND {
         let patch: [Int: [(Int, [UInt8])]]
         var buf: [UInt8]
         init(_ url: URL, page: Int, patch: [Int: [(Int, [UInt8])]] = [:]) throws {
+            #if os(Windows)
+            // winOpen: the POSIX open spelling crashes Swift 6.2.4's Windows overlay at runtime.
+            fd = winOpen(url.path, read: true)
+            #else
             fd = open(url.path, O_RDONLY)
+            #endif
             guard fd >= 0 else { throw FirmwareError(.internal, "\(url.path): \(String(cString: strerror(errno)))") }
             var st = stat()
             fstat(fd, &st)
@@ -513,6 +523,11 @@ public enum K48NAND {
 
         /// Page numbers inside the file's data extents (SEEK_DATA/SEEK_HOLE), in order, as FilePages.written().
         func written() -> [Int] {
+            #if os(Windows)
+            // No SEEK_DATA/SEEK_HOLE on Windows: every page reads (holes read as zeros), which is
+            // correct but slower than skipping holes.
+            return Array(0..<pages)
+            #else
             // SEEK_DATA/SEEK_HOLE are not in Swift's Glibc overlay; their Linux values (stdio.h).
             #if os(Linux)
                 let SEEK_DATA: Int32 = 3
@@ -528,6 +543,7 @@ public enum K48NAND {
                 off = end
             }
             return out
+            #endif
         }
 
         func get<R>(_ n: Int, _ body: (UnsafeRawBufferPointer) throws -> R) throws -> R {

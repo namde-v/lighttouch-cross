@@ -30,4 +30,23 @@
     ) -> Int32 {
         lsetxattr(path, name, value, size, 0)
     }
+#elseif os(Windows)
+    import Foundation
+
+    @testable import FirmwareKit
+
+    /// clonefile(2) is Darwin-only; the tests only need its copy semantics.
+    /// (LinuxShims.swift also serves Windows: same spelling, same contract.)
+    func clonefile(_ src: UnsafePointer<CChar>?, _ dst: UnsafePointer<CChar>?, _ flags: UInt32) -> Int32 {
+        guard let src, let dst else { return -1 }
+        let fm = FileManager.default
+        do {
+            let s = String(cString: src), d = String(cString: dst)
+            if fm.fileExists(atPath: d) { try fm.removeItem(atPath: d) }
+            try fm.copyItem(atPath: s, toPath: d)
+            return 0
+        } catch {
+            return -1
+        }
+    }
 #endif

@@ -6,6 +6,8 @@ import Testing
 
 /// DeviceServices.setTimeZone and its lockdown child (LockdownTools) against fake lockdown-tz scripts and a fake guest
 /// agent. Serialized: the deadline test shortens the process-wide Timeouts.query.
+// The fake tools are POSIX shell scripts; Windows CI has no shell in the subprocess launch path.
+#if !os(Windows)
 @Suite(.serialized) struct LockdownToolsTests {
     func script(_ url: URL, _ text: String) throws {
         try text.write(to: url, atomically: true, encoding: .utf8)
@@ -179,3 +181,5 @@ import Testing
         #expect(ContinuousClock.now - start < .seconds(1), "cancelled waitAlive spun until its deadline")
     }
 }
+
+#endif

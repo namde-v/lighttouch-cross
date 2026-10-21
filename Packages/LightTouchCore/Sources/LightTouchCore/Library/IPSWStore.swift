@@ -158,7 +158,11 @@ public nonisolated struct IPSWStore: Sendable {
         try JSONEncoder().encode(entry).write(to: entryFile)
         let unwrap = Process()
         unwrap.executableURL = preparer
+        #if os(Windows)
+        unwrap.arguments = FirmwareCommand.Unwrap.arguments(entry: entryFile, archive: file, out: download(sha1))
+        #else
         unwrap.arguments = FirmwareCommand.Unwrap(entry: entryFile, archive: file, out: download(sha1)).arguments
+        #endif
         unwrap.standardOutput = FileHandle.nullDevice
         unwrap.standardError = FileHandle.nullDevice
         try unwrap.run()
@@ -261,6 +265,10 @@ public nonisolated struct IPSWStore: Sendable {
         StorageLocations.excludeFromBackup(imports)
         let destination = imported(sha1)
         if !Self.sameVolume(url, imports), let stamp {
+            #if os(Windows)
+            // No xattrs on Windows, so the symlink+stamp import path can't
+            // record its stamp: fall through to the plain copy below.
+            #else
             try? FileManager.default.removeItem(at: destination)
             try FileManager.default.createSymbolicLink(at: destination, withDestinationURL: url.absoluteURL)
             let stamped = stamp.withCString { value in
@@ -273,6 +281,7 @@ public nonisolated struct IPSWStore: Sendable {
                 throw FirmwareError.failed(reason)
             }
             return (entry, destination)
+            #endif
         }
         let temporary = imports.appendingPathComponent(".\(sha1).importing")
         try? FileManager.default.removeItem(at: temporary)
@@ -335,6 +344,10 @@ private nonisolated func getXattrValue(
 ) -> Int {
     #if os(Linux)
     name.withCString { name in path.withCString { path in lgetxattr(path, name, value, size) } }
+    #elseif os(Windows)
+    // No xattrs on Windows (NTFS alternate data streams are out of scope):
+    // report failure so callers treat the stamp as absent.
+    return -1
     #else
     getxattr(path, name, value, size, 0, XATTR_NOFOLLOW)
     #endif
@@ -343,6 +356,9 @@ private nonisolated func getXattrValue(
 private nonisolated func setXattrValue(_ path: String, _ name: String, _ value: UnsafeRawPointer?, _ size: Int) -> Int32 {
     #if os(Linux)
     name.withCString { name in path.withCString { path in lsetxattr(path, name, value, size, 0) } }
+    #elseif os(Windows)
+    // No xattrs on Windows (see getXattrValue).
+    return -1
     #else
     setxattr(path, name, value, size, 0, XATTR_NOFOLLOW)
     #endif

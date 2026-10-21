@@ -54,6 +54,9 @@ struct DeviceLibraryWatchTests {
         }
     }
 
+    // The file watcher is a no-op on Windows (StateRootWatch never fires),
+    // so watch-driven tests can't run there.
+    #if !os(Windows)
     @Test func aFolderMovedToTheTrashOrRemovedLeavesTheLibraryAndOnePutBackReturns() async throws {
         _ = LibraryFixtures.isolatedAppState
         try await LibraryFixtures.withScratch { scratch in
@@ -86,7 +89,9 @@ struct DeviceLibraryWatchTests {
             #expect(library.instance(id: a.id) == a)
         }
     }
+    #endif
 
+    #if !os(Windows)
     @Test func devicesRemovedWholeEmptiesTheLibraryAndOneMadeAgainIsSeen() async throws {
         _ = LibraryFixtures.isolatedAppState
         try await LibraryFixtures.withScratch { scratch in
@@ -99,6 +104,7 @@ struct DeviceLibraryWatchTests {
             await eventually("C appears", within: Self.delivery) { ids(library) == [c.id] }
         }
     }
+    #endif
 
     /// The root, Devices/ and a device folder's own entries reload; a running device's pages and Preparing/ don't.
     @Test func onlyTheDeviceLevelsOfTheRootCount() throws {
@@ -115,7 +121,7 @@ struct DeviceLibraryWatchTests {
         }
         let dropped = FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs)
         #expect(watch.matters("/nonexistent", dropped))
-        #else
+        #elseif os(Linux)
         // inotify isn't recursive: the watch set is the root, Devices/ and each
         // device folder's own entries — the same levels `matters` admits.
         let fm = FileManager.default
@@ -132,6 +138,10 @@ struct DeviceLibraryWatchTests {
         }
         #expect(!watched.contains(deviceDir.appendingPathComponent("overlay").path))
         #expect(!watched.contains(root.appendingPathComponent("Preparing").path))
+        #else
+        // No file watching on Windows (StateRootWatch is a no-op): the
+        // watcher constructs and never fires.
+        _ = StateRootWatch(root: URL(fileURLWithPath: "C:\\nonexistent\\State")) {}
         #endif
     }
 

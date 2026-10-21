@@ -43,6 +43,8 @@ private struct Pixels {
 
 /// The flat pictures: every catalog board has its own (except the pairs Sam chose to share, 10-06), each the size of its
 /// profile's shellPixels; the iPad frame's cutout and Home circle; the iPods drawn as siblings.
+// The fixtures need ffmpeg, which Windows CI doesn't have.
+#if !os(Windows)
 struct BoardArtTests {
     static let assets = repository.appendingPathComponent("LightTouchMac/Assets.xcassets")
     /// The boards that show another's picture, and whose.
@@ -140,3 +142,4 @@ struct BoardArtTests {
         #expect(Board.n72.bootBudget == 240 * slowdown && Board.k48.bootBudget == 300 * slowdown)
     }
 }
+#endif

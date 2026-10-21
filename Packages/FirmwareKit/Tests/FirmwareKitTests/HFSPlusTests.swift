@@ -27,6 +27,8 @@ enum HFSOracle {
 
     /// A listing through two read-only mounts of IMG (-owners on for uid/gid where reachable, off for the
     /// rest), keyed by path relative to the volume root ("" for the root). Independent of the catalog reader.
+    /// macOS/Linux-only: needs hdiutil/loop mounts; no Windows equivalent.
+    #if !os(Windows)
     static func walk(_ img: URL) async throws -> [String: Walked] {
         var owners: [String: (Int, Int)] = [:]
         try await mounted(img, owners: "on") { rel, _, st in owners[rel] = (Int(st.st_uid), Int(st.st_gid)) }
@@ -82,6 +84,7 @@ enum HFSOracle {
         }
         _ = try await DiskImage.run(["/usr/bin/hdiutil", "detach", dev])
     }
+    #endif
 
     static func sha256(of path: String) throws -> String {
         let f = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
@@ -104,7 +107,8 @@ enum HFSOracle {
 
 @Suite(.serialized, .detachesItsImages) struct HFSPlusTests {
     /// Every catalog path, owner, mode, flags, size, content sha256 and symlink target against a listing of
-    /// the same image through hdiutil mounts.
+    /// the same image through hdiutil mounts. Unix-only: HFSOracle.walk needs hdiutil/loop mounts.
+    #if !os(Windows)
     @Test(
         .enabled(if: FixtureRequirements.corpusEnabled, "Firmware corpus test; set FK_TEST_CORPUS=1 to run"),
         arguments: HFSOracle.ipads
@@ -140,6 +144,7 @@ enum HFSOracle {
             #expect(diffs.isEmpty, "\(diffs.prefix(20))")
         }
     }
+    #endif
 
     /// In-place owner and mode edits land in the catalog records; an unknown path throws.
     @Test(

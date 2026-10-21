@@ -185,9 +185,26 @@ public nonisolated final class PreparationJob: @unchecked Sendable {
             FileManager.default.createFile(atPath: request.log.path, contents: nil)
             let arguments: [String]
             if let blob = request.blob {
+                #if os(Windows)
+                arguments = FirmwareCommand.UnpackBase.arguments(blob: blob, out: staging, seed: id.uuidString)
+                #else
                 arguments = FirmwareCommand.UnpackBase(blob: blob, out: staging, seed: id.uuidString).arguments
+                #endif
             } else {
                 if let sibling = request.sibling { try JSONEncoder().encode(sibling.entry).write(to: siblingFile) }
+                #if os(Windows)
+                arguments = FirmwareCommand.Create.arguments(
+                    entry: entryFile,
+                    ipsw: request.ipsw,
+                    out: staging,
+                    seed: id.uuidString,
+                    helper: request.helper,
+                    cache: request.cache,
+                    sibling: request.sibling.map { (siblingFile, $0.ipsw) },
+                    skipSetup: request.skipSetup,
+                    jailbreak: request.jailbreak
+                )
+                #else
                 arguments =
                     FirmwareCommand.Create(
                         entry: entryFile,
@@ -200,8 +217,9 @@ public nonisolated final class PreparationJob: @unchecked Sendable {
                         skipSetup: request.skipSetup,
                         jailbreak: request.jailbreak
                     ).arguments
+                #endif
             }
-            let log = try FileDescriptor.open(request.log.path, .writeOnly)
+            let log = try FileDescriptor.open(FilePath(request.log.path), .writeOnly)
             let task = Task.detached { [self] in await run(arguments, log: log) }
             lock.withLock { self.task = task }
             if lock.withLock({ cancelled }) { task.cancel() }
@@ -227,7 +245,13 @@ public nonisolated final class PreparationJob: @unchecked Sendable {
     /// The preparer, its JSON Lines read as they come, its stderr into the log.
     private func run(_ arguments: [String], log: FileDescriptor) async {
         var options = PlatformOptions()
+        #if os(Windows)
+        // No signals on Windows: gracefulShutDown sends WM_CLOSE/CTRL_C
+        // instead of SIGTERM (SIGKILL still follows if it doesn't exit).
+        options.teardownSequence = [.gracefulShutDown(allowedDurationToNextStep: .seconds(5))]
+        #else
         options.teardownSequence = [.send(signal: .terminate, allowedDurationToNextStep: .seconds(5))]
+        #endif
         let status: Int32
         do {
             let result = try await Subprocess.run(
@@ -245,8 +269,13 @@ public nonisolated final class PreparationJob: @unchecked Sendable {
             }
             status =
                 switch result.terminationStatus {
+                #if os(Windows)
+                // No signals on Windows, and the exit code is a DWORD (UInt32).
+                case .exited(let code): Int32(bitPattern: code)
+                #else
                 case .exited(let code): code
                 case .signaled(let signal): 128 + signal
+                #endif
                 }
         } catch {
             if lock.withLock({ cancelled }) { return finish(.cancelled) }
@@ -303,7 +332,11 @@ public nonisolated final class PreparationJob: @unchecked Sendable {
         if let preparer {
             let detach = Process()
             detach.executableURL = preparer
+            #if os(Windows)
+            detach.arguments = FirmwareCommand.DetachImages.arguments(root: preparing)
+            #else
             detach.arguments = FirmwareCommand.DetachImages(root: preparing).arguments
+            #endif
             detach.standardOutput = FileHandle.nullDevice
             if (try? detach.run()) != nil {
                 detach.waitUntilExit()

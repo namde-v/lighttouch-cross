@@ -17,7 +17,9 @@
 import Crypto
 import Foundation
 import HostRuntime
+#if !os(Windows)
 import CZlibFK
+#endif
 #if os(Linux)
 import Glibc
 #elseif os(Windows)
@@ -40,6 +42,10 @@ public enum PreparedBase {
 
     /// Every regular file under `base` (sorted; .DS_Store skipped) into `blob`.
     public static func pack(base: URL, to blob: URL) throws {
+        #if os(Windows)
+        // No zlib on Windows (CZlibFK is a no-op there); prepared-base blobs are unsupported.
+        throw FirmwareError(.unsupported, "pack: zlib is unavailable on Windows")
+        #else
         let fm = FileManager.default
         var names: [String] = []
         guard let walk = fm.enumerator(atPath: base.path) else {
@@ -101,6 +107,7 @@ public enum PreparedBase {
             while let data = try input.read(upToCount: chunk), !data.isEmpty { try deflate(data, finish: false) }
         }
         try deflate(Data(), finish: true)
+        #endif
     }
 
     /// The lock with the host paths `create` records (its IPSW, decrypt cache, guest tools, helper, guest package)
@@ -136,6 +143,10 @@ public enum PreparedBase {
     /// Nothing outside `directory` is written: a name that leaves it is refused before any file is made. Packed modes
     /// are set once each file is complete; nand/ and its directories end read-only, as create leaves them.
     public static func unpack(_ blob: URL, into directory: URL, progress: (Double) throws -> Void = { _ in }) throws {
+        #if os(Windows)
+        // No zlib on Windows (CZlibFK is a no-op there); prepared-base blobs are unsupported.
+        throw FirmwareError(.unsupported, "unpack: zlib is unavailable on Windows")
+        #else
         let fm = FileManager.default
         let input = try FileHandle(forReadingFrom: blob)
         defer { try? input.close() }
@@ -234,6 +245,7 @@ public enum PreparedBase {
         let nand = directory.appendingPathComponent("nand")
         if fm.fileExists(atPath: nand.path) { try Preparer.readOnly(nand) }
         try progress(1)
+        #endif
     }
 
     // MARK: - Identity
@@ -260,9 +272,16 @@ public enum PreparedBase {
         try id.write(to: identityURL)
         let nor = try N72NOR.reidentify(Data(contentsOf: norURL), identity: id)
         let mode = (try fm.attributesOfItem(atPath: norURL.path)[.posixPermissions] as? Int) ?? 0o444
+        #if os(Windows)
+        // UCRT _chmod takes Int32 and honors the write bit only.
+        chmod(norURL.path, Int32(0o644))
+        try nor.write(to: norURL)
+        chmod(norURL.path, Int32(mode_t(mode)))
+        #else
         chmod(norURL.path, 0o644)
         try nor.write(to: norURL)
         chmod(norURL.path, mode_t(mode))
+        #endif
         lock["identity"] = ["seed": seed, "udid": id.udid ?? "", "sha256": try Preparer.digest(identityURL, SHA256())]
         var machine = lock["machine"] as? [String: Any] ?? [:]
         machine["wifi-mac"] = id["wifi-mac"]

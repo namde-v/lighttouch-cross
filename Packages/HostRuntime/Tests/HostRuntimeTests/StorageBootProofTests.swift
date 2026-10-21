@@ -4,7 +4,7 @@ import Testing
 
 struct StorageBootProofTests {
     @Test func helperLeaseRechecksGenerationWithoutRejectingGuestMetadata() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(Foundation.UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let record = root.appendingPathComponent(DeviceRecord.name)

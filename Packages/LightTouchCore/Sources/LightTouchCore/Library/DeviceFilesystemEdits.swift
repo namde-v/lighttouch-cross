@@ -37,7 +37,10 @@ public final class DeviceFilesystemEdits {
         open: @escaping (URL) -> Void,
         presentError: @escaping (any Error) -> Void,
         isMounted: @escaping (URL) -> Bool = DeviceFilesystemEdits.isMountPoint,
-        isWriting: @escaping (URL) async -> Bool = DeviceFilesystemEdits.isBeingWritten,
+        // Note: a direct `= DeviceFilesystemEdits.isBeingWritten` default crashes
+        // swift-frontend 6.2.4 on Windows (DefaultInitializerIsolation); the
+        // closure form type-checks fine.
+        isWriting: @escaping (URL) async -> Bool = { await DeviceFilesystemEdits.isBeingWritten($0) },
         poll: Duration = .seconds(1)
     ) {
         self.preparer = preparer
@@ -55,18 +58,18 @@ public final class DeviceFilesystemEdits {
     public static let didChangeNotification = Notification.Name("DeviceFilesystemEditsDidChange")
     /// What each device's filesystem operation is doing now ("Preparing to mount the file system…"), for the device area; a
     /// device with an entry here can't start or open another.
-    public private(set) var activity: [UUID: String] = [:] {
+    public private(set) var activity: [Foundation.UUID: String] = [:] {
         didSet { NotificationCenter.default.post(name: Self.didChangeNotification, object: self) }
     }
-    private var busy: Set<UUID> { Set(activity.keys) }
+    private var busy: Set<Foundation.UUID> { Set(activity.keys) }
     /// A 1.x device whose storage wasn't shut down cleanly can't be opened; this offers to shut it down first.
     public var onUncleanShutdown: ((FirmwareCatalog.Entry) -> Void)?
     public struct Intent: Decodable {
-        public let id: UUID
+        public let id: Foundation.UUID
         public let phase: String
     }
     public struct Mounted: Decodable {
-        let id: UUID
+        let id: Foundation.UUID
         let mountPoint: String?
     }
     private func paths(_ instance: DeviceInstance) -> DeviceInstance.Paths { instance.paths(state: state, logs: logs) }
@@ -149,6 +152,17 @@ public final class DeviceFilesystemEdits {
                 }
                 if action == .commitFilesystem { try await waitForCopies(instance) }
                 if action == .jailbreak {
+                    #if os(Windows)
+                    _ = try await FirmwareTool.run(
+                        FirmwareCommand.Edit.arguments(
+                            device: paths(instance).directory,
+                            action: .jailbreak,
+                            recordPolicy: .managed,
+                            cache: cache
+                        ),
+                        executable: executable
+                    )
+                    #else
                     _ = try await FirmwareTool.run(
                         FirmwareCommand.Edit(
                             device: paths(instance).directory,
@@ -158,14 +172,22 @@ public final class DeviceFilesystemEdits {
                         ),
                         executable: executable
                     )
+                    #endif
                     return
                 }
                 var intent = pending(instance)
                 if action == .openFilesystem, intent == nil {
+                    #if os(Windows)
+                    let result = try await FirmwareTool.run(
+                        FirmwareCommand.Edit.arguments(device: paths(instance).directory, action: .begin, recordPolicy: .managed),
+                        executable: executable
+                    )
+                    #else
                     let result = try await FirmwareTool.run(
                         FirmwareCommand.Edit(device: paths(instance).directory, action: .begin, recordPolicy: .managed),
                         executable: executable
                     )
+                    #endif
                     let created = try JSONDecoder().decode(Mounted.self, from: result)
                     intent = Intent(id: created.id, phase: "editing")
                 }
@@ -180,6 +202,18 @@ public final class DeviceFilesystemEdits {
                     }
                 if action == .openFilesystem { activity[instance.id] = "Opening in Finder…" }
                 let mountPoint = mountPoint(instance)
+                #if os(Windows)
+                _ = try await FirmwareTool.run(
+                    FirmwareCommand.Edit.arguments(
+                        device: paths(instance).directory,
+                        action: operation,
+                        session: intent.id,
+                        recordPolicy: .managed,
+                        mountPoint: action == .openFilesystem ? mountPoint : nil
+                    ),
+                    executable: executable
+                )
+                #else
                 _ = try await FirmwareTool.run(
                     FirmwareCommand.Edit(
                         device: paths(instance).directory,
@@ -190,6 +224,7 @@ public final class DeviceFilesystemEdits {
                     ),
                     executable: executable
                 )
+                #endif
                 if action == .openFilesystem {
                     open(mountPoint)
                     watch(instance, library: library)
@@ -215,6 +250,17 @@ public final class DeviceFilesystemEdits {
         defer { activity[instance.id] = nil }
         if commit { try await waitForCopies(instance) }
         activity[instance.id] = commit ? "Saving the file system…" : "Discarding changes…"
+        #if os(Windows)
+        _ = try await FirmwareTool.run(
+            FirmwareCommand.Edit.arguments(
+                device: paths(instance).directory,
+                action: commit ? .commit : .discard,
+                session: intent.id,
+                recordPolicy: .managed
+            ),
+            executable: executable
+        )
+        #else
         _ = try await FirmwareTool.run(
             FirmwareCommand.Edit(
                 device: paths(instance).directory,
@@ -224,6 +270,7 @@ public final class DeviceFilesystemEdits {
             ),
             executable: executable
         )
+        #endif
         removeMountFolder(instance)
         library.reload()
     }
@@ -249,7 +296,7 @@ public final class DeviceFilesystemEdits {
             }
         }
     }
-    private var watching: Set<UUID> = []
+    private var watching: Set<Foundation.UUID> = []
 
     /// Before a save of a mounted edit: until nothing is writing into the volume (a Finder copy in progress).
     private func waitForCopies(_ instance: DeviceInstance) async throws {
@@ -299,6 +346,11 @@ public final class DeviceFilesystemEdits {
             let fields = line.split(separator: " ")
             return fields.count > 1 && unescape(fields[1]) == target
         }
+        #elseif os(Windows)
+        // No statfs(2) or realpath(3) on Windows, and edit-volume mounting
+        // isn't implemented there (no Dokan/WinFsp mount path in firmwarekit):
+        // nothing can be mounted on the folder.
+        return false
         #else
         var fs = statfs()
         guard statfs(url.path, &fs) == 0, let real = realpath(url.path, nil) else { return false }
@@ -315,6 +367,10 @@ public final class DeviceFilesystemEdits {
             // Swift's Glibc doesn't import statfs; statvfs carries the same counters.
             var fs = statvfs()
             return statvfs(url.path, &fs) == 0 ? [UInt64(fs.f_bfree), UInt64(fs.f_ffree)] : []
+            #elseif os(Windows)
+            // No statfs(2) on Windows, and edit volumes aren't mounted there
+            // (see isMountPoint): nothing to watch, so report no counters.
+            return []
             #else
             var fs = statfs()
             return statfs(url.path, &fs) == 0 ? [fs.f_bfree, fs.f_ffree] : []
@@ -355,6 +411,11 @@ extension DeviceFilesystemEdits {
                 if flags & UInt32(O_ACCMODE) != UInt32(O_RDONLY) { return true }
             }
         }
+        return false
+        #elseif os(Windows)
+        // libproc is Darwin-only and /proc is Linux-only; enumerating open
+        // handles on Windows (NtQuerySystemInformation) is out of scope while
+        // edit volumes aren't mounted there (see isMountPoint).
         return false
         #else
         guard let real = realpath(url.path, nil) else { return false }

@@ -74,8 +74,11 @@ struct GuestPackageOfferTests {
         }
         guard status == 0 /* Z_OK */, bound > 6 else { throw CocoaError(.fileWriteUnknown) }
         return Data(out.prefix(Int(bound)).dropFirst(2).dropLast(4))
-        #else
+        #elseif !os(Windows)
         return try (data as NSData).compressed(using: .zlib) as Data
+        #else
+        // No zlib on Windows; itpack is only built by the gated compose test below.
+        throw CocoaError(.fileWriteUnknown)
         #endif
     }
 
@@ -128,7 +131,9 @@ struct GuestPackageOfferTests {
 
         """
 
-    @Test func composeStatusVerdictsAndRecords() throws {
+    // GuestPack reading (inflate) is unsupported on Windows; the compose path can't run there.
+    #if !os(Windows)
+        @Test func composeStatusVerdictsAndRecords() throws {
         try withTemporaryDirectory { t in
             let entries =
                 Self.package("n72-ios2", builds: ["5F138"], serial: 3, stub: true)
@@ -300,6 +305,7 @@ struct GuestPackageOfferTests {
             #expect(lockRecord(t.appendingPathComponent("missing.json")) == nil)
         }
     }
+    #endif
 
     @Test func statusTexts() {
         let o = GuestPackage.Offer(bundled: 7, version: "1.7.0", serial: 7, glHook: true)

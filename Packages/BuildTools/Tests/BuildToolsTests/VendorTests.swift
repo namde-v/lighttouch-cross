@@ -3,6 +3,11 @@ import Testing
 
 @testable import BuildTools
 
+// Serialized on Windows: the parallel runner crashes the test process
+// (Swift 6.2.4 swift-testing issue); serial execution is safe.
+#if os(Windows)
+@Suite(.serialized)
+#endif
 struct VendorTests {
     func scratch() throws -> URL {
         let dir = files.temporaryDirectory.appendingPathComponent("vendor-tests-\(UUID().uuidString)")

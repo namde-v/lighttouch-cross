@@ -41,7 +41,7 @@ public nonisolated final class FirmwareDownloads: NSObject, URLSessionDownloadDe
     /// FoundationNetworking has no background sessions, so on Linux downloads
     /// run in-process and don't survive a relaunch (see SHIM_NOTES.md).
     public static let defaultSessionConfiguration: URLSessionConfiguration = {
-        #if os(Linux)
+        #if os(Linux) || os(Windows)
         return .default
         #else
         return .background(withIdentifier: identifier)
@@ -275,7 +275,9 @@ public nonisolated final class FirmwareDownloads: NSObject, URLSessionDownloadDe
         if nsError.domain == NSURLErrorDomain, Self.unreachable.contains(nsError.code), next(after: task, sha1: sha1) {
             return
         }
-        if let data = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data { saveResumeData(data, sha1: sha1) }
+        // NSURLSessionDownloadTaskResumeData isn't in scope on Windows; the
+        // constant's value is its own name, so the literal works everywhere.
+        if let data = nsError.userInfo["NSURLSessionDownloadTaskResumeData"] as? Data { saveResumeData(data, sha1: sha1) }
         onEvent(sha1, .failed(.failed("The download stopped: \(error.localizedDescription)")))
     }
 }

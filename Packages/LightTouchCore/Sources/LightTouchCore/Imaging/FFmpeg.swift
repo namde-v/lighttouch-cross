@@ -70,7 +70,9 @@ public enum FFmpeg {
                 output: .bytes(limit: stdoutLimit),
                 error: .string(limit: 8192)
             ) { execution in
+                #if !os(Windows)
                 let pid = execution.processIdentifier.value
+                #endif
                 let finished = Mutex(false)
                 do {
                     try await withTaskCancellationHandler {
@@ -80,7 +82,9 @@ public enum FFmpeg {
                         try await execution.standardInputWriter.finish()
                         finished.withLock { $0 = true }
                     } onCancel: {
+                        #if !os(Windows)
                         if !finished.withLock({ $0 }) { kill(pid, SIGKILL) }
+                        #endif
                     }
                 } catch {
                     finished.withLock { $0 = true }
@@ -94,8 +98,10 @@ public enum FFmpeg {
             case .exited(0): return (Data(result.standardOutput), result.standardError)
             case .exited(let code):
                 throw FFmpegError.failed("ffmpeg exited with status \(code): \(result.standardError)")
+            #if !os(Windows)
             case .signaled(let code):
                 throw FFmpegError.failed("ffmpeg died from signal \(code): \(result.standardError)")
+            #endif
             }
         } catch {
             if Task.isCancelled { throw CancellationError() }

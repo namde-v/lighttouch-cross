@@ -179,8 +179,17 @@ public enum GuestPackage {
                 missing.insert(parent, at: 0)
                 parent = (parent as NSString).deletingLastPathComponent
             }
-            for d in missing where mkdir(at(d).path, 0o777) != 0 {
-                throw FirmwareError(.internal, "mkdir \(d): \(String(cString: strerror(errno)))")
+            for d in missing {
+                #if os(Windows)
+                // UCRT _mkdir takes only the path; permissions are ACLs.
+                guard _mkdir(at(d).path) == 0 else {
+                    throw FirmwareError(.internal, "mkdir \(d): \(String(cString: strerror(errno)))")
+                }
+                #else
+                guard mkdir(at(d).path, 0o777) == 0 else {
+                    throw FirmwareError(.internal, "mkdir \(d): \(String(cString: strerror(errno)))")
+                }
+                #endif
             }
             try SystemEdits.put(data, at(rel), mode: mode)  // in place: an existing file keeps its catalog record
             written += missing + [rel]

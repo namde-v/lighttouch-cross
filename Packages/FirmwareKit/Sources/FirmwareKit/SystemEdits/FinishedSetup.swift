@@ -78,9 +78,9 @@ extension SystemEdits {
         ] + extra
     }
 
-    #if os(Linux)
-        /// corelibs-foundation's `Bundle.preferredLocalizations(from:forPreferences:)` always returns
-        /// `["en"]`. This is Apple's matching, via BCP 47 likely-subtags maximization: each tag becomes
+    #if os(Linux) || os(Windows)
+        /// corelibs-foundation (Linux) and swift-foundation (Windows): `Bundle.preferredLocalizations(from:forPreferences:)`
+        /// always returns `["en"]`. This is Apple's matching, via BCP 47 likely-subtags maximization: each tag becomes
         /// (language, script, region); an exact maximized match wins, else the same language+script (most
         /// specific tag), else the same language. So "en-US" maximizes to en_Latn_US like "en", while "en-AU"
         /// (en_Latn_AU) falls back to "en-GB"; "zh-HK" maximizes with Hant and finds "zh-Hant"; "no" maps to nb.
@@ -153,7 +153,7 @@ extension SystemEdits {
         preferred: [String],
         region: String?
     ) -> (language: String, locale: String) {
-        #if os(Linux)
+        #if os(Linux) || os(Windows)
             let language = preferredLocalizations(from: supported, forPreferences: preferred).first ?? "en"
         #else
             let language = Bundle.preferredLocalizations(from: supported, forPreferences: preferred).first ?? "en"

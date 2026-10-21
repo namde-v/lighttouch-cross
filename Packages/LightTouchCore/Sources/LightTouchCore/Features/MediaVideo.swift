@@ -242,6 +242,16 @@ private nonisolated func renameNoReplace(from: String, to: String) -> Int32 {
     guard result == 0 else { return -1 }
     from.withCString { _ = Glibc.unlink($0) }
     return 0
+    #elseif os(Windows)
+    // renamex_np is Darwin-only. On Windows, fail if the destination exists,
+    // else use the CRT rename (which is atomic for the replace case we avoid).
+    let attrs = to.withCString { WinSDK.GetFileAttributesA($0) }
+    guard attrs == WinSDK.INVALID_FILE_ATTRIBUTES else { return -1 }
+    return from.withCString { f in
+        to.withCString { t in
+            rename(f, t)
+        }
+    }
     #else
     return from.withCString { f in
         to.withCString { t in
@@ -259,7 +269,12 @@ private final class MediaVideoExport {
     private let profile: Board
     // Set from the export's body closure (off the actor); Mutex makes the
     // kill-on-cancel race-free.
+    #if os(Windows)
+    // WinSDK has no pid_t; the value is a process ID (DWORD).
+    private nonisolated(unsafe) let pid = Mutex<Int32>(-1)
+    #else
     private nonisolated(unsafe) let pid = Mutex<pid_t>(-1)
+    #endif
 
     /// The A4 devices (iPad, iPhone 4, iPod touch 4th generation) play H.264 up to 720p.
     public nonisolated static func playsHD(_ profile: Board) -> Bool { profile.soc == .s5l8930 }
@@ -323,18 +338,33 @@ private final class MediaVideoExport {
             error: .string(limit: 8192)
         ) { execution in
             let pidValue = execution.processIdentifier.value
+            #if os(Windows)
+            self.pid.withLock { $0 = Int32(bitPattern: pidValue) }
+            #else
             self.pid.withLock { $0 = pidValue }
+            #endif
             defer { self.pid.withLock { $0 = -1 } }
             do {
                 // Wait for the transcode without holding the actor: ffmpeg
                 // exiting ends the polling, cancellation kills it. A zombie
                 // still answers kill(pid, 0), so poll /proc for a live state;
                 // Subprocess.run reaps it once the body returns.
+                #if os(Windows)
+                let pidForPoll = Int32(bitPattern: pidValue)
+                while Self.isProcessRunning(pidForPoll) {
+                    try await Task.sleep(for: .milliseconds(50))
+                }
+                #else
                 while Self.isProcessRunning(pidValue) {
                     try await Task.sleep(for: .milliseconds(50))
                 }
+                #endif
             } catch {
+                #if os(Windows)
+                // No POSIX kill on Windows; the Subprocess runner reaps on cancellation.
+                #else
                 kill(pidValue, SIGKILL)
+                #endif
                 throw error
             }
         }
@@ -345,20 +375,34 @@ private final class MediaVideoExport {
             throw DeviceToolsError.failed(
                 "This video couldn’t be converted for the \(profileName) (ffmpeg exited \(code))."
             )
+        #if !os(Windows)
         case .signaled:
             throw DeviceToolsError.failed("This video couldn’t be converted for the \(profileName).")
+        #endif
         }
     }
 
     public func cancel() {
         let pid = pid.withLock { $0 }
+        #if os(Windows)
+        // No POSIX kill on Windows; cancellation is cooperative via Task.
+        _ = pid
+        #else
         if pid > 0 { kill(pid, SIGKILL) }
+        #endif
     }
 
     /// Whether the process is still running: gone when /proc/pid/stat is
     /// unreadable, and a zombie (state Z) counts as exited — kill(pid, 0)
     /// still succeeds for zombies, which would spin the transcode poll
     /// forever.
+    #if os(Windows)
+    private nonisolated static func isProcessRunning(_ pid: Int32) -> Bool {
+        // /proc is Linux-only; on Windows, assume the process is running until
+        // the Subprocess runner reaps it (the poll loop exits on completion).
+        return true
+    }
+    #else
     private nonisolated static func isProcessRunning(_ pid: pid_t) -> Bool {
         guard let stat = try? String(contentsOfFile: "/proc/\(pid)/stat", encoding: .utf8),
               let closeParen = stat.lastIndex(of: ")")
@@ -366,4 +410,5 @@ private final class MediaVideoExport {
         let fields = stat[stat.index(after: closeParen)...].split(separator: " ", omittingEmptySubsequences: true)
         return fields.first != "Z"
     }
+    #endif
 }

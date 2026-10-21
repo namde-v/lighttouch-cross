@@ -1,5 +1,7 @@
 import Foundation
+#if !os(Windows)
 import RCZlib
+#endif
 import Testing
 
 @testable import ReleaseChecks
@@ -213,6 +215,9 @@ struct BundleHygieneTests {
     }
 
 #else
+    // The inflate checks need zlib, which is unavailable on Windows
+    // (BundleHygiene.inflate is a stub there): Linux-only.
+#if !os(Windows)
     /// The platform-free checks, exercised on Linux: inflate, the packed-device format, Package.resolved
     /// parsing, Mach-O magic detection and SHA-256 (via swift-crypto's Crypto here, CryptoKit on macOS).
     @Test func inflateRoundTripsADeflatedStream() throws {
@@ -241,7 +246,9 @@ struct BundleHygieneTests {
             #expect(!ok)
         }
     }
+#endif
 
+#if !os(Windows)
     func itbase(_ files: [(String, Data)]) throws -> Data {
         let index = try JSONSerialization.data(withJSONObject: [
             "entries": files.map { ["name": $0.0, "size": $0.1.count, "mode": 0o444] }
@@ -256,6 +263,7 @@ struct BundleHygieneTests {
         try itbase(files).write(to: url)
         return url
     }
+#endif
 
     func identityFiles(seed: String, extra: Data = Data()) throws -> [(String, Data)] {
         [
@@ -265,6 +273,7 @@ struct BundleHygieneTests {
         ]
     }
 
+    #if !os(Windows)
     @Test func packedDeviceWithThePlaceholderSeedPasses() throws {
         try withScratch { root in
             let url = try packedURL(identityFiles(seed: BundleHygiene.placeholderSeed), in: root)
@@ -311,6 +320,7 @@ struct BundleHygieneTests {
             #expect(found.contains { $0.contains("unreadable body") }, "\(found)")
         }
     }
+    #endif
 
     @Test func isMachODetectsMagic() throws {
         try withScratch { root in
@@ -356,6 +366,7 @@ struct BundleHygieneTests {
 #endif
 }
 
+#if !os(Windows)
 /// zlib's one-shot compressor (the tests' deflate helper).
 func deflate(_ data: Data) -> Data {
     var size = compressBound(uLong(data.count))
@@ -365,4 +376,5 @@ func deflate(_ data: Data) -> Data {
     }
     return Data(out.prefix(Int(size)))
 }
+#endif
 

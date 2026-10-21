@@ -8,7 +8,9 @@
 //   try N72NOR.type(of: img3)          // "illb", "ibot", ...
 
 import Foundation
+#if !os(Windows)
 import CZlibFK
+#endif
 
 public enum N72NOR {
     static let size = 0x100000, sysCfg = 0x4000, nvram = 0xFC000, nvramBank = 0x2000, img3Header = 0x14

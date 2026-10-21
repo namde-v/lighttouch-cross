@@ -1,8 +1,12 @@
 import Foundation
+#if canImport(MachOKit)
 import MachOKit
+#endif
 import Testing
 
 @testable import FirmwareKit
+
+#if canImport(MachOKit)
 
 /// What MachOKit 0.53 reads of a dyld_v1 cache (iOS 3/4) the way SharedCache.swift does, and what it does not: the
 /// header's mappings and images and an image's LC_SYMTAB agree; an image's section contents do not (MachOKit
@@ -43,3 +47,5 @@ struct MachOKitProbeTests {
         )
     }
 }
+
+#endif

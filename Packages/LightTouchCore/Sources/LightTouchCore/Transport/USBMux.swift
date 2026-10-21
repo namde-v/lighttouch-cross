@@ -18,6 +18,9 @@ import System
 #else
 import SystemPackage
 #endif
+#if os(Windows)
+import WinSDK
+#endif
 
 /// Observable: `session` is whether app management has a daemon (the controller's canManageApps).
 @MainActor @Observable public final class USBMux {
@@ -45,7 +48,12 @@ import SystemPackage
 
     public private(set) var session: Session?
     private var daemonTask: Task<Void, Never>?
+    #if os(Windows)
+    // swift-subprocess's ProcessIdentifier.value is a DWORD on Windows.
+    private var daemonPID: DWORD?
+    #else
     private var daemonPID: pid_t?
+    #endif
 
     /// Called on the main actor if the daemon exits without us stopping it —
     /// the health signal that flips `canManageApps` off and tells the UI USB
@@ -263,6 +271,19 @@ import SystemPackage
 
     /// Whether the daemon still runs. Not kill(pid, 0): a daemon that exited stays a zombie until run() returns and
     /// reaps it, and that succeeds on a zombie, so a death was never noticed.
+    #if os(Windows)
+    private nonisolated static func isRunning(_ pid: DWORD) -> Bool {
+        // No kill(2) or /proc on Windows: the process is alive when it opens
+        // and its exit code is still STILL_ACTIVE.
+        guard let process = OpenProcess(DWORD(PROCESS_QUERY_LIMITED_INFORMATION), false, pid),
+            process != INVALID_HANDLE_VALUE
+        else { return false }
+        defer { CloseHandle(process) }
+        var code: DWORD = 0
+        guard GetExitCodeProcess(process, &code) else { return false }
+        return code == DWORD(STILL_ACTIVE)
+    }
+    #else
     private nonisolated static func isRunning(_ pid: pid_t) -> Bool {
         #if os(Linux)
         // libproc is Darwin-only: /proc/<pid>/stat's state field; a zombie
@@ -279,6 +300,7 @@ import SystemPackage
         return info.pbi_status != 5  // SZOMB
         #endif
     }
+    #endif
 
     private func reapStaleDaemon(_ pidFile: String?) {
         if let pidFile { Self.reapOrphan(pidFile: pidFile) }
@@ -286,6 +308,45 @@ import SystemPackage
 
     /// Launch, with the library's lock held: every device's daemon left by a run that never stopped it. A daemon
     /// whose parent is alive belongs to a running app and is left alone.
+    #if os(Windows)
+    @discardableResult
+    public nonisolated static func reapOrphans(_ devices: [DeviceInstance], state: URL, logs: URL) -> [DWORD] {
+        devices.compactMap { reapOrphan(pidFile: $0.paths(state: state, logs: logs).usbmuxPID.path) }
+    }
+
+    /// The daemon a pid file names, killed if it is an orphan of a previous run (an app that crashed, or was
+    /// SIGKILLed, never ran stop()). Launch runs it over every device's pid file, so a device that isn't started
+    /// again doesn't keep its daemon forever. The pid that was signalled, if any.
+    @discardableResult
+    public nonisolated static func reapOrphan(pidFile: String) -> DWORD? {
+        guard let text = try? String(contentsOfFile: pidFile, encoding: .utf8),
+            let pid = DWORD(text.trimmingCharacters(in: .whitespacesAndNewlines)),
+            pid > 0, isRunning(pid)
+        else { return nil }
+        // Only an orphan: a daemon whose parent is gone (Windows doesn't
+        // reparent to pid 1). A daemon with a live parent belongs to another
+        // running Light Touch, never to this launch; the executable path is
+        // checked so a recycled pid is never someone else's process. Windows
+        // has no POSIX uids, so the uid check is Unix-only.
+        guard let identity = StorageLocations.daemonIdentity(pid),
+            !isRunning(identity.parent),
+            identity.path.hasSuffix("usbmuxd") || identity.path.hasSuffix("usbmuxd.exe")
+        else { return nil }
+        logEvent("usbmux: killing stale usbmuxd \(pid) from a previous run")
+        terminateProcess(pid)
+        try? FileManager.default.removeItem(atPath: pidFile)
+        return pid
+    }
+
+    /// SIGTERM's Windows counterpart for our own daemon child.
+    private nonisolated static func terminateProcess(_ pid: DWORD) {
+        guard let process = OpenProcess(DWORD(PROCESS_TERMINATE), false, pid),
+            process != INVALID_HANDLE_VALUE
+        else { return }
+        defer { CloseHandle(process) }
+        TerminateProcess(process, 1)
+    }
+    #else
     @discardableResult
     public nonisolated static func reapOrphans(_ devices: [DeviceInstance], state: URL, logs: URL) -> [pid_t] {
         devices.compactMap { reapOrphan(pidFile: $0.paths(state: state, logs: logs).usbmuxPID.path) }
@@ -310,11 +371,16 @@ import SystemPackage
         try? FileManager.default.removeItem(atPath: pidFile)
         return pid
     }
+    #endif
 
     public func stop() {
         // Kill synchronously: app termination won't wait for the async teardown
         // the task cancellation would otherwise run. Only ever our own child.
+        #if os(Windows)
+        if let pid = daemonPID { Self.terminateProcess(pid) }
+        #else
         if let pid = daemonPID { kill(pid, SIGTERM) }
+        #endif
         if let pidFile { try? FileManager.default.removeItem(atPath: pidFile) }
         session?.paths.forEach { unlink($0) }
         daemonPID = nil

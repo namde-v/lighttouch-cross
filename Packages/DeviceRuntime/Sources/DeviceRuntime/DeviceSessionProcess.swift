@@ -1,5 +1,6 @@
 import Foundation
 import HostRuntime
+import LTMShm  // pid_t (its header typedefs it on Windows, which has none)
 
 /// A helper's lifecycle outcome. Labels and display geometry belong to clients.
 public enum DeviceProcessDeath: Equatable {

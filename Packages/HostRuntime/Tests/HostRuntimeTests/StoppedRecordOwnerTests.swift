@@ -4,8 +4,8 @@ import Testing
 
 struct StoppedRecordOwnerTests {
     private func fixture(_ body: (URL, URL, UUID) throws -> Void) throws {
-        let state = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let id = UUID()
+        let state = FileManager.default.temporaryDirectory.appendingPathComponent(Foundation.UUID().uuidString)
+        let id = Foundation.UUID()
         let device = state.appendingPathComponent("Devices/\(id.uuidString)")
         try FileManager.default.createDirectory(at: device, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: state) }
@@ -69,7 +69,7 @@ struct StoppedRecordOwnerTests {
                 #expect(owner.paths?.absoluteStyle == true)
                 withExtendedLifetime(owner) {}
             }
-            try bytes(UUID(), base: "external", overlay: "Devices/\(id.uuidString)/overlay").write(to: record)
+            try bytes(Foundation.UUID(), base: "external", overlay: "Devices/\(id.uuidString)/overlay").write(to: record)
             #expect(throws: StorageRecordPaths.Failure.self) {
                 _ = try StoppedRecordOwner(device: device, policy: .managed(state: state, id: id))
             }

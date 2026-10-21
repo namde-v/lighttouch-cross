@@ -8,7 +8,12 @@ import Testing
 struct TestIsolationTests {
     @Test func appStateLogsAndCachesAreOutsideTheRealHome() {
         let home = String(cString: ltm_test_home())
+        #if os(Windows)
+        // No getpwuid(3)/getuid(2) on Windows.
+        let real = NSHomeDirectory()
+        #else
         let real = getpwuid(getuid()).map { String(cString: $0.pointee.pw_dir) } ?? "/Users"
+        #endif
         #expect(!home.isEmpty && !home.hasPrefix(real + "/Library"))
         for url in [
             Bundled.stateDirectory, Bundled.logsDirectory,
@@ -21,8 +26,14 @@ struct TestIsolationTests {
 }
 
 /// The real app.log (~/Library/Logs/gold.samhenri.LightTouchMac, the user's own home): what a test run must never write.
+#if os(Windows)
+// No getpwuid(3)/getuid(2) on Windows.
+let realAppLog = URL(fileURLWithPath: NSHomeDirectory())
+    .appendingPathComponent("Library/Logs/\(StorageLocations.bundleIdentifier)/app.log")
+#else
 let realAppLog = URL(fileURLWithPath: getpwuid(getuid()).map { String(cString: $0.pointee.pw_dir) } ?? "/Users")
     .appendingPathComponent("Library/Logs/\(StorageLocations.bundleIdentifier)/app.log")
+#endif
 
 struct AppLogIsolationTests {
     /// logEvent (IPALibrary's notes, the session's notices) lands in the test's own Logs, never the real app.log.

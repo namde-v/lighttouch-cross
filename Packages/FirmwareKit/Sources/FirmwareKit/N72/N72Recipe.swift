@@ -240,6 +240,8 @@ final class N72Board: Board {
 
     /// 4.x data protection: effaceable + system keybag from the IPSW's own Update ramdisk (a restore-only build such
     /// as 8A293 ships just the Restore one; restored_external runs first on either).
+    /// Windows: the keybag one-shot needs the QEMU helper (unavailable); the protocol's default no-op applies.
+    #if !os(Windows)
     nonisolated(nonsending) func keybag(_ c: Recipe.Context) async throws {
         let (source, name) = try await Recipe.keybagRamdisk(c)
         _ = try await N72Keybag.run(
@@ -254,6 +256,7 @@ final class N72Board: Board {
         )
         derived["keybag_ramdisk"] = name
     }
+    #endif
 
     func lock(_ c: Recipe.Context) throws -> [String: Any] {
         let ident = try self.ident.filled("the identity")

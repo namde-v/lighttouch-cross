@@ -9,6 +9,14 @@ import Foundation
 import HostRuntime
 import LTMShm
 
+#if os(Windows)
+// UCRT's signal.h has no SIGKILL (a Windows process can't be killed by
+// signal); the value is documentation only: ltmKill is a Windows stub that
+// fatalErrors (see PlatformLibc.swift), and start() below is stubbed too,
+// so these kill paths are unreachable on Windows.
+private let SIGKILL: Int32 = 9
+#endif
+
 // The app's handle on one running LightTouchDevice helper.
 //
 // (Linux redesign; macOS used a bootstrap rendezvous + IOSurface Mach ports.)
@@ -67,7 +75,7 @@ nonisolated public final class DeviceLink: @unchecked Sendable {
             return executable.deletingLastPathComponent().appendingPathComponent("LightTouchDevice")
         }()
         public var helper: URL = bundledHelper
-        public var instance: UUID
+        public var instance: Foundation.UUID
         /// The helper's stdout + stderr, e.g. ProcessLogCapture.writeDescriptor
         /// for Devices/<uuid>/native.log. -1: /dev/null.
         public var outputDescriptor: Int32 = -1
@@ -83,7 +91,7 @@ nonisolated public final class DeviceLink: @unchecked Sendable {
         /// The device's lease (HelperLaunch.lease).
         public var lease: URL?
 
-        public init(instance: UUID, outputDescriptor: Int32 = -1) {
+        public init(instance: Foundation.UUID, outputDescriptor: Int32 = -1) {
             self.instance = instance
             self.outputDescriptor = outputDescriptor
         }
@@ -217,6 +225,9 @@ nonisolated public final class DeviceLink: @unchecked Sendable {
     /// One thread per link, blocked in waitpid until the helper is gone (no
     /// kqueue/EVFILT_PROC on Linux; a blocking waitpid has no exit race).
     private func watchForExit(_ pid: pid_t) {
+        #if os(Windows)
+        fatalError("DeviceLink: the Windows transport is not implemented yet (see TRANSPORT_REDESIGN.md)")
+        #else
         DispatchQueue.global(qos: .utility).async { [weak self] in
             var status: Int32 = 0
             var waited: pid_t = 0
@@ -228,6 +239,7 @@ nonisolated public final class DeviceLink: @unchecked Sendable {
             let code = status
             self.queue.async { self.reaped(waitResult: result, status: code) }
         }
+        #endif
     }
 
     private func helloArrived(_ hello: DeviceRendezvous.Hello, socket: Int32) {
@@ -307,7 +319,7 @@ nonisolated public final class DeviceLink: @unchecked Sendable {
         let (id, channel, dead): (UInt64, LinkChannel<HelperMessage, AppMessage>?, Bool) = lock.withLock {
             let id = nextID
             nextID += 1
-            return (id, channel, invalidated)
+            return (id, self.channel, invalidated)
         }
         guard let channel, !dead else { return queue.async { reply(.failure(.closed("not connected"))) } }
         let timer = DispatchWorkItem { [weak self] in

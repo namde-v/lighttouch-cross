@@ -87,7 +87,9 @@ struct HostPowerTests {
     }
 
     // pmset assertions are macOS-only; the Linux port holds no idle-sleep
-    // assertion (ProcessInfo.beginActivity is a no-op off macOS).
+    // assertion (ProcessInfo.beginActivity is a no-op off macOS), and neither
+    // does Windows (no getpid(2) or pmset there at all).
+    #if !os(Windows)
     #if os(Linux)
     @Test(.disabled("needs macOS pmset"))
     #else
@@ -114,4 +116,5 @@ struct HostPowerTests {
         queue.release()
         #expect(try !holdsIdleSleep(), "released once the queue is idle")
     }
+    #endif
 }

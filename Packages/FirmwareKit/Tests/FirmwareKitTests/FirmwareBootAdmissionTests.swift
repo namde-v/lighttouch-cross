@@ -68,7 +68,11 @@ import Testing
         let result = try await FirmwareBootAdmission.admit(device: f.device)
         #expect(!result.changed)
         #expect(result.record == f.record)
-        #expect(result.paths?.base == f.device.appendingPathComponent("base"))
+        // Windows' URL keeps a trailing slash after appendingPathComponent; compare slash-insensitively.
+        #expect(
+            result.paths?.base.path.trimmingCharacters(in: CharacterSet(charactersIn: "/\\"))
+                == f.device.appendingPathComponent("base").path.trimmingCharacters(in: CharacterSet(charactersIn: "/\\"))
+        )
         #expect(try Data(contentsOf: f.device.appendingPathComponent("nor.bin")) == Data("NOR unchanged".utf8))
         let json = try #require(JSONSerialization.jsonObject(with: result.jsonData()) as? [String: Any])
         #expect(json["event"] as? String == "admitted")

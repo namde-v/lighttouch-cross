@@ -14,6 +14,23 @@ public enum FirmwareCache {
         private let descriptor: Int32
         fileprivate init(root: URL, exclusive: Bool) throws {
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            #if os(Windows)
+            // No flock(2) or O_NOFOLLOW on Windows: LockFileEx byte-range locks (see WindowsShims).
+            // winOpen: the POSIX open spelling crashes Swift 6.2.4's Windows overlay at runtime.
+            let fd = winOpen(root.appendingPathComponent(".lease").path, read: true, write: true, create: true)
+            guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            if exclusive {
+                guard flockTryLockExclusive(fd) else {
+                    close(fd)
+                    throw FirmwareError(.internal, "firmware cache is in use; retry cleanup when preparations finish")
+                }
+            } else {
+                guard flockLockShared(fd) else {
+                    close(fd)
+                    throw FirmwareError(.internal, "firmware cache is in use; retry cleanup when preparations finish")
+                }
+            }
+            #else
             let fd = open(root.appendingPathComponent(".lease").path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
             guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
             let flags = exclusive ? LOCK_EX | LOCK_NB : LOCK_SH
@@ -22,6 +39,7 @@ public enum FirmwareCache {
                 close(fd)
                 throw FirmwareError(.internal, "firmware cache is in use; retry cleanup when preparations finish")
             }
+            #endif
             descriptor = fd
         }
         deinit { close(descriptor) }

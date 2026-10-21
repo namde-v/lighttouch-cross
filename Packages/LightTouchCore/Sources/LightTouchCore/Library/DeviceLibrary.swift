@@ -65,11 +65,17 @@ nonisolated final class StateRootWatch: @unchecked Sendable {
     private var watch: FileEventWatch?
     private var pending: DispatchWorkItem?
     private let latency: TimeInterval
+    #elseif os(Windows)
+    // No FSEvents/inotify on Windows, and FileEventWatch is a never-firing
+    // stub there: the watcher is a no-op; the library reloads on demand.
     #else
     private var stream: FSEventStreamRef?
     #endif
 
     init(root: URL, latency: TimeInterval = 0.2, onChange: @escaping @MainActor () -> Void) {
+        #if os(Windows)
+        self.root = root.path
+        #else
         // FSEvents reports real paths (/private/var/..., which resolvingSymlinksInPath would undo).
         if let real = realpath(root.path, nil) {
             self.root = String(cString: real)
@@ -77,12 +83,15 @@ nonisolated final class StateRootWatch: @unchecked Sendable {
         } else {
             self.root = root.path
         }
+        #endif
         self.onChange = onChange
         #if os(Linux)
         self.latency = latency
         // inotify isn't recursive: watch the root, Devices/ and each device
         // folder's own entries — the same set `matters` admits on macOS.
         watch = makeWatch()
+        #elseif os(Windows)
+        // No-op (see above).
         #else
         var context = FSEventStreamContext(
             version: 0,
@@ -155,6 +164,8 @@ nonisolated final class StateRootWatch: @unchecked Sendable {
         pending = work
         queue.asyncAfter(deadline: .now() + latency, execute: work)
     }
+    #elseif os(Windows)
+    // No FSEvents on Windows (see above): no callback to filter.
     #else
     func matters(_ path: String, _ flags: FSEventStreamEventFlags) -> Bool {
         let rescan = kFSEventStreamEventFlagRootChanged | kFSEventStreamEventFlagMustScanSubDirs
@@ -169,6 +180,8 @@ nonisolated final class StateRootWatch: @unchecked Sendable {
         #if os(Linux)
         pending?.cancel()
         watch?.cancel()
+        #elseif os(Windows)
+        // No-op (see above).
         #else
         guard let stream else { return }
         FSEventStreamStop(stream)

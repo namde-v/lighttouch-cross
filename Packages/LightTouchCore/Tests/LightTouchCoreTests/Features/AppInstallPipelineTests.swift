@@ -7,6 +7,8 @@ import Testing
 /// On iOS 7 an app install retries its first AFC request (the free-space query) while it times out, bounded, and
 /// sends nothing until afcd answers; a different error, or any error on other versions, fails at once
 /// (AppInstallPipeline, against services that answer the free-space query only from a given try on).
+// The IPA fixture needs /usr/bin/zip, which Windows doesn't have.
+#if !os(Windows)
 struct AppInstallPipelineTests {
     final class Services: AppInstallServices, @unchecked Sendable {
         private let lock = NSLock()
@@ -104,3 +106,4 @@ struct AppInstallPipelineTests {
         #expect(services.calls == ["free"])
     }
 }
+#endif

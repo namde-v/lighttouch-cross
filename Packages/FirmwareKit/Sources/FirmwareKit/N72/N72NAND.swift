@@ -10,7 +10,9 @@
 import FirmwareSchema
 import Foundation
 import HostRuntime
+#if !os(Windows)
 import CZlibFK
+#endif
 #if os(Linux)
 import Glibc
 #elseif os(Windows)
@@ -292,6 +294,16 @@ public enum N72NAND {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let tmp = dir.appendingPathComponent(".\(url.lastPathComponent).tmp")
         try data.write(to: tmp)
+        #if os(Windows)
+        // winFsync: _open_osfhandle descriptors fail with EBADF on 6.2.4;
+        // flush by HANDLE instead. winRename: UCRT rename fails if dest exists.
+        // No directory fsync on Windows.
+        guard winFsync(path: tmp.path) == 0, winRename(tmp.path, url.path) == 0 else {
+            let error = POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            try? FileManager.default.removeItem(at: tmp)
+            throw error
+        }
+        #else
         let fd = open(tmp.path, O_RDONLY)
         defer { if fd >= 0 { close(fd) } }
         guard fd >= 0, fsync(fd) == 0, rename(tmp.path, url.path) == 0 else {
@@ -304,5 +316,6 @@ public enum N72NAND {
             fsync(dfd)
             close(dfd)
         }
+        #endif
     }
 }

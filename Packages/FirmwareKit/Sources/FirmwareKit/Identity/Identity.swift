@@ -215,7 +215,12 @@ public struct UnitIdentity: Equatable, Sendable {
     }
 
     public func write(to url: URL) throws {
+        #if os(Windows)
+        // winOpen: the POSIX open spelling crashes Swift 6.2.4's Windows overlay at runtime.
+        let fd = winOpen(url.path, write: true, create: true, exclusive: true)
+        #else
         let fd = open(url.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        #endif
         guard fd >= 0 else { throw FirmwareError(.internal, "create \(url.path): \(String(cString: strerror(errno)))") }
         let h = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         try h.write(contentsOf: json())

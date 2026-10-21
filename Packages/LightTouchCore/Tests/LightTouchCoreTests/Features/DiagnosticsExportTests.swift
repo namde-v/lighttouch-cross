@@ -47,6 +47,8 @@ struct DiagnosticsExportTests {
         let summary = DiagnosticsExport.systemSummary()
         #if os(Linux)
         #expect(summary.contains("Linux "))
+        #elseif os(Windows)
+        #expect(summary.contains("Windows "))
         #else
         #expect(summary.contains("macOS ") && summary.contains(ProcessInfo.processInfo.operatingSystemVersionString))
         #endif
@@ -85,6 +87,8 @@ struct DiagnosticsExportTests {
         return try LibraryFixtures.script(directory.appendingPathComponent("archive-helper"), script)
     }
 
+    // Unix-only: shells out to /usr/bin/unzip and checks kill(pid, 0).
+    #if !os(Windows)
     @Test func exportIsAtomicAndCancellable() async throws {
         try await LibraryFixtures.withScratch { root in
             let scratch = root.appendingPathComponent("diagnostic temp")
@@ -190,10 +194,13 @@ struct DiagnosticsExportTests {
             #expect(try text(log) == "sample events")
         }
     }
+    #endif
 
     /// The archive's logs, info and crash reports carry no identity: the home folder, the user's and the Mac's
     /// names, the device's own identifiers and anything shaped like one are gone from the text, and a crash report
     /// loses its identifying members while its stacks and binary images stay byte for byte.
+    // Unix-only: shells out to /usr/bin/unzip (and the default archiver is ditto/zip).
+    #if !os(Windows)
     @Test func exportIsScrubbed() async throws {
         try await LibraryFixtures.withScratch { root in
             let identity = DiagnosticsExport.HostIdentity(
@@ -274,4 +281,5 @@ struct DiagnosticsExportTests {
             #expect(parts.count == 2 && parts.allSatisfy { (try? JSONSerialization.jsonObject(with: $0)) != nil })
         }
     }
+    #endif
 }

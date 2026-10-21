@@ -5,6 +5,9 @@ import Testing
 @testable import BuildTools
 
 /// Archive integrity and source staging, without network or a dependency build.
+#if os(Windows)
+@Suite(.serialized)
+#endif
 struct DependencySourcesTests {
     let content = Data("fixed source archive contents".utf8)
 
@@ -86,6 +89,10 @@ struct DependencySourcesTests {
     }
 
     @Test func stagingKeepsEditsAndRefusesUntrackedSource() throws {
+        // git is required for this test; skip on Windows CI where it may not be on PATH.
+        #if os(Windows)
+        guard (try? output(["git", "--version"])) != nil else { return }
+        #endif
         try fixture { root, _, _ in
             let repository = root.appendingPathComponent("repository")
             try files.createDirectory(at: repository, withIntermediateDirectories: true)

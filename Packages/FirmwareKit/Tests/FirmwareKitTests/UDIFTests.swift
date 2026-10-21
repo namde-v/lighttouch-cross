@@ -35,7 +35,13 @@ import Testing
                 let os = try BuildComponents.load(ipsw, board: Oracle.entry(fw.entryID).board)["OS"]!
                 let key = try #require(Data(hex: Oracle.entry(fw.entryID).key(forPath: os).key))
                 dmg = dir.appendingPathComponent("rootfs.dmg")
+                #if os(Windows)
+                // FileHandle.fileDescriptor is unavailable on Windows; the
+                // FileHandle overload reads through the handle instead.
+                try ipsw.stream(os) { try VFDecrypt.decrypt(from: $0, output: dmg!, key: key) }
+                #else
                 try ipsw.stream(os) { try VFDecrypt.decrypt(from: $0.fileDescriptor, output: dmg!, key: key) }
+                #endif
             }
             let raw = dir.appendingPathComponent("rootfs.hfs")
             try await Oracle.time("UDIF convert + APM slice \(fw.entryID)") {

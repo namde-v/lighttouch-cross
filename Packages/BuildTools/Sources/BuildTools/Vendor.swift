@@ -224,11 +224,26 @@ public struct Vendor {
         try files.createDirectory(at: directory, withIntermediateDirectories: true)
         let path = directory.appendingPathComponent(".lock").path
         #if os(Windows)
-        // No flock(2) or O_CLOEXEC on Windows: an exclusive LockFileEx on the
-        // CRT descriptor's HANDLE. Closing the descriptor (or process exit)
-        // releases the lock, matching the flock contract below.
-        let fd = open(path, O_RDWR | O_CREAT, 0o644)
-        guard fd >= 0 else { throw ToolError("vendor: cannot open \(path): \(String(cString: strerror(errno)))") }
+        // No flock(2) on Windows: an exclusive LockFileEx on a HANDLE.
+        // _open/open are variadic (unavailable in Swift) and the POSIX open
+        // spelling crashes at runtime; use CreateFileW + _open_osfhandle to get
+        // a CRT descriptor the caller can close() (closing releases the lock).
+        let wide = Array(path.utf16) + [0]
+        let handle: UnsafeMutableRawPointer? = wide.withUnsafeBufferPointer { buf in
+            CreateFileW(
+                buf.baseAddress!, DWORD(GENERIC_READ) | DWORD(GENERIC_WRITE),
+                DWORD(FILE_SHARE_READ) | DWORD(FILE_SHARE_WRITE) | DWORD(FILE_SHARE_DELETE),
+                nil, DWORD(OPEN_ALWAYS), DWORD(FILE_ATTRIBUTE_NORMAL), nil)
+        }
+        guard let handle, handle != INVALID_HANDLE_VALUE else {
+            throw ToolError("vendor: cannot open \(path)")
+        }
+        // _open_osfhandle transfers ownership: close(fd) closes the HANDLE.
+        let fd = _open_osfhandle(Int(bitPattern: handle), O_RDWR)
+        guard fd >= 0 else {
+            CloseHandle(handle)
+            throw ToolError("vendor: cannot open \(path)")
+        }
         if !windowsTryLock(fd) {
             waiting()
             guard let handle = windowsLockHandle(fd) else {

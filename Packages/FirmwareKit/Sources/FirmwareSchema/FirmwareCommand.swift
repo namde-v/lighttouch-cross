@@ -54,6 +54,39 @@ public enum FirmwareCommand {
         public var jailbreak = false
 
         public init() {}
+        #if os(Windows)
+        // Swift 6.2.4 on Windows miscompiles assignments through @Option/@Flag
+        // wrappers (SIL verification failure on assign_by_wrapper). Build the
+        // command line directly instead of going through the wrappers.
+        public static func arguments(
+            entry: URL,
+            ipsw: URL,
+            out: URL,
+            seed: String? = nil,
+            helper: URL? = nil,
+            cache: URL? = nil,
+            guestTools: URL? = nil,
+            sibling: (entry: URL, ipsw: URL)? = nil,
+            skipSetup: Bool = false,
+            jailbreak: Bool = false,
+            language: String? = nil,
+            keyboards: String? = nil
+        ) -> [String] {
+            var args = ["create", "--entry", entry.path, "--ipsw", ipsw.path, "--out", out.path]
+            if let seed { args += ["--seed", seed] }
+            if let helper { args += ["--helper", helper.path] }
+            if let cache { args += ["--cache", cache.path] }
+            if let guestTools { args += ["--guest-tools", guestTools.path] }
+            if let sibling {
+                args += ["--sibling-entry", sibling.entry.path, "--sibling-ipsw", sibling.ipsw.path]
+            }
+            if let language { args += ["--language", language] }
+            if let keyboards { args += ["--keyboards", keyboards] }
+            if skipSetup { args.append("--skip-setup") }
+            if jailbreak { args.append("--jailbreak") }
+            return args
+        }
+        #else
         public init(
             entry: URL,
             ipsw: URL,
@@ -68,6 +101,7 @@ public enum FirmwareCommand {
             language: String? = nil,
             keyboards: String? = nil
         ) {
+            self.init()
             self.entry = entry.path
             self.ipsw = ipsw.path
             self.out = out.path
@@ -86,6 +120,7 @@ public enum FirmwareCommand {
             self.language = language
             self.keyboards = keyboards
         }
+        #endif
 
         public func validate() throws {
             guard (entry != nil) != (catalog != nil && id != nil), (catalog == nil) == (id == nil) else {
@@ -113,11 +148,18 @@ public enum FirmwareCommand {
         @Option public var seed: String
 
         public init() {}
+        #if os(Windows)
+        public static func arguments(blob: URL, out: URL, seed: String) -> [String] {
+            ["unpack-base", "--blob", blob.path, "--out", out.path, "--seed", seed]
+        }
+        #else
         public init(blob: URL, out: URL, seed: String) {
+            self.init()
             self.blob = blob.path
             self.out = out.path
             self.seed = seed
         }
+        #endif
 
         public var arguments: [String] { ["unpack-base"] + options(["blob": blob, "out": out, "seed": seed]) }
     }
@@ -129,10 +171,17 @@ public enum FirmwareCommand {
         @Option public var out: String
 
         public init() {}
+        #if os(Windows)
+        public static func arguments(base: URL, out: URL) -> [String] {
+            ["pack-base", "--base", base.path, "--out", out.path]
+        }
+        #else
         public init(base: URL, out: URL) {
+            self.init()
             self.base = base.path
             self.out = out.path
         }
+        #endif
 
         public var arguments: [String] { ["pack-base"] + options(["base": base, "out": out]) }
     }
@@ -145,11 +194,20 @@ public enum FirmwareCommand {
         @Flag public var allowRaw = false
 
         public init() {}
+        #if os(Windows)
+        public static func arguments(device: URL, recordPolicy: RecordPolicy, allowRaw: Bool = false) -> [String] {
+            var args = ["boot-admit", "--device", device.path, "--record-policy", recordPolicy.rawValue]
+            if allowRaw { args.append("--allow-raw") }
+            return args
+        }
+        #else
         public init(device: URL, recordPolicy: RecordPolicy, allowRaw: Bool = false) {
+            self.init()
             self.device = device.path
             self.recordPolicy = recordPolicy
             self.allowRaw = allowRaw
         }
+        #endif
 
         public var arguments: [String] {
             ["boot-admit"] + options(["device": device, "record-policy": recordPolicy.rawValue])
@@ -177,6 +235,25 @@ public enum FirmwareCommand {
         @Option(help: "The decrypt cache, for jailbreak.") public var cache: String? = nil
 
         public init() {}
+        #if os(Windows)
+        public static func arguments(
+            device: URL,
+            action: Action,
+            session: UUID? = nil,
+            recordPolicy: RecordPolicy,
+            cert: URL? = nil,
+            mountPoint: URL? = nil,
+            cache: URL? = nil
+        ) -> [String] {
+            var args = ["edit", "--device", device.path, "--action", action.rawValue]
+            if let session { args += ["--session", session.uuidString] }
+            args += ["--record-policy", recordPolicy.rawValue]
+            if let cert { args += ["--cert", cert.path] }
+            if let mountPoint { args += ["--mount-point", mountPoint.path] }
+            if let cache { args += ["--cache", cache.path] }
+            return args
+        }
+        #else
         public init(
             device: URL,
             action: Action,
@@ -186,6 +263,7 @@ public enum FirmwareCommand {
             mountPoint: URL? = nil,
             cache: URL? = nil
         ) {
+            self.init()
             self.device = device.path
             self.action = action
             self.session = session?.uuidString
@@ -194,6 +272,7 @@ public enum FirmwareCommand {
             self.mountPoint = mountPoint?.path
             self.cache = cache?.path
         }
+        #endif
 
         public var arguments: [String] {
             ["edit"]
@@ -220,13 +299,21 @@ public enum FirmwareCommand {
         @Option public var recordPolicy: RecordPolicy = .standalone
 
         public init() {}
+        #if os(Windows)
+        public static func arguments(device: URL, recordPolicy: RecordPolicy, out: URL, root: URL) -> [String] {
+            ["mount", "--device", device.path, "--volume", Volume.all.rawValue,
+             "--out", out.path, "--root", root.path, "--record-policy", recordPolicy.rawValue]
+        }
+        #else
         public init(device: URL, recordPolicy: RecordPolicy, out: URL, root: URL) {
+            self.init()
             self.device = device.path
             volume = .all
             self.recordPolicy = recordPolicy
             self.out = out.path
             self.root = root.path
         }
+        #endif
 
         public var arguments: [String] {
             ["mount"]
@@ -261,7 +348,13 @@ public enum FirmwareCommand {
         @Option public var out: String
 
         public init() {}
+        #if os(Windows)
+        public static func arguments(out: URL) -> [String] {
+            ["unmount", "--out", out.path]
+        }
+        #else
         public init(out: URL) { self.out = out.path }
+        #endif
 
         public var arguments: [String] { ["unmount"] + options(["out": out]) }
     }
@@ -273,10 +366,17 @@ public enum FirmwareCommand {
         @Option(help: "An IPSW's SHA-1.") public var ipsw: String? = nil
 
         public init() {}
+        #if os(Windows)
+        public static func arguments(root: URL) -> [String] {
+            ["cache-prune", "--root", root.path]
+        }
+        #else
         public init(root: URL) {
+            self.init()
             self.root = root.path
             ipsw = nil
         }
+        #endif
 
         public var arguments: [String] { ["cache-prune"] + options(["root": root, "ipsw": ipsw]) }
     }
@@ -287,7 +387,13 @@ public enum FirmwareCommand {
         @Option public var root: String
 
         public init() {}
+        #if os(Windows)
+        public static func arguments(root: URL) -> [String] {
+            ["detach-images", "--root", root.path]
+        }
+        #else
         public init(root: URL) { self.root = root.path }
+        #endif
 
         public var arguments: [String] { ["detach-images"] + options(["root": root]) }
     }
@@ -324,11 +430,18 @@ public enum FirmwareCommand {
         @Option public var out: String
 
         public init() {}
+        #if os(Windows)
+        public static func arguments(entry: URL, archive: URL, out: URL) -> [String] {
+            ["unwrap", "--entry", entry.path, "--archive", archive.path, "--out", out.path]
+        }
+        #else
         public init(entry: URL, archive: URL, out: URL) {
+            self.init()
             self.entry = entry.path
             self.archive = archive.path
             self.out = out.path
         }
+        #endif
 
         public var arguments: [String] { ["unwrap"] + options(["entry": entry, "archive": archive, "out": out]) }
     }

@@ -59,19 +59,33 @@ nonisolated enum LibraryFixtures {
         return data
     }
 
-    /// Runs `executable` to its exit; its stdout. Throws on a non-zero status.
+    /// Runs `executable` to its exit; returns its stdout. Throws on a non-zero status.
+    ///
+    /// NOTE (Linux): stdout is captured to a temporary file, not a Pipe.
+    /// swift-corelibs-foundation's Process.run() calls closeFile() — which is
+    /// `try! close()` — on Pipe stdio after spawning, and a spurious EBADF there
+    /// fatals the entire test runner (intermittent on Linux CI:
+    /// `Fatal error: 'try!' ... "Bad file descriptor"` at FileHandle.swift:740).
+    /// That fatal cannot be caught. Plain file handles are never closed by run(),
+    /// so this path avoids the landmine entirely.
     @discardableResult
     static func run(_ executable: String, _ arguments: [String], environment: [String: String]? = nil) throws -> String
     {
         let process = Process()
-        let out = Pipe()
+        let stdoutURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ltm-run-\(UUID().uuidString).out")
+        try Data().write(to: stdoutURL)
+        let stdoutHandle = try FileHandle(forWritingTo: stdoutURL)
+        defer {
+            try? stdoutHandle.close()
+            try? FileManager.default.removeItem(at: stdoutURL)
+        }
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
         if let environment { process.environment = ProcessInfo.processInfo.environment.merging(environment) { $1 } }
-        process.standardOutput = out
+        process.standardOutput = stdoutHandle
         process.standardError = FileHandle.nullDevice
         try process.run()
-        let data = out.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {
             throw CocoaError(
@@ -79,6 +93,10 @@ nonisolated enum LibraryFixtures {
                 userInfo: [NSLocalizedDescriptionKey: "\(executable) \(arguments) exited \(process.terminationStatus)"]
             )
         }
+        // The child wrote directly to the file via its dup2'ed stdout; it has exited,
+        // so all output is on disk. Read via a fresh descriptor — our handle is only
+        // closed by the defer above.
+        let data = (try? Data(contentsOf: stdoutURL)) ?? Data()
         return String(decoding: data, as: UTF8.self)
     }
 
@@ -108,8 +126,32 @@ nonisolated enum LibraryFixtures {
         // crashes corelibs-foundation's Process.run instead of throwing.
         _ = try? run("/usr/bin/chflags", ["-R", "nouchg", url.path])
         #endif
-        _ = try? run("/bin/chmod", ["-R", "u+w", url.path])
+        // u+w in-process: spawning /bin/chmod here fatals on Linux. The
+        // landmine is not nullDevice (run() identity-maps it to /dev/null and
+        // never touches it) but the Pipe that run() used for stdout:
+        // corelibs-foundation's Process.run() calls closeFile() (= try!
+        // close()) on Pipe stdio after spawning, and a spurious EBADF there
+        // fatals the whole test runner (FileHandle.swift:740). See run()
+        // above, which now captures stdout to a temp file instead.
+        makeWritable(url)
         try? FileManager.default.removeItem(at: url)
+    }
+
+    /// Recursively ORs owner-write into every entry's posixPermissions,
+    /// in-process (equivalent of `chmod -R u+w`, without spawning).
+    private static func makeWritable(_ url: URL) {
+        let fm = FileManager.default
+        if let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: nil) {
+            for case let item as URL in enumerator {
+                let current =
+                    (try? fm.attributesOfItem(atPath: item.path)[.posixPermissions] as? Int) ?? 0o644
+                try? fm.setAttributes(
+                    [.posixPermissions: current | 0o200], ofItemAtPath: item.path)
+            }
+        }
+        let current =
+            (try? fm.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int) ?? 0o755
+        try? fm.setAttributes([.posixPermissions: current | 0o200], ofItemAtPath: url.path)
     }
 
     /// Like withTemporaryDirectory, for trees with read-only or locked parts.

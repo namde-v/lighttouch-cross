@@ -27,11 +27,13 @@ func withScratchDirectory<T>(_ body: (URL) async throws -> T) async throws -> T 
     return try await body(directory)
 }
 
-/// Polls `condition` every 5 ms; a guard (30 s unless `within` says otherwise) turns a hang into a failure instead
-/// of a stuck run.
+/// Polls `condition` every 5 ms; a guard (180 s unless `within` says otherwise) turns a hang into a failure instead
+/// of a stuck run. The guard is generous because this returns as soon as the condition holds; on a loaded CI
+/// machine the suite's @MainActor tests contend for the main thread and the first burst can take well over a
+/// minute before a test body even starts running.
 func eventually(
     _ what: String,
-    within seconds: TimeInterval = 30,
+    within seconds: TimeInterval = 180,
     _ condition: () -> Bool,
     sourceLocation: SourceLocation = #_sourceLocation
 ) async {

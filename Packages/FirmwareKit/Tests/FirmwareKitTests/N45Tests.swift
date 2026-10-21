@@ -171,10 +171,11 @@ import Testing
             }
             #expect(!fm.fileExists(atPath: file(N45NAND.Page(bank: bank, page: 35 * 128 + 8)).path))
             let d = Array(first[0..<pp])
-            #expect(
-                Array(first[pp...]) == [UInt8](repeating: 0xFF, count: 8) + [0, 0x80]
-                    + [UInt8](repeating: 0xFF, count: 54)
-            )
+            // (built with appends: the Windows compiler mis-infers chained array `+`)
+            var expectedTail: [UInt8] = [UInt8](repeating: 0xFF, count: 8)
+            expectedTail += [0, 0x80]
+            expectedTail += [UInt8](repeating: 0xFF, count: 54)
+            #expect(Array(first[pp...]) == expectedTail)
             #expect(le(d, 0, 4) == UInt64(bank) && le(d, 0xC, 4) == 0xFFFF_FFFF && le(d, 0x12, 2) == 8)
             #expect(
                 le(d, 0x14, 2) == 1 && le(d, 0x1A, 2) == 1 && le(d, 0x1C, 2) == 39 && le(d, 0x1E, 2) == 162
@@ -343,8 +344,12 @@ import Testing
                 #expect((report["gles_engine"] is NSNull) != gles)
                 #expect(owned.contains(GuestPackage.loader.0) && owned.contains(GuestPackage.loader.1))
                 for rel in owned {  // everything written is there
+                    #if os(Windows)
+                    #expect(FileManager.default.fileExists(atPath: a.appendingPathComponent(rel).path), "\(rel)")
+                    #else
                     var st = stat()
                     #expect(lstat(a.appendingPathComponent(rel).path, &st) == 0, "\(rel)")
+                    #endif
                 }
                 let env = { (m: URL) in
                     (NSDictionary(contentsOf: m.appendingPathComponent(SystemEdits.springBoardJob))?[
@@ -484,7 +489,13 @@ import Testing
             let key = try #require(Data(hex: e.key(forPath: os).key))
             let dmg = dir.appendingPathComponent("rootfs.dmg")
             let raw = dir.appendingPathComponent("rootfs.hfs")
+            #if os(Windows)
+            // FileHandle.fileDescriptor is unavailable on Windows; the
+            // FileHandle overload reads through the handle instead.
+            try ipsw.stream(os) { try VFDecrypt.decrypt(from: $0, output: dmg, key: key) }
+            #else
             try ipsw.stream(os) { try VFDecrypt.decrypt(from: $0.fileDescriptor, output: dmg, key: key) }
+            #endif
             try await UDIF.extractRootfs(dmg: dmg, to: raw)
             let jobs = try HFSPlusVolume(raw).listing(under: SystemEdits.daemons, hashes: false)
                 .map { ($0.path as NSString).lastPathComponent }.filter { $0.hasSuffix(".plist") }

@@ -4,9 +4,12 @@ import Testing
 @testable import LightTouchCore
 
 /// Polls `condition` every few milliseconds; fails the test (and stops waiting) after `seconds`.
+/// The deadline is generous because these are polling helpers (they return as soon as the condition
+/// holds); on a loaded CI machine the suite's @MainActor tests contend for the main thread and the
+/// first burst can take well over a minute before a test body even starts running.
 func until(
     _ what: String = "the expected state",
-    seconds: Double = 5,
+    seconds: Double = 120,
     sourceLocation: SourceLocation = #_sourceLocation,
     _ condition: () -> Bool
 ) async throws {

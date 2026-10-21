@@ -39,7 +39,9 @@ struct SourceFetchTests {
         }
     }
 
-    @Test func walksToTheRARMirror() throws {
+    // RAR extraction is unsupported on Windows (Unrar doesn't link there).
+    #if !os(Windows)
+        @Test func walksToTheRARMirror() throws {
         let out = try Self.out()
         var log: [String] = []
         let from = try SourceFetch.fetch(Self.source, to: out, download: Self.serve) { log.append($0) }
@@ -52,6 +54,7 @@ struct SourceFetchTests {
             try FileManager.default.contentsOfDirectory(atPath: out.deletingLastPathComponent().path) == ["out.ipsw"]
         )
     }
+    #endif
 
     /// The app checks a finished download as the alternative it came from (FirmwareJobs' install).
     @Test func alternativeForTheServingURL() {

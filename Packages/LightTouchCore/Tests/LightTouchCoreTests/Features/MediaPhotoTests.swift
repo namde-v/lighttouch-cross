@@ -6,6 +6,8 @@ import Testing
 
 /// Photo preparation (MediaPhoto): upright by its EXIF orientation, at most 2048 px, a baseline JPEG, transparency
 /// flattened on white, one identity for the same picture, malformed input refused and cancellation honored.
+// The fixtures need ffmpeg, which Windows CI doesn't have.
+#if !os(Windows)
 struct MediaPhotoTests {
     let red: MediaFixtures.RGBA = (220, 30, 30, 255), blue: MediaFixtures.RGBA = (30, 30, 220, 255)
 
@@ -79,3 +81,4 @@ struct MediaPhotoTests {
         }
     }
 }
+#endif

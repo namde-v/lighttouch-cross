@@ -19,6 +19,10 @@ status[.heartbeat] = 7
 let rc = DeviceRendezvous.sendHello(socket: 3, token: arguments[1], generation: 0, segments: [status.surface])
 guard rc == 0 else { exit(1) }
 if arguments[2] == "stay" {
+    #if os(Windows)
+    while true { Sleep(60_000) }
+    #else
     while true { sleep(60) }
+    #endif
 }
 exit(0)

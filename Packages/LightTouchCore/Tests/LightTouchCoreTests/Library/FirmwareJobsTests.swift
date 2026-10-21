@@ -203,6 +203,9 @@ import Testing
         ),
     ]
 
+    // The preparer fixture is a POSIX shell script (and the real firmwarekit builds via xcrun/Swift);
+    // Windows CI has no shell in the subprocess launch path.
+    #if !os(Windows)
     @Test(arguments: sources)
     func aFailedSourceFallsBackToTheNext(_ c: Source) async throws {
         try await LibraryFixtures.withScratch { tmp in
@@ -249,6 +252,7 @@ import Testing
             #expect(server.log == c.paths)
         }
     }
+    #endif
 
     // MARK: - A sibling's ramdisk
 
@@ -299,6 +303,9 @@ import Testing
     /// The preparation screen's Skip Setup Assistant choice reaches firmwarekit create as --skip-setup: for an iOS 5
     /// entry chosen, not for one left off, and not for a 4.x entry (no Setup Assistant) even when chosen. Its Jailbreak
     /// choice reaches it as --jailbreak, on a 2.0 or later build chosen.
+    // The preparer fixture is a POSIX shell script (and the real firmwarekit builds via xcrun/Swift);
+    // Windows CI has no shell in the subprocess launch path.
+    #if !os(Windows)
     @Test func theSkipSetupAndJailbreakChoicesReachThePreparer() async throws {
         try await LibraryFixtures.withScratch { tmp in
             var entries: [[String: Any]] = []
@@ -338,6 +345,7 @@ import Testing
             #expect(seen["k48ap-9B206 false"]?.contains("--jailbreak") == false, "not chosen")
         }
     }
+    #endif
 
     /// Jailbreak is offered from iPhone OS 2.0 on: 1.0's afcd serves no path through afc2.
     @Test func jailbreakIsOfferedFromIPhoneOS2() throws {
@@ -356,6 +364,9 @@ import Testing
         }
     }
 
+    // The preparer fixture is a POSIX shell script (and the real firmwarekit builds via xcrun/Swift);
+    // Windows CI has no shell in the subprocess launch path.
+    #if !os(Windows)
     @Test func downloadAndPrepareFetchesTheSiblingAsOneJob() async throws {
         try await LibraryFixtures.withScratch { tmp in
             let (h, point, base, argvURL, _) = try siblings(tmp)
@@ -390,9 +401,13 @@ import Testing
             )
         }
     }
+    #endif
 
     /// Remove IPSW leaves every IPSW a job under way reads or waits for, its keybag sibling's included (state audit
     /// B-6): 4.3.1 preparing keeps 4.3's IPSW in use, and nothing is once the job ends.
+    // The preparer fixture is a POSIX shell script (and the real firmwarekit builds via xcrun/Swift);
+    // Windows CI has no shell in the subprocess launch path.
+    #if !os(Windows)
     @Test func aJobKeepsItsSiblingsIPSWInUse() async throws {
         try await LibraryFixtures.withScratch { tmp in
             let (h, point, base, _, _) = try siblings(tmp, mode: "slow")
@@ -406,7 +421,11 @@ import Testing
             #expect(h.jobs.ipswsInUse.isEmpty)
         }
     }
+    #endif
 
+    // The preparer fixture is a POSIX shell script (and the real firmwarekit builds via xcrun/Swift);
+    // Windows CI has no shell in the subprocess launch path.
+    #if !os(Windows)
     @Test func anImportQueuesTheMissingSibling() async throws {
         try await LibraryFixtures.withScratch { tmp in
             let (h, point, base, argvURL, pointIPSW) = try siblings(tmp)
@@ -425,7 +444,11 @@ import Testing
             #expect(argv(argvURL).contains("--sibling-ipsw"))
         }
     }
+    #endif
 
+    // The preparer fixture is a POSIX shell script (and the real firmwarekit builds via xcrun/Swift);
+    // Windows CI has no shell in the subprocess launch path.
+    #if !os(Windows)
     @Test func aCancelledTwoIPSWJobPreparesNothing() async throws {
         try await LibraryFixtures.withScratch { tmp in
             let (h, point, base, _, _) = try siblings(tmp)
@@ -436,6 +459,7 @@ import Testing
             #expect(h.devices(point.id).isEmpty && h.jobs.jobs[point.id] == nil && h.changes[base.id] == nil)
         }
     }
+    #endif
 
     // MARK: - The built-in iPod
 
@@ -463,6 +487,17 @@ import Testing
             "inputs": ["ipsw": ["path": NSHomeDirectory() + "/Library/Caches/x.ipsw"], "guest_tools": template.path],
             "tool": ["helper": template.appendingPathComponent("LightTouchDevice").path],
         ]).write(to: template.appendingPathComponent("device.lock.json"))
+        #if os(Windows)
+        // No /bin/chmod on Windows: _chmod honors only the write bit, which
+        // is what read-only needs. (The -R below is covered: pack-base reads
+        // the files, so the files' bits are what matter.)
+        if let enumerator = fm.enumerator(atPath: template.appendingPathComponent("nand").path) {
+            for case let file as String in enumerator {
+                template.appendingPathComponent("nand/\(file)").path.withCString { _ = _chmod($0, 0o444) }
+            }
+        }
+        template.appendingPathComponent("nor.bin").path.withCString { _ = _chmod($0, 0o444) }
+        #else
         try LibraryFixtures.run(
             "/bin/chmod",
             [
@@ -470,6 +505,7 @@ import Testing
                 template.appendingPathComponent("nor.bin").path,
             ]
         )
+        #endif
         let resources = tmp.appendingPathComponent("Resources")
         try fm.createDirectory(at: resources.appendingPathComponent("Device"), withIntermediateDirectories: true)
         try LibraryFixtures.run(
@@ -539,6 +575,9 @@ import Testing
         ]
     }
 
+    // The preparer fixture is a POSIX shell script (and the real firmwarekit builds via xcrun/Swift);
+    // Windows CI has no shell in the subprocess launch path.
+    #if !os(Windows)
     @Test func aFreshInstallUnpacksTheBuiltInIPodWithItsOwnIdentityEachTime() async throws {
         try await LibraryFixtures.withScratch { tmp in
             var identities: [[String: String]] = []
@@ -568,7 +607,11 @@ import Testing
             #expect(same.isEmpty, "two unpacks share \(same)")
         }
     }
+    #endif
 
+    // The preparer fixture is a POSIX shell script (and the real firmwarekit builds via xcrun/Swift);
+    // Windows CI has no shell in the subprocess launch path.
+    #if !os(Windows)
     @Test func aLibraryWithADeviceOrASavedSidebarGetsNothingNew() async throws {
         try await LibraryFixtures.withScratch { tmp in
             let (h, _) = try await builtIn(tmp.appendingPathComponent("saved"))
@@ -599,7 +642,11 @@ import Testing
             #expect(DeviceInstance.all(state: e.state).map(\.firmware) == ["k48ap-7B500"], "still only the iPad")
         }
     }
+    #endif
 
+    // The preparer fixture is a POSIX shell script (and the real firmwarekit builds via xcrun/Swift);
+    // Windows CI has no shell in the subprocess launch path.
+    #if !os(Windows)
     @Test func theRowsPrepareUnpacksTheBuiltInIPod() async throws {
         try await LibraryFixtures.withScratch { tmp in
             let (h, iPod) = try await builtIn(tmp)
@@ -609,6 +656,7 @@ import Testing
             _ = try published(h, iPod)
         }
     }
+    #endif
 }
 
 extension IPSWStoreTests {
@@ -664,37 +712,78 @@ enum FirmwareKitTool {
 }
 
 /// A loopback HTTP server: GET of a known path answers its bytes, a `hanging` one never answers, anything else 404;
-/// every path asked is logged. POSIX sockets: Network.framework is Apple-only.
+/// every path asked is logged. POSIX sockets (Winsock on Windows): Network.framework is Apple-only.
 nonisolated final class TestHTTPServer: @unchecked Sendable {
+    #if os(Windows)
+    /// Winsock: SOCKET is UInt64; INVALID_SOCKET is the invalid value.
+    typealias SocketHandle = SOCKET
+    #else
+    typealias SocketHandle = Int32
+    #endif
     private let files: [String: Data]
     private let hanging: Set<String>
     private let lock = NSLock()
     private var requests: [String] = []
-    private var listenFD: Int32 = -1
+    #if os(Windows)
+    private var listenFD: SocketHandle = INVALID_SOCKET
+    #else
+    private var listenFD: SocketHandle = -1
+    #endif
     private var stopped = false
     /// The hanging paths' connections, held open until stop.
-    private var held: [Int32] = []
+    private var held: [SocketHandle] = []
     private(set) var base = ""
     var log: [String] { lock.withLock { requests } }
+
+    #if os(Windows)
+    private static func closeSocket(_ s: SOCKET) { _ = closesocket(s) }
+    private static func isInvalidSocket(_ s: SOCKET) -> Bool { s == INVALID_SOCKET }
+    #else
+    private static func closeSocket(_ s: Int32) { close(s) }
+    private static func isInvalidSocket(_ s: Int32) -> Bool { s < 0 }
+    #endif
 
     init(_ files: [String: Data], hanging: Set<String> = []) async throws {
         self.files = files
         self.hanging = hanging
+        #if os(Windows)
+        var wsaData = WSADATA()
+        guard WSAStartup(0x0202, &wsaData) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: EIO) ?? .EIO)
+        }
+        let fd: SOCKET = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd != INVALID_SOCKET else {
+            WSACleanup()
+            throw POSIXError(POSIXErrorCode(rawValue: EIO) ?? .EIO)
+        }
+        #else
         let fd = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        #endif
         var one: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, socklen_t(MemoryLayout<Int32>.size))
         var address = sockaddr_in()
+        #if os(Windows)
+        address.sin_family = UInt16(AF_INET)
+        address.sin_addr.S_un.S_addr = inet_addr("127.0.0.1")
+        #else
         address.sin_family = sa_family_t(AF_INET)
         address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        #endif
         let bound = withUnsafePointer(to: &address) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
         guard bound == 0, listen(fd, 16) == 0 else {
+            #if os(Windows)
+            let error = WSAGetLastError()
+            Self.closeSocket(fd)
+            WSACleanup()
+            #else
             let error = errno
             close(fd)
+            #endif
             throw POSIXError(POSIXErrorCode(rawValue: error) ?? .EIO)
         }
         var name = sockaddr_in()
@@ -714,28 +803,41 @@ nonisolated final class TestHTTPServer: @unchecked Sendable {
     func stop() {
         lock.withLock {
             stopped = true
-            held.forEach { close($0) }
+            held.forEach { Self.closeSocket($0) }
             held = []
         }
         // Wake the blocked accept(): shutdown first, then close.
         let fd = listenFD
+        #if os(Windows)
+        listenFD = INVALID_SOCKET
+        if fd != INVALID_SOCKET {
+            _ = shutdown(fd, 2 /* SD_BOTH */)
+            Self.closeSocket(fd)
+            WSACleanup()
+        }
+        #else
         listenFD = -1
         if fd >= 0 {
             shutdown(fd, Int32(SHUT_RDWR))
             close(fd)
         }
+        #endif
     }
 
     private func acceptLoop() {
         while true {
             let fd = listenFD
+            #if os(Windows)
+            guard fd != INVALID_SOCKET else { return }
+            #else
             guard fd >= 0 else { return }
+            #endif
             var address = sockaddr_in()
             var length = socklen_t(MemoryLayout<sockaddr_in>.size)
             let client = withUnsafeMutablePointer(to: &address) {
                 $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { accept(fd, $0, &length) }
             }
-            if client < 0 {
+            if Self.isInvalidSocket(client) {
                 if lock.withLock({ stopped }) { return }
                 continue
             }
@@ -743,14 +845,20 @@ nonisolated final class TestHTTPServer: @unchecked Sendable {
         }
     }
 
-    private func serve(_ fd: Int32) {
-        defer { close(fd) }
+    private func serve(_ fd: SocketHandle) {
+        defer { Self.closeSocket(fd) }
         var buffer = Data()
         var chunk = [UInt8](repeating: 0, count: 65536)
         while buffer.range(of: Data("\r\n\r\n".utf8)) == nil {
+            #if os(Windows)
+            let n = chunk.withUnsafeMutableBytes {
+                recv(fd, $0.baseAddress?.assumingMemoryBound(to: CChar.self), Int32($0.count), 0)
+            }
+            #else
             let n = chunk.withUnsafeMutableBytes { recv(fd, $0.baseAddress, $0.count, 0) }
+            #endif
             guard n > 0 else { return }
-            buffer += chunk[0..<n]
+            buffer += chunk[0..<Int(n)]
             guard buffer.count < 1 << 20 else { return }
         }
         let words =
@@ -762,7 +870,13 @@ nonisolated final class TestHTTPServer: @unchecked Sendable {
             // Park the connection until stop(): read and discard.
             var probe = [UInt8](repeating: 0, count: 1)
             while !lock.withLock({ stopped }) {
+                #if os(Windows)
+                let n = probe.withUnsafeMutableBytes {
+                    recv(fd, $0.baseAddress?.assumingMemoryBound(to: CChar.self), Int32($0.count), 0)
+                }
+                #else
                 let n = probe.withUnsafeMutableBytes { recv(fd, $0.baseAddress, $0.count, 0) }
+                #endif
                 if n <= 0 { break }
             }
             lock.withLock { held.removeAll { $0 == fd } }
@@ -775,9 +889,16 @@ nonisolated final class TestHTTPServer: @unchecked Sendable {
         response.withUnsafeBytes { ptr in
             var sent = 0
             while sent < response.count {
+                #if os(Windows)
+                // No MSG_NOSIGNAL on Windows; the loopback peer never RSTs mid-send here.
+                let n = send(
+                    fd, (ptr.baseAddress! + sent).assumingMemoryBound(to: CChar.self),
+                    Int32(response.count - sent), 0)
+                #else
                 let n = send(fd, ptr.baseAddress! + sent, response.count - sent, Int32(MSG_NOSIGNAL))
+                #endif
                 guard n > 0 else { return }
-                sent += n
+                sent += Int(n)
             }
         }
     }

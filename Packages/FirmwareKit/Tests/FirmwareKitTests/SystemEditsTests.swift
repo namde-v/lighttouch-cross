@@ -381,8 +381,9 @@ enum K48Oracle {
             options: .mutableContainersAndLeaves,
             format: nil
         )
-        // Linux's corelibs returns Swift value types, not NSMutableDictionary.
-        #if os(Linux)
+        // Linux's corelibs and swift-foundation on Windows return Swift value
+        // types, not NSMutableDictionary.
+        #if os(Linux) || os(Windows)
             let d = SystemEdits.mutablePlistValue(raw) as! NSMutableDictionary
         #else
             let d = raw as! NSMutableDictionary
@@ -460,8 +461,13 @@ enum K48Oracle {
             #expect(record.gles == gles && record.hooks.contains("/" + FitCheck.openGLES) == gles)
             // "9*": 5.x's own family
             if build.hasPrefix("9") { #expect(record.family == "k48-ios5" && record.seed >= 8) }
+            #if os(Windows)
+            #expect(
+                FileManager.default.fileExists(atPath: a.appendingPathComponent("usr/local/lighttouch/state").path))
+            #else
             var st = stat()
             #expect(lstat(a.appendingPathComponent("usr/local/lighttouch/state").path, &st) == 0)
+            #endif
             // the baked it-pbd job is left alone since package serial 2 folded the pasteboard into it_agent
             #expect(
                 try Data(contentsOf: a.appendingPathComponent(SystemEdits.daemons + "/com.qemu.it-pbd.plist"))

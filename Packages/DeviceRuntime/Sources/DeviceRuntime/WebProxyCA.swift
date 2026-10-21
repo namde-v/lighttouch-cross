@@ -55,9 +55,29 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
 
     /// Loads CONFIG.ca.pem, creating it on first use; (re)writes CONFIG.ca.der.
     public static func prepare(config: URL) throws -> WebProxyCA {
+        #if os(Windows)
+        // No flock(2) or O_NOFOLLOW on Windows: an exclusive LockFileEx on the
+        // CRT descriptor's HANDLE (see StorageLease), refusing reparse points
+        // (symlinks, junctions) as O_NOFOLLOW does on POSIX.
+        // The POSIX open spelling crashes Swift 6.2.4's Windows overlay at
+        // runtime (and _open is variadic/unavailable in Swift): open the lock
+        // via CreateFileW + _open_osfhandle instead (the Vendor.lock pattern).
+        let lockPath = config.path + ".ca.lock"
+        if isReparsePoint(lockPath) { throw Failure.unreadable("lock") }
+        let lock = openLockFile(lockPath)
+        guard lock >= 0, lockExclusive(lock) else {
+            if lock >= 0 { _ = _close(lock) }
+            throw Failure.unreadable("lock")
+        }
+        defer {
+            unlock(lock)
+            _ = _close(lock)
+        }
+        #else
         let lock = open(config.path + ".ca.lock", O_RDWR | O_CREAT | O_NOFOLLOW, 0o600)
         guard lock >= 0, flock(lock, LOCK_EX) == 0 else { throw Failure.unreadable("lock") }
         defer { close(lock) }
+        #endif
         let pem = URL(fileURLWithPath: config.path + ".ca.pem")
         let ca: WebProxyCA
         if FileManager.default.fileExists(atPath: pem.path) {
@@ -82,6 +102,27 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
     /// CONFIG.ca.pem, refused unless it is a regular file of this user's that nobody else can read.
     public static func load(config: URL) throws -> WebProxyCA {
         let path = config.path + ".ca.pem"
+        #if os(Windows)
+        // No POSIX ownership/mode bits on Windows: refuse reparse points and
+        // require a regular file. A file the app creates in its own state
+        // directory is owner-only by default ACL, which is the property the
+        // POSIX checks below are after.
+        guard !isReparsePoint(path), isRegularFile(path) else { throw Failure.unreadable(path) }
+        // _open is variadic (unavailable in Swift); read via Foundation instead.
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let text = String(data: data, encoding: .utf8)
+        else { throw Failure.unreadable(path) }
+        guard let pkcs8 = pemBlock(text, "PRIVATE KEY"),
+            let certDER = pemBlock(text, "CERTIFICATE"),
+            let key = try? _RSA.Signing.PrivateKey(derRepresentation: pkcs8),
+            let tbs = DER.children(certDER)?.first?.whole,
+            let fields = DER.children(tbs), fields.count > 6,
+            // The certificate really is this key's: its subjectPublicKeyInfo
+            // matches the key (what the SecKey external-representation
+            // comparison did before).
+            fields[6].whole == key.publicKey.derRepresentation
+        else { throw Failure.unreadable(path) }
+        #else
         let fd = open(path, O_RDONLY | O_NOFOLLOW)
         guard fd >= 0 else { throw Failure.unreadable(path) }
         let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
@@ -98,6 +139,7 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
             // comparison did before).
             fields[6].whole == key.publicKey.derRepresentation
         else { throw Failure.unreadable(path) }
+        #endif
         return WebProxyCA(key: key, certificateDER: certDER, subject: fields[5].whole)
     }
 
@@ -209,9 +251,22 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
         return Data(base64Encoded: String(text[start.upperBound..<end.lowerBound]), options: .ignoreUnknownCharacters)
     }
 
-    private static func save(_ data: Data, to url: URL, mode: mode_t) throws {
+    private static func save(_ data: Data, to url: URL, mode: Int32) throws {
+        #if os(Windows)
+        // Use Foundation's atomic write (no POSIX open: the open spelling
+        // crashes Swift 6.2.4's Windows overlay at runtime, and _open is
+        // variadic/unavailable). Data.write(to:options:.atomic) writes to a
+        // temp file and renames, matching the POSIX path's atomicity.
+        // No O_NOFOLLOW: the temp name is random per call, and the parent
+        // directory is the app's own.
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            throw Failure.unreadable(url.path)
+        }
+        #else
         let temporary = url.path + ".\(getpid()).tmp"
-        let fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, mode)
+        let fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, mode_t(mode))
         guard fd >= 0 else { throw Failure.unreadable(temporary) }
         let ok = data.withUnsafeBytes {
             guard let base = $0.baseAddress else { return data.isEmpty }
@@ -221,7 +276,83 @@ nonisolated public struct WebProxyCA: @unchecked Sendable {
             unlink(temporary)
             throw Failure.unreadable(url.path)
         }
+        #endif
     }
+
+    #if os(Windows)
+    /// A CRT descriptor for the lock file (created when missing), via
+    /// CreateFileW + _open_osfhandle: the POSIX open spelling crashes Swift
+    /// 6.2.4's Windows overlay at runtime, and _open is variadic/unavailable
+    /// in Swift (the Vendor.lock pattern). The HANDLE is non-inheritable
+    /// (nil security attributes), matching _O_NOINHERIT; _open_osfhandle
+    /// transfers ownership, so _close(fd) closes the HANDLE too.
+    private static func openLockFile(_ path: String) -> Int32 {
+        var wide = Array(path.utf16)
+        wide.append(0)
+        let handle: UnsafeMutableRawPointer? = wide.withUnsafeBufferPointer { buffer in
+            guard let wpath = buffer.baseAddress else { return nil }
+            return CreateFileW(
+                wpath,
+                DWORD(GENERIC_READ) | DWORD(GENERIC_WRITE),
+                DWORD(FILE_SHARE_READ) | DWORD(FILE_SHARE_WRITE) | DWORD(FILE_SHARE_DELETE),
+                nil,
+                DWORD(OPEN_ALWAYS),
+                DWORD(FILE_ATTRIBUTE_NORMAL),
+                nil)
+        }
+        guard let handle, handle != INVALID_HANDLE_VALUE else { return -1 }
+        let fd = _open_osfhandle(Int(bitPattern: handle), O_RDWR)
+        if fd < 0 { CloseHandle(handle) }
+        return fd
+    }
+
+    /// No flock(2) on Windows: an exclusive byte-range lock via LockFileEx on
+    /// the CRT descriptor's HANDLE (same pattern as StorageLease).
+    private static func lockExclusive(_ fd: Int32) -> Bool {
+        guard let handle = lockHandle(fd) else { return false }
+        var overlapped = OVERLAPPED()
+        // LockFileEx returns BOOL (Swift Bool); the flag #defines import as
+        // Int32 and need a DWORD conversion for the DWORD parameters.
+        return LockFileEx(handle, DWORD(LOCKFILE_EXCLUSIVE_LOCK), 0, 1, 0, &overlapped)
+    }
+
+    private static func unlock(_ fd: Int32) {
+        guard let handle = lockHandle(fd) else { return }
+        var overlapped = OVERLAPPED()
+        UnlockFileEx(handle, 0, 1, 0, &overlapped)
+    }
+
+    private static func lockHandle(_ fd: Int32) -> UnsafeMutableRawPointer? {
+        let raw = _get_osfhandle(fd)
+        guard raw != -1 else { return nil }
+        return UnsafeMutableRawPointer(bitPattern: raw)
+    }
+
+    /// The O_NOFOLLOW equivalent: refuse to open through a reparse point
+    /// (symlink, junction).
+    private static func isReparsePoint(_ path: String) -> Bool {
+        var wide = Array(path.utf16)
+        wide.append(0)
+        return wide.withUnsafeBufferPointer { buffer in
+            guard let wpath = buffer.baseAddress else { return false }
+            let attrs = GetFileAttributesW(wpath)
+            return attrs != INVALID_FILE_ATTRIBUTES && attrs & DWORD(FILE_ATTRIBUTE_REPARSE_POINT) != 0
+        }
+    }
+
+    /// A regular file (not a directory, reparse point, or missing).
+    private static func isRegularFile(_ path: String) -> Bool {
+        var wide = Array(path.utf16)
+        wide.append(0)
+        return wide.withUnsafeBufferPointer { buffer in
+            guard let wpath = buffer.baseAddress else { return false }
+            let attrs = GetFileAttributesW(wpath)
+            return attrs != INVALID_FILE_ATTRIBUTES
+                && attrs & DWORD(FILE_ATTRIBUTE_DIRECTORY) == 0
+                && attrs & DWORD(FILE_ATTRIBUTE_REPARSE_POINT) == 0
+        }
+    }
+    #endif
 }
 
 /// Just enough DER for the certificates above and for reading them back.

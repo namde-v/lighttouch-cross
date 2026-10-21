@@ -175,8 +175,13 @@ extension DeviceServices {
                 )
                 let status: Int32 =
                     switch child.terminationStatus {
+                    #if os(Windows)
+                    // No signals on Windows, and the exit code is a DWORD (UInt32).
+                    case .exited(let code): Int32(bitPattern: code)
+                    #else
                     case .exited(let code): code
                     case .signaled(let signal): -signal
+                    #endif
                     }
                 return (status, child.standardOutput, child.standardError)
             }

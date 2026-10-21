@@ -16,6 +16,9 @@
 
 import FirmwareSchema
 import Foundation
+#if os(Windows)
+import WinSDK
+#endif
 
 /// Nonisolated: the project defaults to MainActor, and these are read from the
 /// detached tasks that do the blocking device work as well as from the UI.
@@ -81,14 +84,38 @@ public nonisolated enum Bundled {
     public static let appLockMessage = "Light Touch is already running with this library"
     private static let appLock: Result<Int32, any Error> = Result {
         let state = try layout.get().state
+        #if os(Windows)
+        // No flock(2) or O_CLOEXEC on Windows: an exclusive LockFileEx on the
+        // CRT descriptor's HANDLE. Closing the descriptor releases the lock,
+        // matching the flock contract below.
+        let fd = open(state.appendingPathComponent(".app-lock").path, O_RDWR | O_CREAT | _O_NOINHERIT, 0o600)
+        guard fd >= 0 else { throw StorageLocations.posixError() }
+        guard windowsTryLock(fd) else {
+            close(fd)
+            throw CocoaError(.fileLocking, userInfo: [NSLocalizedDescriptionKey: appLockMessage + "."])
+        }
+        #else
         let fd = open(state.appendingPathComponent(".app-lock").path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw StorageLocations.posixError() }
         guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
             close(fd)
             throw CocoaError(.fileLocking, userInfo: [NSLocalizedDescriptionKey: appLockMessage + "."])
         }
+        #endif
         return fd
     }
+
+    #if os(Windows)
+    /// LockFileEx-based flock(LOCK_EX | LOCK_NB) replacement for appLock.
+    private static func windowsTryLock(_ fd: Int32) -> Bool {
+        let raw = _get_osfhandle(fd)
+        guard raw != -1, let handle = UnsafeMutableRawPointer(bitPattern: raw) else { return false }
+        var overlapped = OVERLAPPED()
+        // LockFileEx returns BOOL (Swift Bool); the flag #defines import as
+        // Int32 and need a DWORD conversion for the DWORD parameters.
+        return LockFileEx(handle, DWORD(LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY), 0, 1, 0, &overlapped)
+    }
+    #endif
 
     public static func requireStorage() throws { _ = try appLock.get() }
 

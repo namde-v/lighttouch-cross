@@ -263,9 +263,14 @@ public enum DiskImage {
 
     /// Cleanup must distinguish an empty attachment list from a failed query.
     public static func checkedAttachedImages() async throws -> [(image: String, device: String)] {
+        #if os(Windows)
+        // No loop devices on Windows; nothing can be attached.
+        return []
+        #else
         if backend == .linux { return try await linuxAttachedImages() }
         let (status, out) = try await exec(["/usr/bin/hdiutil", "info", "-plist"])
         return try parseAttachments(status: status, output: out)
+        #endif
     }
 
     /// Linux: the loop devices with backing files, through `losetup --list --json`.
@@ -339,8 +344,15 @@ public enum DiskImage {
         try Task.checkCancellation()
         let status: Int32 =
             switch result.terminationStatus {
-            case .exited(let code): code
+            case .exited(let code):
+                #if os(Windows)
+                Int32(bitPattern: code) // TerminationStatus.Code == DWORD (UInt32) on Windows
+                #else
+                code // TerminationStatus.Code == CInt (Int32) elsewhere
+                #endif
+            #if !os(Windows)
             case .signaled(let signal): -signal
+            #endif
             }
         return (status, result.standardOutput + result.standardError)
     }

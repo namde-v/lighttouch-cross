@@ -92,7 +92,12 @@ public enum VolumeRebuild {
         @Sendable func read(_ n: Int, into buf: inout [UInt8]) throws -> Bool {
             let (cs, pg) = predict(n)
             guard let u = source(cs, pg) else { return false }
+            #if os(Windows)
+            // winOpen: the POSIX open spelling crashes Swift 6.2.4's Windows overlay at runtime.
+            let fd = winOpen(u.path, read: true)
+            #else
             let fd = open(u.path, O_RDONLY)
+            #endif
             guard fd >= 0 else { throw FirmwareError(.internal, "\(u.path): \(String(cString: strerror(errno)))") }
             defer { close(fd) }
             let got = buf.withUnsafeMutableBytes { pread(fd, $0.baseAddress, page, 0) }
@@ -223,7 +228,12 @@ public enum VolumeRebuild {
 
     /// A new sparse file of `bytes`, open for writing.
     static func create(_ u: URL, bytes: Int) throws -> Int32 {
+        #if os(Windows)
+        // winOpen: the POSIX open spelling crashes Swift 6.2.4's Windows overlay at runtime.
+        let fd = winOpen(u.path, read: true, write: true, create: true, truncate: true)
+        #else
         let fd = open(u.path, O_RDWR | O_CREAT | O_TRUNC, 0o600)
+        #endif
         guard fd >= 0, ftruncate(fd, off_t(bytes)) == 0 else {
             if fd >= 0 { close(fd) }
             throw FirmwareError(
