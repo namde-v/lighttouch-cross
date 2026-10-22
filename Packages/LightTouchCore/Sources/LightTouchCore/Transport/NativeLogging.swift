@@ -217,6 +217,16 @@ public nonisolated final class LogPipeReader: @unchecked Sendable {
         func scan(_ chunk: Data) {
             lock.lock(); defer { lock.unlock() }; watch?.scan(chunk)
         }
+        /// Drain generation, bumped by the reader thread after every appended
+        /// chunk. Lets flush() observe drainage without touching the pipe
+        /// handle (see flush()).
+        private var drainEpoch: UInt64 = 0
+        var epoch: UInt64 {
+            lock.lock(); defer { lock.unlock() }; return drainEpoch
+        }
+        func noteDrained() {
+            lock.lock(); defer { lock.unlock() }; drainEpoch &+= 1
+        }
         /// Marks stopped; returns true for the first caller, which closes the
         /// descriptor to unblock the reader thread.
         func stopFirst() -> Bool {
@@ -297,6 +307,7 @@ public nonisolated final class LogPipeReader: @unchecked Sendable {
                 let chunk = Data(bytes.prefix(Int(count)))
                 log.append(chunk)
                 readerState.scan(chunk)
+                readerState.noteDrained()
             }
             readerState.markStopped()
             cleanup?()
@@ -329,18 +340,6 @@ public nonisolated final class LogPipeReader: @unchecked Sendable {
     }
     #endif
 
-    #if os(Windows)
-    /// Bytes waiting in the pipe: the non-blocking read check (no O_NONBLOCK
-    /// on Windows).
-    private func availableBytes() -> DWORD {
-        let raw = _get_osfhandle(descriptor)
-        guard raw != -1, let handle = UnsafeMutableRawPointer(bitPattern: raw) else { return 0 }
-        var available: DWORD = 0
-        guard PeekNamedPipe(handle, nil, 0, nil, &available, nil) else { return 0 }
-        return available
-    }
-    #endif
-
     #if !os(Windows)
     private func readChunk() {
         guard !stopped else { return }
@@ -360,16 +359,38 @@ public nonisolated final class LogPipeReader: @unchecked Sendable {
     public func flush() {
         #if os(Windows)
         guard !readerState.isStopped else { return }
-        // The reader thread drains continuously; wait until the pipe is empty
-        // instead of reading here. A manual read() races the reader thread:
-        // availableBytes() can report bytes that the reader consumes before
-        // read() runs, and read() then blocks forever on the empty pipe.
+        // The reader thread drains the pipe continuously on its own thread;
+        // a manual read() here would race it (it can consume bytes between
+        // our check and our read, leaving read() blocked forever on an empty
+        // pipe), so flush() only waits for drainage instead of reading.
+        //
+        // flush() must NEVER call PeekNamedPipe (or any other syscall on the
+        // pipe handle) to check drainage: with the reader thread parked in a
+        // blocking read() on the same handle, PeekNamedPipe can itself block
+        // indefinitely inside the syscall (observed: 10+ minutes in
+        // ntdll!ZwFsControlFile). The deadline below would never even be
+        // evaluated, hanging the caller forever — fatal when the caller is
+        // the MainActor, because the whole swift-testing suite then starves
+        // (BootStageTests.theSerialWatchReportsEachPhraseOnceAcrossWrites).
+        //
+        // Instead, observe drainage through the reader thread's drain epoch:
+        // a lock + integer compare + sleep. No syscalls, so this loop can
+        // never wedge in the kernel. Wait for the epoch to advance past this
+        // point (bytes written before flush() got drained), then for
+        // quiescence, all bounded by the same 10s deadline as before.
         let deadline = Date().addingTimeInterval(10)
-        while availableBytes() > 0 && Date() < deadline {
+        let startEpoch = readerState.epoch
+        let firstDeadline = Date().addingTimeInterval(2)
+        while readerState.epoch == startEpoch && Date() < firstDeadline {
             Thread.sleep(forTimeInterval: 0.01)
         }
-        // Settle: the reader thread may be appending a chunk it read just now.
-        Thread.sleep(forTimeInterval: 0.05)
+        // Quiescence: the reader may still be draining a burst; wait until
+        // the epoch stops advancing.
+        while Date() < deadline {
+            let e = readerState.epoch
+            Thread.sleep(forTimeInterval: 0.05)
+            if readerState.epoch == e { break }
+        }
         #else
         queue.sync {
             guard !stopped else { return }
