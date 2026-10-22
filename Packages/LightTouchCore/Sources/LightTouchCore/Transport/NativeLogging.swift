@@ -378,9 +378,16 @@ public nonisolated final class LogPipeReader: @unchecked Sendable {
         // never wedge in the kernel. Wait for the epoch to advance past this
         // point (bytes written before flush() got drained), then for
         // quiescence, all bounded by the same 10s deadline as before.
+        //
+        // The first bound is deliberately short (0.3s): the reader thread
+        // wakes from its blocking read() within milliseconds of data
+        // arriving, so 0.3s is ample for genuine drainage while keeping an
+        // idle flush() fast (the old code returned in ~50ms on an empty
+        // pipe; a multi-second idle wait would regress timing-sensitive
+        // callers such as DeviceProcess.onDeath).
         let deadline = Date().addingTimeInterval(10)
         let startEpoch = readerState.epoch
-        let firstDeadline = Date().addingTimeInterval(2)
+        let firstDeadline = Date().addingTimeInterval(0.3)
         while readerState.epoch == startEpoch && Date() < firstDeadline {
             Thread.sleep(forTimeInterval: 0.01)
         }
