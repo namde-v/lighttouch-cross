@@ -160,7 +160,7 @@ struct StorageLocationsTests {
                 var remaining = buffer.count
                 var cursor = base
                 while remaining > 0 {
-                    let written = write(capture.writeDescriptor, cursor, UInt32(remaining))
+                    let written = corecrt.write(capture.writeDescriptor, cursor, UInt32(remaining))
                     guard written > 0 else { throw StorageLocations.posixError() }
                     cursor = cursor.advanced(by: Int(written))
                     remaining -= Int(written)
@@ -202,7 +202,7 @@ struct StorageLocationsTests {
             // below stays the single, owning close.
             try marker.withUnsafeBytes { buffer in
                 guard let base = buffer.baseAddress else { return }
-                guard write(descriptors[1], base, UInt32(buffer.count)) == Int32(buffer.count) else {
+                guard corecrt.write(descriptors[1], base, UInt32(buffer.count)) == Int32(buffer.count) else {
                     throw StorageLocations.posixError()
                 }
             }
