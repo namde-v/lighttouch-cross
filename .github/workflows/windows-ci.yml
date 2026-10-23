@@ -233,6 +233,18 @@ jobs:
             # 220-min budget inside the 4h job timeout (user order 2026-10-19).
             $bin = ".build\x86_64-unknown-windows-msvc\release\LightTouchCorePackageTests.xctest"
             $p = Start-Process -FilePath $bin -ArgumentList "--testing-library", "swift-testing" -RedirectStandardOutput "full-stdout.log" -RedirectStandardError "full-stderr.log" -NoNewWindow -PassThru
+            # Crash monitor (2026-10-23): the suite now runs past the old
+            # freeze but the binary dies with 0xC000001D (illegal instruction)
+            # mid-suite. Attach procdump as debugger so a hard crash leaves
+            # crash.dmp with the exact trapping stack instead of just an exit
+            # code. Non-fatal if it fails to attach; exits on its own when
+            # the test binary exits.
+            $crashMonitor = $null
+            try {
+              $crashMonitor = Start-Process -FilePath "procdump" -ArgumentList "-accepteula","-ma","-e",$p.Id,"crash.dmp" -NoNewWindow -PassThru -ErrorAction Stop
+            } catch {
+              Write-Host "crash-monitor attach failed (non-fatal): $_"
+            }
             # Progress watchdog (2026-10-21): the suite froze ~6s after launch on
             # 2026-10-21 (35/1517 completions, then 3h40m silence) and 2026-10-19.
             # If full-stderr.log stops growing for 10 min, the suite has frozen —
@@ -274,6 +286,8 @@ jobs:
               exit 1
             }
             Write-Host ("TEST RESULT: exited, code={0}" -f $p.ExitCode)
+            if ($null -ne $crashMonitor -and -not $crashMonitor.HasExited) { $crashMonitor.Kill() }
+            if (Test-Path "crash.dmp") { Write-Host "Crash dump captured: crash.dmp" }
             Get-Content "full-stderr.log" | Tee-Object -FilePath test.log | Select-Object -Last 5 | Write-Host
             if ($p.ExitCode -ne 0) { exit $p.ExitCode }
           } else {
@@ -308,5 +322,6 @@ jobs:
             Packages/${{ matrix.package }}/full-stdout.log
             Packages/${{ matrix.package }}/full-stderr.log
             Packages/${{ matrix.package }}/ltc-freeze.dmp
+            Packages/${{ matrix.package }}/crash.dmp
           if-no-files-found: warn
           retention-days: 30
