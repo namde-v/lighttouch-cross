@@ -330,12 +330,13 @@ public enum CatalogClient {
             if let stored = known ?? details?.md5.flatMap(IPALibrary.stored(md5:)) {
                 try IPALibrary.clone(stored, to: file)
             } else if let details {
-                #if os(Linux)
+                #if os(Linux) || os(Windows)
                 // corelibs-foundation's URLSession.download(for:delegate:)
-                // traps (SIGILL) on Linux when a custom URLProtocol finishes
-                // the download; fetch with data(for:) and stage to a temp
-                // file. (LegacyStoreStub sends single-chunk on Linux because
-                // data tasks drop all but the first didLoad chunk.)
+                // traps (SIGILL on Linux, 0xC000001D on Windows) when a custom
+                // URLProtocol finishes the download; fetch with data(for:) and
+                // stage to a temp file. (LegacyStoreStub sends single-chunk on
+                // these platforms because data tasks drop all but the first
+                // didLoad chunk.)
                 let (bytes, response) = try await session.data(
                     for: request(current.downloadURL)
                 )
