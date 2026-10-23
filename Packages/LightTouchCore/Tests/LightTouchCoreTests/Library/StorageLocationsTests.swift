@@ -149,9 +149,28 @@ struct StorageLocationsTests {
         try withTemporaryDirectory { logs in
             let url = logs.appendingPathComponent("stream.log")
             let capture = try ProcessLogCapture(url: url)
+            let payload = Data(repeating: 65, count: 2_300_000)
+            #if os(Windows)
+            // FileHandle(fileDescriptor:) must not be used on Windows: its
+            // deinit closes the underlying HANDLE even with closeOnDealloc:
+            // false, corrupting the pipe teardown and crashing the test binary
+            // (0xC000001D in fclose during deinit). Write via the UCRT directly.
+            try payload.withUnsafeBytes { buffer in
+                guard let base = buffer.baseAddress else { return }
+                var remaining = buffer.count
+                var cursor = base
+                while remaining > 0 {
+                    let written = write(capture.writeDescriptor, cursor, UInt32(remaining))
+                    guard written > 0 else { throw StorageLocations.posixError() }
+                    cursor = cursor.advanced(by: Int(written))
+                    remaining -= Int(written)
+                }
+            }
+            #else
             try FileHandle(fileDescriptor: capture.writeDescriptor, closeOnDealloc: false).write(
-                contentsOf: Data(repeating: 65, count: 2_300_000)
+                contentsOf: payload
             )
+            #endif
             capture.flush()
             for path in [url, url.appendingPathExtension("1")] {
                 let data = try Data(contentsOf: path)
@@ -176,9 +195,22 @@ struct StorageLocationsTests {
             #endif
             let url = logs.appendingPathComponent("eof.log")
             let reader = try LogPipeReader(descriptor: descriptors[0], log: RotatingLog(url: url))
+            let marker = Data("EOF marker".utf8)
+            #if os(Windows)
+            // FileHandle(fileDescriptor:) must not be used on Windows (see
+            // above): write via the UCRT directly so close(descriptors[1])
+            // below stays the single, owning close.
+            try marker.withUnsafeBytes { buffer in
+                guard let base = buffer.baseAddress else { return }
+                guard write(descriptors[1], base, UInt32(buffer.count)) == Int32(buffer.count) else {
+                    throw StorageLocations.posixError()
+                }
+            }
+            #else
             try FileHandle(fileDescriptor: descriptors[1], closeOnDealloc: false).write(
-                contentsOf: Data("EOF marker".utf8)
+                contentsOf: marker
             )
+            #endif
             close(descriptors[1])
             try await Task.sleep(for: .milliseconds(30))
             reader.flush()
