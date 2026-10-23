@@ -97,12 +97,12 @@ nonisolated final class LegacyStoreStub: URLProtocol, @unchecked Sendable {
                 headerFields: ["Content-Length": String(reply.body.count)]
             )!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            #if os(Linux)
+            #if os(Linux) || os(Windows)
             // corelibs-foundation's URLSession mishandles multiple didLoad
             // calls from a URLProtocol (data tasks keep only the first chunk;
-            // download tasks hang or trap). Send the body in one didLoad;
-            // preserve the streaming timing for the cancellation test by
-            // delaying up front instead of between chunks.
+            // download tasks hang or trap — 0xC000001D on Windows). Send the
+            // body in one didLoad; preserve the streaming timing for the
+            // cancellation test by delaying up front instead of between chunks.
             if reply.chunk > 0, reply.pause > 0 {
                 let chunks = (reply.body.count + reply.chunk - 1) / reply.chunk
                 let delay = reply.pause * Double(chunks)

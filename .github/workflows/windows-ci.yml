@@ -182,6 +182,44 @@ jobs:
           Run-Binary "help" @("--help") 30
           Get-ChildItem -Filter *.dmp -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ("DIAG: crash dump {0} ({1} bytes)" -f $_.Name, $_.Length) }
 
+      # procdump is NOT on the win25-vs2026 runner image (verified 2026-10-22:
+      # "The term 'procdump' is not recognized"). The Test step's freeze
+      # watchdog needs it to capture ltc-freeze.dmp. Install it before Test:
+      # Chocolatey first, direct Sysinternals download as fallback.
+      # Non-interactive; never fails the job (watchdog kills without a dump
+      # if procdump is unavailable).
+      - name: Install procdump
+        if: matrix.package == 'LightTouchCore'
+        run: |
+          if (Get-Command procdump -ErrorAction SilentlyContinue) {
+            Write-Host "procdump already on PATH"
+            exit 0
+          }
+          $ok = $false
+          try {
+            choco install procdump -y --no-progress 2>&1 | Select-Object -Last 3 | Write-Host
+            if (Get-Command procdump -ErrorAction SilentlyContinue) { $ok = $true }
+          } catch { Write-Host "choco install failed (non-fatal): $_" }
+          if (-not $ok) {
+            Write-Host "Falling back to direct Sysinternals download..."
+            try {
+              $zip = Join-Path $env:RUNNER_TEMP "procdump.zip"
+              $dir = Join-Path $env:RUNNER_TEMP "procdump"
+              Invoke-WebRequest -Uri "https://download.sysinternals.com/files/Procdump.zip" -OutFile $zip
+              Expand-Archive -Path $zip -DestinationPath $dir -Force
+              # Persist for subsequent steps in this job:
+              $dir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+              $env:PATH = "$dir;$env:PATH"
+              if (Get-Command procdump -ErrorAction SilentlyContinue) { $ok = $true }
+            } catch { Write-Host "Sysinternals download failed (non-fatal): $_" }
+          }
+          if ($ok) {
+            & procdump -accepteula -? 2>&1 | Select-Object -First 2 | Write-Host
+            Write-Host "procdump ready"
+          } else {
+            Write-Host "WARNING: procdump unavailable — freeze watchdog will kill without a minidump"
+          }
+
       - name: Test
         timeout-minutes: 240
         run: |
@@ -195,12 +233,61 @@ jobs:
             # 220-min budget inside the 4h job timeout (user order 2026-10-19).
             $bin = ".build\x86_64-unknown-windows-msvc\release\LightTouchCorePackageTests.xctest"
             $p = Start-Process -FilePath $bin -ArgumentList "--testing-library", "swift-testing" -RedirectStandardOutput "full-stdout.log" -RedirectStandardError "full-stderr.log" -NoNewWindow -PassThru
-            if (-not $p.WaitForExit(13200000)) {
-              Write-Host "TEST RESULT: TIMEOUT after 220 min (suite too slow for the 4h job)"
+            # Crash monitor (2026-10-23): the suite now runs past the old
+            # freeze but the binary dies with 0xC000001D (illegal instruction)
+            # mid-suite. Attach procdump as debugger so a hard crash leaves
+            # crash.dmp with the exact trapping stack instead of just an exit
+            # code. Non-fatal if it fails to attach; exits on its own when
+            # the test binary exits.
+            $crashMonitor = $null
+            try {
+              $crashMonitor = Start-Process -FilePath "procdump" -ArgumentList "-accepteula","-ma","-e",$p.Id,"crash.dmp" -NoNewWindow -PassThru -ErrorAction Stop
+            } catch {
+              Write-Host "crash-monitor attach failed (non-fatal): $_"
+            }
+            # Progress watchdog (2026-10-21): the suite froze ~6s after launch on
+            # 2026-10-21 (35/1517 completions, then 3h40m silence) and 2026-10-19.
+            # If full-stderr.log stops growing for 10 min, the suite has frozen —
+            # capture a minidump for forensics, then kill. Don't burn 220 min.
+            $lastSize = -1
+            $stalledSince = [DateTime]::UtcNow
+            $deadline = [DateTime]::UtcNow.AddMinutes(220)
+            $reason = ""
+            while (-not $p.HasExited) {
+              Start-Sleep -Seconds 30
+              if ([DateTime]::UtcNow -ge $deadline) {
+                $reason = "TIMEOUT after 220 min (suite too slow for the 4h job)"
+                break
+              }
+              $logFile = Get-Item "full-stderr.log" -ErrorAction SilentlyContinue
+              $size = if ($null -eq $logFile) { 0 } else { $logFile.Length }
+              if ($size -gt $lastSize) {
+                $lastSize = $size
+                $stalledSince = [DateTime]::UtcNow
+              } elseif ([DateTime]::UtcNow - $stalledSince -gt [TimeSpan]::FromMinutes(10)) {
+                $reason = "STALLED — no test output for 10 min (last size $lastSize bytes)"
+                break
+              }
+            }
+            if (-not $p.HasExited) {
+              Write-Host "TEST RESULT: $reason"
+              # Capture a minidump BEFORE killing: reveals the exact blocking
+              # stack of the frozen suite (cf. ltc-suite-analysis/ANALYSIS.md).
+              # procdump is installed by the "Install procdump" step above;
+              # if it is still missing, failure is non-fatal (watchdog still
+              # kills the hang).
+              try {
+                & procdump -accepteula -ma $p.Id "ltc-freeze.dmp" 2>&1 | Write-Host
+                Write-Host "Minidump captured: ltc-freeze.dmp"
+              } catch {
+                Write-Host "procdump failed (non-fatal): $_"
+              }
               $p.Kill()
               exit 1
             }
             Write-Host ("TEST RESULT: exited, code={0}" -f $p.ExitCode)
+            if ($null -ne $crashMonitor -and -not $crashMonitor.HasExited) { $crashMonitor.Kill() }
+            if (Test-Path "crash.dmp") { Write-Host "Crash dump captured: crash.dmp" }
             Get-Content "full-stderr.log" | Tee-Object -FilePath test.log | Select-Object -Last 5 | Write-Host
             if ($p.ExitCode -ne 0) { exit $p.ExitCode }
           } else {
@@ -234,5 +321,7 @@ jobs:
             Packages/${{ matrix.package }}/test.log
             Packages/${{ matrix.package }}/full-stdout.log
             Packages/${{ matrix.package }}/full-stderr.log
+            Packages/${{ matrix.package }}/ltc-freeze.dmp
+            Packages/${{ matrix.package }}/crash.dmp
           if-no-files-found: warn
           retention-days: 30
