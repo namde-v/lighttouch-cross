@@ -8,6 +8,11 @@ import Testing
 /// `edit --action begin` writes work/edit.json, commit and discard remove it; a device marked unclean fails as a 1.x
 /// FTL not shut down cleanly. It logs every call, and holds one call
 /// until the test lets it go.
+/// Windows: the firmwarekit stand-in below is a POSIX shell script, and Windows CI has no shell
+/// in the subprocess launch path — CreateProcess on a #!/bin/sh file fails win32(193), so the
+/// fake never runs (empty `calls`, win32(193) errors). Same reason LockdownToolsTests is gated
+/// off Windows. These tests keep running on macOS/Linux.
+#if !os(Windows)
 @MainActor struct DeviceFilesystemEditsTests {
     let session = "6F8B1C8E-2D8E-4F0E-9C1A-3A3B0E7F5D11"
 
@@ -405,3 +410,4 @@ import Testing
         }
     }
 }
+#endif
