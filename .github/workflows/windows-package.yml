@@ -153,6 +153,24 @@ jobs:
           gh run download ${{ steps.run-id.outputs.run_id }} --name lighttouch-qt-ui-windows-x86_64 --dir qt-artifact
           if (-not (Test-Path qt-artifact/LightTouch.exe)) { Write-Warning 'Qt UI artifact not present yet (expected until Phase 6 lands)'; exit 1 }
 
+      - name: Probe Swift toolchain layout (temporary diagnostic)
+        run: |
+          $swiftc = (Get-Command swiftc.exe).Source
+          Write-Host "swiftc: $swiftc"
+          $binDir = Split-Path $swiftc
+          $usrDir = Split-Path $binDir
+          $root = Split-Path $usrDir
+          Write-Host "toolchain root guess: $root"
+          Write-Host '--- toolchain root dirs ---'
+          Get-ChildItem $root -Directory -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+          Write-Host '--- usr dirs ---'
+          Get-ChildItem $usrDir -Directory -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+          Write-Host '--- lib/swift tree (depth 2) ---'
+          if (Test-Path (Join-Path $usrDir 'lib\swift')) { Get-ChildItem (Join-Path $usrDir 'lib\swift') -Recurse -Depth 2 -Directory -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName } } else { Write-Host 'NO lib\swift dir' }
+          Write-Host '--- swiftCore.dll search under toolchain root ---'
+          Get-ChildItem $root -Recurse -Filter swiftCore.dll -File -ErrorAction SilentlyContinue | Select-Object -First 5 | ForEach-Object { Write-Host $_.FullName }
+          Write-Host '--- probe done ---'
+
       - name: Assemble portable layout
         run: |
           $layout = 'LightTouch'
