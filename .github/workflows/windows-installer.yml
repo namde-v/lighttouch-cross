@@ -98,17 +98,19 @@ jobs:
           Write-Host "Using WiX from $wixBin"
           $env:Path += ";$wixBin"
           New-Item -ItemType Directory -Force -Path obj | Out-Null
-          heat.exe dir staged/LightTouch -dr INSTALLDIR -cg HarvestedComponents -gg -scom -sreg -sfrag -srd -out harvested.wxs
+          heat.exe dir staged/LightTouch -dr INSTALLDIR -cg HarvestedComponents -gg -scom -sreg -sfrag -srd -var var.SourceDir -out harvested.wxs
           if ($LASTEXITCODE -ne 0) { Write-Error 'heat failed'; exit 1 }
           # NOTE: -d values MUST be quoted: unquoted -dProductVersion=0.1.0
           # was split by the PowerShell/native-arg layer into
           # -dProductVersion=0 plus a bogus source file '.1.0'
           # (candle CNDL0103, run 40117462145). Quoting is the standard
           # WiX-on-PowerShell workaround.
-          # NOTE: heat emits File Source="SourceDir\<file>" — SourceDir is a
-          # bind-time variable that MUST be defined at candle time, or light
-          # fails LGHT0103 for every file (run 40117772823). Point it at the
-          # harvested directory.
+          # NOTE: heat WITHOUT -var emits literal File Source="SourceDir\<file>",
+          # and a candle -dSourceDir define does NOT substitute a literal
+          # prefix (only $(var.SourceDir) references) — that is why run
+          # 40117988627 still failed LGHT0103 with the -d define present.
+          # -var var.SourceDir makes heat emit Source="$(var.SourceDir)\<file>",
+          # which the candle -dSourceDir define below actually substitutes.
           candle.exe -dProductVersion="0.1.0" -dHasExe="$env:HAS_EXE" -dSourceDir="staged\LightTouch" installer/windows/Product.wxs harvested.wxs -o obj\
           if ($LASTEXITCODE -ne 0) { Write-Error 'candle failed'; exit 1 }
           light.exe obj/*.wixobj -ext WixUIExtension -cultures:en-us -o LightTouch-windows-x86_64.msi
