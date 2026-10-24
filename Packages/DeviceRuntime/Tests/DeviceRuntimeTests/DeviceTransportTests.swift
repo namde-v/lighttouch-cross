@@ -115,9 +115,13 @@ struct DeviceTransportTests {
             )
         }
     }
+    #endif
 
     /// The status block, frame ring writer/reader, and the alpha-opaque blit,
-    /// all in-process (no spawn).
+    /// all in-process (no spawn). Runs on Windows too: the helper-side
+    /// segments are pagefile-backed file mappings there (ShmSurface).
+    /// Only the spawn-based tests above stay POSIX-gated (the Windows
+    /// transport — loopback socket + hello — is not implemented yet).
     @Test func statusBlockAndFrameRingInProcess() {
         let status = StatusBlock.create()
         #expect(status.isValid)
@@ -157,9 +161,12 @@ struct DeviceTransportTests {
         #expect(snapshot.heartbeat == 41)
         #expect(snapshot.width == 8)
         #expect(snapshot.height == 4)
+        #if os(Windows)
+        #expect(snapshot.helperPID == Int32(bitPattern: GetCurrentProcessId()))
+        #else
         #expect(snapshot.helperPID == getpid())
+        #endif
     }
-    #endif
 
     /// WebProxyCA: create the CA files, reload them, mint a leaf for a host,
     /// and verify the leaf's RSA/SHA-1 signature against the CA public key.

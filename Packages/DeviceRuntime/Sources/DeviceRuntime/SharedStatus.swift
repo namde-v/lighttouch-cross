@@ -10,8 +10,12 @@
 // (seq-cst). The reader stores `held` and re-reads the serial. A stalled
 // heartbeat means the helper is wedged; stalled frames, the guest.
 //
-// Transport: POSIX shm (shm_open + mmap). Each segment is unlinked immediately
-// after creation, so no name outlives a crashed helper; the app maps the fds
+// Transport: POSIX shm (shm_open + mmap) on POSIX; pagefile-backed file
+// mappings (CreateFileMapping/MapViewOfFile) on Windows, helper-side only so
+// far — the app-side open() by name and the hello path are still the future
+// Windows wave (see TRANSPORT_REDESIGN.md). Each segment is unlinked
+// immediately after creation on POSIX, so no name outlives a crashed helper;
+// on Windows the mapping dies with its last handle. The app maps the fds
 // the helper's hello carries over the link socket (DeviceRendezvous.swift).
 // Pixel data is assumed sRGB throughout: the macOS build tagged the surfaces
 // with an sRGB ICC profile so Core Animation would not reinterpret the guest's
@@ -158,6 +162,9 @@ nonisolated public final class ShmSurface: @unchecked Sendable {
     public private(set) var baseAddress: UnsafeMutableRawPointer
 
     private var fd: Int32 = -1
+    // Windows only: the file-mapping handle for this segment (pagefile-backed,
+    // see makeSegment). Nil on POSIX, where the fd owns the segment.
+    private var mapping: UnsafeMutableRawPointer? = nil
     private let stateLock = NSLock()
     private var locked = false  // under stateLock; the writer's lock only
 
@@ -167,7 +174,8 @@ nonisolated public final class ShmSurface: @unchecked Sendable {
         byteCount: Int,
         width: Int,
         height: Int,
-        bytesPerRow: Int
+        bytesPerRow: Int,
+        mapping: UnsafeMutableRawPointer? = nil
     ) {
         self.fd = fd
         self.baseAddress = base
@@ -175,11 +183,16 @@ nonisolated public final class ShmSurface: @unchecked Sendable {
         self.width = width
         self.height = height
         self.bytesPerRow = bytesPerRow
+        self.mapping = mapping
     }
 
     deinit {
         #if os(Windows)
-        fatalError("ShmSurface: the Windows transport uses named file mappings (not implemented yet)")
+        // The mapping handle is the segment's only owner (fd is -1): unmap,
+        // then close. A mapping dies with its last handle, so a crashed
+        // helper leaves nothing behind.
+        UnmapViewOfFile(baseAddress)
+        if let mapping = mapping { CloseHandle(mapping) }
         #else
         munmap(baseAddress, byteCount)
         if fd >= 0 { ltmClose(fd) }
@@ -209,9 +222,23 @@ nonisolated public final class ShmSurface: @unchecked Sendable {
     // Protected by idLock (the shm name only needs process-uniqueness).
     nonisolated(unsafe) private static var nextID: UInt64 = 0
 
-    private static func makeSegment(byteCount: Int) -> (fd: Int32, base: UnsafeMutableRawPointer)? {
+    private static func makeSegment(byteCount: Int) -> (fd: Int32, base: UnsafeMutableRawPointer, mapping: UnsafeMutableRawPointer?)? {
         #if os(Windows)
-        fatalError("ShmSurface: the Windows transport uses named file mappings (not implemented yet)")
+        // Pagefile-backed file mapping (TRANSPORT_REDESIGN.md's named-mapping
+        // direction, first step: helper-side creation only). The mapping is
+        // named pid + monotonic id so the future hello path can re-open it by
+        // name; a crashed helper's handles close with it, so no name leaks.
+        // The app-side open() by name is still unimplemented (see below).
+        guard byteCount > 0, byteCount < Int(UInt32.max) else { return nil }
+        let id = idLock.withLock { () -> UInt64 in defer { nextID += 1 }; return nextID }
+        let name = "LTM.\(GetCurrentProcessId()).\(id)"
+        var segment: (fd: Int32, base: UnsafeMutableRawPointer, mapping: UnsafeMutableRawPointer?)? = nil
+        name.withCString(encodedAs: UTF16.self) { namePtr in
+            guard let mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nil, DWORD(PAGE_READWRITE), 0, DWORD(byteCount), namePtr) else { return }
+            guard let base = MapViewOfFile(mapping, DWORD(FILE_MAP_ALL_ACCESS), 0, 0, 0) else { CloseHandle(mapping); return }
+            segment = (fd: -1, base: base, mapping: mapping)
+        }
+        return segment
         #else
         let id = idLock.withLock { () -> UInt64 in defer { nextID += 1 }; return nextID }
         let name = "/ltm.\(getpid()).\(id)"
@@ -225,7 +252,7 @@ nonisolated public final class ShmSurface: @unchecked Sendable {
         guard let base = mmap(nil, byteCount, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0),
             base != MAP_FAILED
         else { ltmClose(fd); return nil }
-        return (fd, base)
+        return (fd, base, nil)
         #endif
     }
 
@@ -242,7 +269,8 @@ nonisolated public final class ShmSurface: @unchecked Sendable {
             byteCount: StatusBlock.bytes,
             width: StatusBlock.bytes / 8,
             height: 1,
-            bytesPerRow: StatusBlock.bytes
+            bytesPerRow: StatusBlock.bytes,
+            mapping: segment.mapping
         )
     }
 
@@ -257,7 +285,8 @@ nonisolated public final class ShmSurface: @unchecked Sendable {
             byteCount: rowBytes * height,
             width: width,
             height: height,
-            bytesPerRow: rowBytes
+            bytesPerRow: rowBytes,
+            mapping: segment.mapping
         )
     }
 
@@ -311,8 +340,8 @@ nonisolated public struct StatusBlock: @unchecked Sendable {
         memset(block.base, 0, bytes)
         block[.layoutVersion] = layoutVersion
         #if os(Windows)
-        // Unreachable: createStatus() is a Windows stub (named file mappings
-        // are not implemented yet). GetCurrentProcessId for the type-checker.
+        // Helper-side creation works on Windows (pagefile-backed mapping);
+        // only the app-side open() by name is still unimplemented.
         block[.helperPID] = UInt64(GetCurrentProcessId())
         #else
         block[.helperPID] = UInt64(getpid())
