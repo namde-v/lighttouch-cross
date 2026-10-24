@@ -142,9 +142,12 @@ public nonisolated struct DeviceInstance: Codable, Equatable, Identifiable, Send
 
     // MARK: - Paths
 
-    /// Resolves a record path against the state directory.
+    /// Resolves a record path against the state directory. Absolute detection lives in
+    /// HostRuntime (StorageRecordPaths.resolve): the old POSIX-only hasPrefix("/") test
+    /// mangled Windows drive-letter ("C:/...") and UNC paths by prepending the state root
+    /// (state/C:/...), failing boot-path validation for absolute storage layouts.
     public static func url(_ path: String, state: URL) -> URL {
-        path.hasPrefix("/") ? URL(fileURLWithPath: path) : state.appendingPathComponent(path)
+        StorageRecordPaths.resolve(path, relativeRoot: state)
     }
 
     public static func directory(_ id: UUID, state: URL) -> URL {
