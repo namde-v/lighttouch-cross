@@ -235,7 +235,9 @@ nonisolated public final class ShmSurface: @unchecked Sendable {
         var segment: (fd: Int32, base: UnsafeMutableRawPointer, mapping: UnsafeMutableRawPointer?)? = nil
         name.withCString(encodedAs: UTF16.self) { namePtr in
             guard let mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nil, DWORD(PAGE_READWRITE), 0, DWORD(byteCount), namePtr) else { return }
-            guard let base = MapViewOfFile(mapping, DWORD(FILE_MAP_ALL_ACCESS), 0, 0, 0) else { CloseHandle(mapping); return }
+            // FILE_MAP_ALL_ACCESS (0xF001F per WinBase.h) is not imported by
+            // Swift's WinSDK overlay, so spell the value out.
+            guard let base = MapViewOfFile(mapping, DWORD(0xF001F), 0, 0, 0) else { CloseHandle(mapping); return }
             segment = (fd: -1, base: base, mapping: mapping)
         }
         return segment
