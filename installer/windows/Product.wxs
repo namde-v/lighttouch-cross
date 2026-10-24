@@ -4,7 +4,12 @@
   Built by windows-installer.yml from the portable ZIP artifact:
   heat harvests the ZIP's flat LightTouch/ layout into
   HarvestedComponents, so the file list never has to be hand-maintained.
-  Per-user install (no admin): LocalAppDataFolder\LightTouch.
+  Per-machine install (requires admin): ProgramFiles64Folder\LightTouch.
+  Per-user was tried first but Windows Installer ICE38 forbids file
+  KeyPaths for components installing to user-profile folders — every
+  heat-harvested component would need an HKCU registry KeyPath instead.
+  Per-machine install is the standard for this kind of app and makes
+  file KeyPaths legal (run 40118215239 failed ICE38 on all components).
   UpgradeCode below is FIXED FOREVER — changing it breaks upgrades.
   Start Menu shortcut is conditional: it exists only when the Qt UI
   exe (LightTouch.exe, Phase 6) is present; without it the MSI still
@@ -21,15 +26,16 @@
     <Package
       InstallerVersion="200"
       Compressed="yes"
-      InstallScope="perUser"
-      InstallPrivileges="limited"
+      InstallScope="perMachine"
+      InstallPrivileges="elevated"
+      Platform="x64"
       Description="LightTouch portable Windows build"
       Manufacturer="LightTouchMac cross-platform port" />
     <MediaTemplate EmbedCab="yes" />
     <MajorUpgrade
       DowngradeErrorMessage="A newer version of LightTouch is already installed." />
     <Directory Id="TARGETDIR" Name="SourceDir">
-      <Directory Id="LocalAppDataFolder">
+      <Directory Id="ProgramFiles64Folder">
         <Directory Id="INSTALLDIR" Name="LightTouch" />
       </Directory>
       <?if $(var.HasExe) = "true" ?>

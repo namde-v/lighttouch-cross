@@ -1,4 +1,6 @@
-# Windows installer (WiX v3 MSI, per-user, no admin).
+# Windows installer (WiX v3 MSI, per-machine, requires admin).
+# Per-user was tried first but Windows Installer ICE38 forbids file KeyPaths
+# for user-profile components (run 40118215239); per-machine is standard.
 #
 # Builds LightTouch-windows-x86_64.msi from the portable ZIP artifact
 # produced by windows-package.yml. heat harvests the ZIP's flat layout,
