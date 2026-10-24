@@ -100,7 +100,10 @@ jobs:
           Write-Host "Using WiX from $wixBin"
           $env:Path += ";$wixBin"
           New-Item -ItemType Directory -Force -Path obj | Out-Null
-          heat.exe dir staged/LightTouch -dr INSTALLDIR -cg HarvestedComponents -gg -scom -sreg -sfrag -srd -var var.SourceDir -out harvested.wxs
+          # -t Win64.xsl: heat emits 32-bit components by default, and
+          # 32-bit components in ProgramFiles64Folder violate ICE80
+          # (run 40118437924 attempt 2). The transform marks them Win64.
+          heat.exe dir staged/LightTouch -dr INSTALLDIR -cg HarvestedComponents -gg -scom -sreg -sfrag -srd -var var.SourceDir -t installer/windows/Win64.xsl -out harvested.wxs
           if ($LASTEXITCODE -ne 0) { Write-Error 'heat failed'; exit 1 }
           # NOTE: -d values MUST be quoted: unquoted -dProductVersion=0.1.0
           # was split by the PowerShell/native-arg layer into
