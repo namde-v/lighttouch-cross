@@ -100,7 +100,12 @@ jobs:
           New-Item -ItemType Directory -Force -Path obj | Out-Null
           heat.exe dir staged/LightTouch -dr INSTALLDIR -cg HarvestedComponents -gg -scom -sreg -sfrag -srd -out harvested.wxs
           if ($LASTEXITCODE -ne 0) { Write-Error 'heat failed'; exit 1 }
-          candle.exe -dProductVersion=0.1.0 -dHasExe=$env:HAS_EXE installer/windows/Product.wxs harvested.wxs -o obj\
+          # NOTE: -d values MUST be quoted: unquoted -dProductVersion=0.1.0
+          # was split by the PowerShell/native-arg layer into
+          # -dProductVersion=0 plus a bogus source file '.1.0'
+          # (candle CNDL0103, run 40117462145). Quoting is the standard
+          # WiX-on-PowerShell workaround.
+          candle.exe -dProductVersion="0.1.0" -dHasExe="$env:HAS_EXE" installer/windows/Product.wxs harvested.wxs -o obj\
           if ($LASTEXITCODE -ne 0) { Write-Error 'candle failed'; exit 1 }
           light.exe obj/*.wixobj -ext WixUIExtension -cultures:en-us -o LightTouch-windows-x86_64.msi
           if ($LASTEXITCODE -ne 0) { Write-Error 'light failed'; exit 1 }
