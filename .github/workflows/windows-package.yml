@@ -90,10 +90,14 @@ jobs:
           # — but a run whose builds failed (no artifacts) is skipped.
           $inputId = "$env:INPUT_RUN_ID".Trim()
           if ($inputId -and $inputId -ne 'latest') {
-            $view = gh run view $inputId --json databaseId,workflowName,headSha --jq '"\(.databaseId) \(.workflowName) \(.headSha)"' 2>$null
+            # NOTE: gh run view's workflowName is the display name ('Windows'
+            # for windows-ci.yml), NOT the file name — the old check rejected
+            # every real windows-ci run (manual dispatch 40111942823 failed on
+            # exactly this). Validate via the API's path field instead.
+            $view = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$inputId" --jq '"\(.id) \(.path) \(.head_sha)"' 2>$null
             if ($LASTEXITCODE -ne 0 -or -not $view) { Write-Error "Run id $inputId not found or not readable"; exit 1 }
             $parts = $view -split '\s+'
-            if ($parts[1] -ne 'Windows CI') { Write-Error "Run $inputId is workflow '$($parts[1])', not windows-ci"; exit 1 }
+            if ($parts[1] -ne '.github/workflows/windows-ci.yml') { Write-Error "Run $inputId is workflow '$($parts[1])', not windows-ci"; exit 1 }
             $id = $parts[0]; $headSha = $parts[2]
             Write-Host "Packaging explicit windows-ci run $id"
           } else {
