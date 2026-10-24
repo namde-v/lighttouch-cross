@@ -153,39 +153,6 @@ jobs:
           gh run download ${{ steps.run-id.outputs.run_id }} --name lighttouch-qt-ui-windows-x86_64 --dir qt-artifact
           if (-not (Test-Path qt-artifact/LightTouch.exe)) { Write-Warning 'Qt UI artifact not present yet (expected until Phase 6 lands)'; exit 1 }
 
-      - name: Probe Swift toolchain layout (temporary diagnostic)
-        run: |
-          $swiftc = (Get-Command swiftc.exe).Source
-          Write-Host "swiftc: $swiftc"
-          $binDir = Split-Path $swiftc
-          $usrDir = Split-Path $binDir
-          $root = Split-Path $usrDir
-          Write-Host "toolchain root guess: $root"
-          Write-Host '--- toolchain root dirs ---'
-          Get-ChildItem $root -Directory -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
-          Write-Host '--- usr dirs ---'
-          Get-ChildItem $usrDir -Directory -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
-          Write-Host '--- lib/swift tree (depth 2) ---'
-          if (Test-Path (Join-Path $usrDir 'lib\swift')) { Get-ChildItem (Join-Path $usrDir 'lib\swift') -Recurse -Depth 2 -Directory -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName } } else { Write-Host 'NO lib\swift dir' }
-          Write-Host '--- swiftCore.dll search under toolchain root ---'
-          Get-ChildItem $root -Recurse -Filter swiftCore.dll -File -ErrorAction SilentlyContinue | Select-Object -First 5 | ForEach-Object { Write-Host $_.FullName }
-          Write-Host '--- probe done ---'
-
-      - name: Probe Swift runtime location v2 (temporary diagnostic)
-        run: |
-          Write-Host '--- PATH entries mentioning Swift ---'
-          ($env:Path -split ';') | Where-Object { $_ -match 'Swift' } | ForEach-Object { Write-Host $_ }
-          Write-Host '--- where.exe swiftCore.dll ---'
-          where.exe swiftCore.dll 2>&1 | Write-Host
-          Write-Host '--- System32 Swift DLLs ---'
-          Get-ChildItem C:\Windows\System32 -Filter swift*.dll -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
-          Get-ChildItem C:\Windows\System32 -Filter Foundation.dll -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
-          Write-Host '--- Programs\Swift tree swiftCore search (errors shown) ---'
-          $sw = [Diagnostics.Stopwatch]::StartNew()
-          try { Get-ChildItem 'C:\Users\runneradmin\AppData\Local\Programs\Swift' -Recurse -Filter swiftCore.dll -File -ErrorAction Stop | Select-Object -First 5 | ForEach-Object { Write-Host $_.FullName } } catch { Write-Host "SEARCH ERROR: $($_.Exception.Message)" }
-          $sw.Stop(); Write-Host "search took $($sw.ElapsedMilliseconds) ms"
-          Write-Host '--- probe v2 done ---'
-
       - name: Assemble portable layout
         run: |
           $layout = 'LightTouch'
@@ -209,23 +176,38 @@ jobs:
             Copy-Item qt-artifact/LightTouch.exe $layout -Force
           }
 
-          # Swift runtime DLLs: swiftc's bin dir holds dispatch/BlocksRuntime,
-          # but the Swift stdlib DLLs (swiftCore, swift_Concurrency,
-          # Foundation) live in lib\swift\windows under the toolchain
-          # (swift.org Windows layout) — the old single-dir lookup warned
-          # and shipped a ZIP without swiftCore.dll (run 40109540680).
+          # Swift runtime DLLs: swift.org's installer SPLITS compiler and
+          # runtime. swiftc lives in Toolchains\<ver>+Asserts\usr\bin (which
+          # holds dispatch/BlocksRuntime but NO stdlib DLLs); the stdlib
+          # DLLs live in Runtimes\<ver>\usr\bin, which is on PATH (that is
+          # how windows-ci test binaries load swiftCore at run time).
+          # Probe proof (run 40116520974): where.exe swiftCore.dll ->
+          # ...\Programs\Swift\Runtimes\6.2.4\usr\bin\swiftCore.dll; System32
+          # has no Swift DLLs; the toolchain root has no swiftCore at all.
           $binDir = Split-Path (Get-Command swiftc.exe).Source
           $libDir = Join-Path (Split-Path $binDir) 'lib\swift\windows'
+          $toolchainRoot = Split-Path (Split-Path $binDir)
+          $swiftHome = Split-Path (Split-Path $toolchainRoot)
           $candidates = @($binDir, $libDir, (Join-Path $libDir 'x86_64'))
+          $runtimesDir = Join-Path $swiftHome 'Runtimes'
+          if (Test-Path $runtimesDir) {
+            Get-ChildItem $runtimesDir -Directory -ErrorAction SilentlyContinue | ForEach-Object { $candidates += (Join-Path $_.FullName 'usr\bin') }
+          }
           foreach ($dll in 'swiftCore.dll', 'swift_Concurrency.dll', 'Foundation.dll', 'dispatch.dll', 'BlocksRuntime.dll') {
             $found = $false
-            foreach ($d in $candidates) {
-              $p = Join-Path $d $dll
-              if (Test-Path $p) { Copy-Item $p $layout -Force; Write-Host "Swift runtime $dll <- $d"; $found = $true; break }
+            $w = where.exe $dll 2>$null
+            if ($LASTEXITCODE -eq 0 -and $w) {
+              $p = ($w | Select-Object -First 1).Trim()
+              Copy-Item $p $layout -Force; Write-Host "Swift runtime $dll <- PATH: $p"; $found = $true
+            } else {
+              foreach ($d in $candidates) {
+                $p = Join-Path $d $dll
+                if (Test-Path $p) { Copy-Item $p $layout -Force; Write-Host "Swift runtime $dll <- $d"; $found = $true; break }
+              }
             }
-            if (-not $found) { Write-Warning "Swift runtime DLL not found in toolchain: $dll (searched: $($candidates -join ', '))" }
+            if (-not $found) { Write-Warning "Swift runtime DLL not found: $dll (searched PATH + $($candidates -join ', '))" }
           }
-          if (-not (Test-Path (Join-Path $layout 'swiftCore.dll'))) { Write-Error 'swiftCore.dll missing after toolchain search — refusing to ship a ZIP that cannot run'; exit 1 }
+          if (-not (Test-Path (Join-Path $layout 'swiftCore.dll'))) { Write-Error 'swiftCore.dll missing after search — refusing to ship a ZIP that cannot run'; exit 1 }
 
           Write-Host '--- layout contents ---'
           Get-ChildItem $layout | Format-Table Name, Length -AutoSize | Out-String | Write-Host
