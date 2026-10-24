@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LightTouch Windows installer (WiX v3).
+  Built by windows-installer.yml from the portable ZIP artifact:
+  heat harvests the ZIP's flat LightTouch/ layout into
+  HarvestedComponents, so the file list never has to be hand-maintained.
+  Per-user install (no admin): LocalAppDataFolder\LightTouch.
+  UpgradeCode below is FIXED FOREVER — changing it breaks upgrades.
+  Start Menu shortcut is conditional: it exists only when the Qt UI
+  exe (LightTouch.exe, Phase 6) is present; without it the MSI still
+  installs the DLLs + qemu + runtime honestly (see manifest README).
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product
+    Id="*"
+    Name="LightTouch"
+    Language="1033"
+    Version="$(var.ProductVersion)"
+    Manufacturer="LightTouchMac cross-platform port"
+    UpgradeCode="{005BFE30-82D4-47DF-BE41-F77BED2583B7}">
+    <Package
+      InstallerVersion="200"
+      Compressed="yes"
+      InstallScope="perUser"
+      InstallPrivileges="limited"
+      Description="LightTouch portable Windows build"
+      Manufacturer="LightTouchMac cross-platform port" />
+    <MediaTemplate EmbedCab="yes" />
+    <MajorUpgrade
+      DowngradeErrorMessage="A newer version of LightTouch is already installed." />
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="INSTALLDIR" Name="LightTouch" />
+      </Directory>
+      <?if $(var.HasExe) = "true" ?>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="AppStartMenu" Name="LightTouch">
+          <Component Id="StartMenuShortcut" Guid="{097470B9-CA4D-4F20-B268-1FC19A015670}">
+            <Shortcut
+              Id="StartMenuLightTouch"
+              Name="LightTouch"
+              Target="[INSTALLDIR]LightTouch.exe"
+              WorkingDirectory="INSTALLDIR" />
+            <RemoveFolder Id="AppStartMenu" On="uninstall" />
+            <RegistryValue
+              Root="HKCU"
+              Key="Software\LightTouch"
+              Name="installed"
+              Type="integer"
+              Value="1"
+              KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+      <?endif ?>
+    </Directory>
+    <Feature Id="Main" Title="LightTouch" Level="1">
+      <ComponentGroupRef Id="HarvestedComponents" />
+      <?if $(var.HasExe) = "true" ?>
+      <ComponentRef Id="StartMenuShortcut" />
+      <?endif ?>
+    </Feature>
+    <UIRef Id="WixUI_Minimal" />
+  </Product>
+</Wix>

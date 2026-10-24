@@ -1,0 +1,115 @@
+# Windows installer (WiX v3 MSI, per-user, no admin).
+#
+# Builds LightTouch-windows-x86_64.msi from the portable ZIP artifact
+# produced by windows-package.yml. heat harvests the ZIP's flat layout,
+# so the MSI always matches the current ZIP contents with no hand list.
+#
+# Trigger: workflow_dispatch (package_run_id: explicit windows-package run
+# id, or "latest" = newest SUCCESSFUL windows-package run on any branch),
+# plus a push self-validation run whenever this file or installer/** changes
+# (so edits here are exercised without a dispatch).
+#
+# Honest gap (Phase 6): no Qt UI build publishes LightTouch.exe yet, so the
+# MSI installs DLLs + qemu + Swift runtime but has no Start Menu shortcut
+# (the shortcut component is conditional on the exe being present). When the
+# Qt exe lands, the same pipeline picks it up with no workflow edit — the
+# shortcut appears automatically. The MSI is real and installable today;
+# it is NOT yet a runnable app installer, and the manifest says so.
+#
+# Tooling: WiX Toolset v3.14 is preinstalled on GitHub Windows runners
+# ($env:WIX points at it); fall back to the standard install path, and fail
+# loudly if candle.exe cannot be found.
+#
+# Versioning: 0.1.0 for v1. The UpgradeCode in Product.wxs is FIXED FOREVER.
+name: Windows installer
+
+on:
+  # The paths push trigger exists so the workflow is registered with GitHub
+  # (a workflow_dispatch-only file that has never run cannot be dispatched
+  # by name) and self-validates when edited. It only fires on these paths.
+  push:
+    branches: [main, port/**, win/**]
+    paths:
+      - '.github/workflows/windows-installer.yml'
+      - 'installer/**'
+  workflow_dispatch:
+    inputs:
+      package_run_id:
+        description: "Windows-package run id to build the MSI from (default: latest successful run)"
+        required: false
+        default: "latest"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  installer:
+    name: Build MSI installer
+    runs-on: windows-2025
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Resolve Windows-package run id
+        id: pkg-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Explicit id (dispatch only): validate it is a windows-package run.
+          # Empty or 'latest' (push runs carry no inputs): pick the newest
+          # SUCCESSFUL windows-package run (any branch — this workflow only
+          # exists on win/w-package until it merges to main).
+          # NOTE: gh run view's workflowName is the display name, NOT the
+          # file name — validate via the API's path field (same lesson as
+          # windows-package.yml run 40111942823).
+          $inputId = "${{ inputs.package_run_id }}".Trim()
+          if ($inputId -and $inputId -ne 'latest') {
+            $view = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$inputId" --jq '"\(.id) \(.path)"' 2>$null
+            if ($LASTEXITCODE -ne 0 -or -not $view) { Write-Error "Run id $inputId not found or not readable"; exit 1 }
+            $parts = $view -split '\s+'
+            if ($parts[1] -ne '.github/workflows/windows-package.yml') { Write-Error "Run $inputId is workflow '$($parts[1])', not windows-package"; exit 1 }
+            $id = $parts[0]
+            Write-Host "Building MSI from explicit windows-package run $id"
+          } else {
+            $id = gh run list --workflow windows-package.yml --limit 20 --json databaseId,conclusion --jq '.[] | select(.conclusion == "success") | .databaseId' 2>$null | Select-Object -First 1
+            if (-not $id) { Write-Error 'No successful windows-package run found'; exit 1 }
+            Write-Host "Building MSI from latest successful windows-package run $id"
+          }
+          "run_id=$id" >> $env:GITHUB_OUTPUT
+
+      - name: Download portable ZIP artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download ${{ steps.pkg-run.outputs.run_id }} --name lighttouch-windows-x86_64-portable --dir pkg
+          Get-ChildItem pkg -Recurse | Select-Object FullName, Length | Format-Table -AutoSize | Out-String | Write-Host
+          Expand-Archive pkg/LightTouch-windows-x86_64.zip -DestinationPath staged -Force
+          Write-Host '--- staged layout ---'
+          Get-ChildItem staged/LightTouch | Format-Table Name, Length -AutoSize | Out-String | Write-Host
+          if (Test-Path staged/LightTouch/LightTouch.exe) { "HAS_EXE=true" >> $env:GITHUB_ENV } else { Write-Warning 'LightTouch.exe not in ZIP (Phase 6 gap) — MSI builds without a Start Menu shortcut'; "HAS_EXE=false" >> $env:GITHUB_ENV }
+
+      - name: Build MSI with WiX
+        run: |
+          $wixBin = $null
+          if ($env:WIX -and (Test-Path (Join-Path $env:WIX 'bin\candle.exe'))) { $wixBin = Join-Path $env:WIX 'bin' }
+          elseif (Test-Path 'C:\Program Files (x86)\WiX Toolset v3.14\bin\candle.exe') { $wixBin = 'C:\Program Files (x86)\WiX Toolset v3.14\bin' }
+          if (-not $wixBin) { Write-Error 'WiX Toolset v3.14 (candle.exe) not found on runner'; exit 1 }
+          Write-Host "Using WiX from $wixBin"
+          $env:Path += ";$wixBin"
+          New-Item -ItemType Directory -Force -Path obj | Out-Null
+          heat.exe dir staged/LightTouch -dr INSTALLDIR -cg HarvestedComponents -gg -scom -sreg -sfrag -srd -out harvested.wxs
+          if ($LASTEXITCODE -ne 0) { Write-Error 'heat failed'; exit 1 }
+          candle.exe -dProductVersion=0.1.0 -dHasExe=$env:HAS_EXE installer/windows/Product.wxs harvested.wxs -o obj\
+          if ($LASTEXITCODE -ne 0) { Write-Error 'candle failed'; exit 1 }
+          light.exe obj/*.wixobj -ext WixUIExtension -cultures:en-us -o LightTouch-windows-x86_64.msi
+          if ($LASTEXITCODE -ne 0) { Write-Error 'light failed'; exit 1 }
+          Write-Host "MSI size: $((Get-Item LightTouch-windows-x86_64.msi).Length) bytes"
+
+      - name: Upload MSI
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttouch-windows-x86_64-msi
+          path: LightTouch-windows-x86_64.msi
+          if-no-files-found: error
+          retention-days: 30
