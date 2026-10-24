@@ -322,6 +322,17 @@ public nonisolated enum DeviceStateStorage {
         try checkRemovable(directory, state: state, owner: id)
         if FileManager.default.fileExists(atPath: directory.path) {
             try removeTree(doomed)
+            #if os(Windows)
+            // Windows denies renaming a directory while a handle inside it is
+            // open; the stopped lease is the only handle here (its file lives
+            // under work/ inside the renamed tree), where POSIX lets the rename
+            // through. Close it first: the rename below is atomic and makes the
+            // record invisible to a new boot, and a leftover .deleting tree is
+            // swept at the next launch. The hole is the microseconds between
+            // close and rename (no awaits between); a boot attempt landing
+            // exactly there fails cleanly with record-not-found, not corruption.
+            lease?.close()
+            #endif
             guard rename(directory.path, doomed.path) == 0 else {
                 throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             }
