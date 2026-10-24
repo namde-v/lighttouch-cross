@@ -172,12 +172,23 @@ jobs:
             Copy-Item qt-artifact/LightTouch.exe $layout -Force
           }
 
-          # Swift runtime DLLs ship next to swiftc.exe in the toolchain
+          # Swift runtime DLLs: swiftc's bin dir holds dispatch/BlocksRuntime,
+          # but the Swift stdlib DLLs (swiftCore, swift_Concurrency,
+          # Foundation) live in lib\swift\windows under the toolchain
+          # (swift.org Windows layout) — the old single-dir lookup warned
+          # and shipped a ZIP without swiftCore.dll (run 40109540680).
           $binDir = Split-Path (Get-Command swiftc.exe).Source
+          $libDir = Join-Path (Split-Path $binDir) 'lib\swift\windows'
+          $candidates = @($binDir, $libDir, (Join-Path $libDir 'x86_64'))
           foreach ($dll in 'swiftCore.dll', 'swift_Concurrency.dll', 'Foundation.dll', 'dispatch.dll', 'BlocksRuntime.dll') {
-            $p = Join-Path $binDir $dll
-            if (Test-Path $p) { Copy-Item $p $layout -Force } else { Write-Warning "Swift runtime DLL not found in toolchain: $dll" }
+            $found = $false
+            foreach ($d in $candidates) {
+              $p = Join-Path $d $dll
+              if (Test-Path $p) { Copy-Item $p $layout -Force; Write-Host "Swift runtime $dll <- $d"; $found = $true; break }
+            }
+            if (-not $found) { Write-Warning "Swift runtime DLL not found in toolchain: $dll (searched: $($candidates -join ', '))" }
           }
+          if (-not (Test-Path (Join-Path $layout 'swiftCore.dll'))) { Write-Error 'swiftCore.dll missing after toolchain search — refusing to ship a ZIP that cannot run'; exit 1 }
 
           Write-Host '--- layout contents ---'
           Get-ChildItem $layout | Format-Table Name, Length -AutoSize | Out-String | Write-Host
@@ -203,6 +214,11 @@ jobs:
           $lines += ''
           $lines += "qemu-system-arm.exe: $(if (Test-Path LightTouch/qemu-system-arm.exe) { 'present' } else { 'MISSING — no successful emulator run / artifact expired' })"
           $lines += "LightTouch.exe (Qt UI): $(if (Test-Path LightTouch/LightTouch.exe) { 'present' } else { 'MISSING — no Qt UI build publishes this artifact yet (Phase 6 gap)' })"
+          $lines += 'Swift runtime DLLs:'
+          foreach ($dll in 'swiftCore.dll', 'swift_Concurrency.dll', 'Foundation.dll', 'dispatch.dll', 'BlocksRuntime.dll') {
+            $lines += "  $dll : $(if (Test-Path LightTouch/$dll) { 'present' } else { 'MISSING' })"
+          }
+          $lines += "Total DLLs in layout: $(@(Get-ChildItem LightTouch -Filter *.dll).Count)"
           $lines += ''
           $lines += 'Staged files:'
           $lines += (Get-ChildItem LightTouch | ForEach-Object { "  $($_.Name) ($($_.Length) bytes)" })
