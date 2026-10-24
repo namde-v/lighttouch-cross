@@ -35,7 +35,16 @@ public nonisolated enum DeveloperConnectionProfile {
         candidates.append(tools?.appendingPathComponent("inetcat.exe").path)
         #endif
         candidates += ["/opt/homebrew/bin/inetcat", "/usr/local/bin/inetcat"]
-        guard let inetcat = candidates.compactMap({ $0 }).first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+        #if os(Windows)
+        // No POSIX executable bit on Windows: corelibs' isExecutableFile
+        // never reports the tool executable (the synthesized mode has no x
+        // bits, even for a .exe), so existence in the app's tool directory
+        // is the signal — the app ships inetcat.exe; if present, it runs.
+        let usable = { FileManager.default.fileExists(atPath: $0) }
+        #else
+        let usable = { FileManager.default.isExecutableFile(atPath: $0) }
+        #endif
+        guard let inetcat = candidates.compactMap({ $0 }).first(where: usable) else {
             throw CocoaError(
                 .fileNoSuchFile,
                 userInfo: [NSLocalizedDescriptionKey: "The developer USB forwarding tool is unavailable."]
