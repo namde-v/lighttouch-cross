@@ -1,4 +1,5 @@
 import Foundation
+import ZIPFoundation
 
 /// Shared helpers for the Library and Storage tests: the checkout's files, child processes and fake tools.
 nonisolated enum LibraryFixtures {
@@ -26,7 +27,11 @@ nonisolated enum LibraryFixtures {
             format: .xml,
             options: 0
         ).write(to: plist)
-        try run("/usr/bin/zip", ["-q", "-j", url.path, plist.path])
+        // In process (ZIPFoundation), not /usr/bin/zip: the zip tool doesn't
+        // exist on Windows, and the readers under test (IPSWStore via
+        // ZipMembers) read with this same library, so the round-trip is exact.
+        let archive = try Archive(url: url, accessMode: .create, pathEncoding: nil)
+        try archive.addEntry(with: "Restore.plist", fileURL: plist)
     }
 
     static func randomData(_ count: Int) -> Data {

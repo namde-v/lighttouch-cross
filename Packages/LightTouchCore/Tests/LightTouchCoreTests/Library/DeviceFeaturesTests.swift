@@ -37,6 +37,10 @@ struct DeviceFeaturesTests {
         #expect(n72.guestTools && !n72.jailbreak && Self.features("n72ap-7D11").jailbreak)
     }
 
+    #if !os(Windows)
+    // Building the itpack needs rawDeflate (zlib), unavailable on Windows —
+    // the same reason the compose test in GuestPackageOfferTests is gated off
+    // Windows (rawDeflate throws fileWriteUnknown there).
     @Test func packagedFindsTheBoardsAndBuildsAnItpackHoldsTheAgentFor() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -58,4 +62,5 @@ struct DeviceFeaturesTests {
         #expect(found == Set(n72.filter { $0.build == "7E18" || $0.build.hasPrefix("5") }.map(\.id)))
         #expect(found.contains("n72ap-7E18") && !found.contains("n72ap-7A341") && !found.contains("n72ap-8C148"))
     }
+    #endif
 }

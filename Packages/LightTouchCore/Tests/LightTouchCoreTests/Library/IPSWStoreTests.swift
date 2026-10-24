@@ -151,8 +151,9 @@ struct IPSWStoreTests {
     /// An IPSW on another volume (a disk image mounted for the test) isn't copied: State/IPSW holds a reference that
     /// reads it in place, while it's there unchanged. A changed or deleted file drops the reference, and Remove IPSW
     /// takes the reference, never the file.
-    #if os(Linux)
-    // Needs diskutil to mount a disk image as another volume (macOS-only).
+    #if os(Linux) || os(Windows)
+    // Needs diskutil to mount a disk image as another volume (macOS-only);
+    // Windows has no diskutil either.
     @Test(.disabled("needs macOS diskutil and a mountable volume"))
     #else
     @Test

@@ -29,11 +29,13 @@ public nonisolated enum DeveloperConnectionProfile {
                 atPath: destination.deletingLastPathComponent().appendingPathComponent("enabled").path
             )
         else { return }
-        let candidates = [
-            tools?.appendingPathComponent("inetcat").path,
-            "/opt/homebrew/bin/inetcat", "/usr/local/bin/inetcat",
-        ].compactMap { $0 }
-        guard let inetcat = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+        var candidates = [tools?.appendingPathComponent("inetcat").path]
+        #if os(Windows)
+        // Windows executables carry .exe; the bundled tool is inetcat.exe.
+        candidates.append(tools?.appendingPathComponent("inetcat.exe").path)
+        #endif
+        candidates += ["/opt/homebrew/bin/inetcat", "/usr/local/bin/inetcat"]
+        guard let inetcat = candidates.compactMap({ $0 }).first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
             throw CocoaError(
                 .fileNoSuchFile,
                 userInfo: [NSLocalizedDescriptionKey: "The developer USB forwarding tool is unavailable."]
