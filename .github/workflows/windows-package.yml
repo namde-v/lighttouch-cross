@@ -171,6 +171,21 @@ jobs:
           Get-ChildItem $root -Recurse -Filter swiftCore.dll -File -ErrorAction SilentlyContinue | Select-Object -First 5 | ForEach-Object { Write-Host $_.FullName }
           Write-Host '--- probe done ---'
 
+      - name: Probe Swift runtime location v2 (temporary diagnostic)
+        run: |
+          Write-Host '--- PATH entries mentioning Swift ---'
+          ($env:Path -split ';') | Where-Object { $_ -match 'Swift' } | ForEach-Object { Write-Host $_ }
+          Write-Host '--- where.exe swiftCore.dll ---'
+          where.exe swiftCore.dll 2>&1 | Write-Host
+          Write-Host '--- System32 Swift DLLs ---'
+          Get-ChildItem C:\Windows\System32 -Filter swift*.dll -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+          Get-ChildItem C:\Windows\System32 -Filter Foundation.dll -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
+          Write-Host '--- Programs\Swift tree swiftCore search (errors shown) ---'
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          try { Get-ChildItem 'C:\Users\runneradmin\AppData\Local\Programs\Swift' -Recurse -Filter swiftCore.dll -File -ErrorAction Stop | Select-Object -First 5 | ForEach-Object { Write-Host $_.FullName } } catch { Write-Host "SEARCH ERROR: $($_.Exception.Message)" }
+          $sw.Stop(); Write-Host "search took $($sw.ElapsedMilliseconds) ms"
+          Write-Host '--- probe v2 done ---'
+
       - name: Assemble portable layout
         run: |
           $layout = 'LightTouch'
