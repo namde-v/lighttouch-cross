@@ -73,14 +73,20 @@ struct DeviceTransportTests {
             throw WindowsSocketError("WSAStartup failed: \(WSAGetLastError())")
         }
         // Listener on 127.0.0.1:0 (defers close the parent's copies on every exit).
-        let listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+        // IPPROTO_TCP is 6 (winsock2.h); the overlay types it IPPROTO, not
+        // Int32, so spell the value out (same precedent as 0xF001F for
+        // FILE_MAP_ALL_ACCESS).
+        let listener = socket(AF_INET, SOCK_STREAM, 6)
         guard listener != INVALID_SOCKET else {
             throw WindowsSocketError("socket failed: \(WSAGetLastError())")
         }
         defer { closesocket(listener) }
         var addr = sockaddr_in()
         addr.sin_family = ADDRESS_FAMILY(AF_INET)
-        addr.sin_addr = inet_addr("127.0.0.1")
+        // inet_addr returns UInt32 in the overlay, not in_addr, and in_addr's
+        // union members aren't addressable from Swift — write the 4
+        // network-order bytes directly (inet_addr already returns network order).
+        withUnsafeMutableBytes(of: &addr.sin_addr) { $0.storeBytes(of: inet_addr("127.0.0.1"), as: UInt32.self) }
         addr.sin_port = 0
         let bound = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
@@ -109,14 +115,16 @@ struct DeviceTransportTests {
             throw WindowsSocketError("getsockname failed: \(WSAGetLastError())")
         }
         // Client: connect to the listener.
-        let client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+        // See above: IPPROTO_TCP spelled out as 6.
+        let client = socket(AF_INET, SOCK_STREAM, 6)
         guard client != INVALID_SOCKET else {
             throw WindowsSocketError("socket failed: \(WSAGetLastError())")
         }
         defer { closesocket(client) }
         var clientAddr = sockaddr_in()
         clientAddr.sin_family = ADDRESS_FAMILY(AF_INET)
-        clientAddr.sin_addr = inet_addr("127.0.0.1")
+        // See above: network-order bytes written directly.
+        withUnsafeMutableBytes(of: &clientAddr.sin_addr) { $0.storeBytes(of: inet_addr("127.0.0.1"), as: UInt32.self) }
         clientAddr.sin_port = boundAddr.sin_port
         let connected = withUnsafePointer(to: &clientAddr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
