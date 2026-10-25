@@ -94,13 +94,18 @@ struct DeviceTransportTests {
             throw WindowsSocketError("listen failed: \(WSAGetLastError())")
         }
         // Bound port (network order — copied as-is to the client, no htons dance).
+        // NOTE: no trailing closure in the guard condition — Swift's parser
+        // rejects `guard f(x) { ... } == 0 else` ("expected 'else' after
+        // 'guard' condition", which cascades to the lines after it). Compute
+        // first, guard second (same shape as `bound` / `connected` above).
         var boundAddr = sockaddr_in()
         var boundLen = socklen_t(MemoryLayout<sockaddr_in>.size)
-        guard withUnsafeMutablePointer(to: &boundAddr) {
+        let gotName = withUnsafeMutablePointer(to: &boundAddr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 getsockname(listener, $0, &boundLen)
             }
-        } == 0 else {
+        }
+        guard gotName == 0 else {
             throw WindowsSocketError("getsockname failed: \(WSAGetLastError())")
         }
         // Client: connect to the listener.
