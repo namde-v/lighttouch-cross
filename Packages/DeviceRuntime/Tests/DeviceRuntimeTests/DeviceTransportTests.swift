@@ -15,14 +15,29 @@ import DeviceRuntime
 
 private final class BundleAnchor {}
 
-/// End-to-end tests of the redesigned (POSIX shm + SCM_RIGHTS) helper<->app
-/// transport: the RendezvousTestPeer stand-in helper is spawned exactly the way
-/// DeviceLink spawns a real helper (socketpair, the child's end on fd 3, a
-/// one-time token on argv), and the app takes its hello over the socket.
+/// A Winsock failure in the Windows spawn path (there is no errno for
+/// Winsock errors; the WSA code is the diagnostic).
+private struct WindowsSocketError: Error, CustomStringConvertible {
+    var message: String
+    init(_ message: String) { self.message = message }
+    var description: String { message }
+}
+
+/// End-to-end tests of the redesigned helper<->app transport: the
+/// RendezvousTestPeer stand-in helper is spawned exactly the way DeviceLink
+/// spawns a real helper (a private link socket — socketpair on POSIX with the
+/// child's end on fd 3, loopback TCP on Windows — plus a one-time token on
+/// argv), and the app takes its hello over the socket.
 struct DeviceTransportTests {
-    #if !os(Windows)
     /// RendezvousTestPeer, built beside this test bundle.
-    #if os(Linux)
+    #if os(Windows)
+    // Like Linux: the test runner sits beside the peer executable in the
+    // products directory; CommandLine.arguments[0] is the runner exe.
+    private let peer: URL = {
+        let exe = URL(fileURLWithPath: CommandLine.arguments[0])
+        return exe.deletingLastPathComponent().appendingPathComponent("RendezvousTestPeer.exe")
+    }()
+    #elseif os(Linux)
     // The test runner sits beside the peer executable in the products
     // directory; /proc/self/exe is always absolute (Bundle(for:) on Linux
     // resolves to the .so, whose layout SPM does not guarantee).
@@ -35,14 +50,113 @@ struct DeviceTransportTests {
     private let peer = Bundle(for: BundleAnchor.self).bundleURL
         .deletingLastPathComponent().appendingPathComponent("RendezvousTestPeer")
     #endif
-    #endif
 
     private struct Spawned {
         var pid: pid_t
         var socket: Int32
     }
 
-    #if !os(Windows)
+    #if os(Windows)
+    /// Spawn the peer with the link socket over loopback TCP, like DeviceLink
+    /// does with a socketpair on POSIX (Winsock has no socketpair). The test
+    /// builds the loopback pair before spawning and passes the connected
+    /// client socket to the child via ltm_spawn (inherited handle +
+    /// LTM_LINK_SOCKET env); the accepted socket is the app's end.
+    private func spawnPeer(token: String, mode: String) throws -> Spawned {
+        try #require(
+            FileManager.default.isExecutableFile(atPath: peer.path),
+            "test peer missing at \(peer.path)"
+        )
+        // Winsock needs WSAStartup in this process (the C layer does not do it).
+        var wsadata = WSADATA()
+        guard WSAStartup(0x0202, &wsadata) == 0 else {
+            throw WindowsSocketError("WSAStartup failed: \(WSAGetLastError())")
+        }
+        // Listener on 127.0.0.1:0 (defers close the parent's copies on every exit).
+        let listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+        guard listener != INVALID_SOCKET else {
+            throw WindowsSocketError("socket failed: \(WSAGetLastError())")
+        }
+        defer { closesocket(listener) }
+        var addr = sockaddr_in()
+        addr.sin_family = ADDRESS_FAMILY(AF_INET)
+        addr.sin_addr = inet_addr("127.0.0.1")
+        addr.sin_port = 0
+        let bound = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(listener, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bound == 0 else {
+            throw WindowsSocketError("bind failed: \(WSAGetLastError())")
+        }
+        guard listen(listener, SOMAXCONN) == 0 else {
+            throw WindowsSocketError("listen failed: \(WSAGetLastError())")
+        }
+        // Bound port (network order — copied as-is to the client, no htons dance).
+        var boundAddr = sockaddr_in()
+        var boundLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+        guard withUnsafeMutablePointer(to: &boundAddr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                getsockname(listener, $0, &boundLen)
+            }
+        } == 0 else {
+            throw WindowsSocketError("getsockname failed: \(WSAGetLastError())")
+        }
+        // Client: connect to the listener.
+        let client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+        guard client != INVALID_SOCKET else {
+            throw WindowsSocketError("socket failed: \(WSAGetLastError())")
+        }
+        defer { closesocket(client) }
+        var clientAddr = sockaddr_in()
+        clientAddr.sin_family = ADDRESS_FAMILY(AF_INET)
+        clientAddr.sin_addr = inet_addr("127.0.0.1")
+        clientAddr.sin_port = boundAddr.sin_port
+        let connected = withUnsafePointer(to: &clientAddr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(client, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard connected == 0 else {
+            throw WindowsSocketError("connect failed: \(WSAGetLastError())")
+        }
+        // Accept, bounded: a peer that never connects must not hang the test.
+        // SO_RCVTIMEO on the listener applies to accept(); it is cleared on
+        // the accepted socket below so the C recv's own deadline rules.
+        var timeoutMs: DWORD = 10_000
+        setsockopt(listener, SOL_SOCKET, SO_RCVTIMEO, &timeoutMs, Int32(MemoryLayout<DWORD>.size))
+        let accepted = accept(listener, nil, nil)
+        guard accepted != INVALID_SOCKET else {
+            throw WindowsSocketError("accept failed: \(WSAGetLastError())")
+        }
+        var noTimeout: DWORD = 0
+        setsockopt(accepted, SOL_SOCKET, SO_RCVTIMEO, &noTimeout, Int32(MemoryLayout<DWORD>.size))
+        // Spawn: the child inherits the connected client socket.
+        let argv = [peer.path, token, mode]
+        let pid: pid_t = withWindowsCStrings(argv) { cargv in
+            ltm_spawn(peer.path, cargv, nil, -1, Int32(truncatingIfNeeded: client))
+        }
+        guard pid > 0 else {
+            closesocket(accepted)
+            throw POSIXError(POSIXErrorCode(rawValue: -pid) ?? .EIO)
+        }
+        // The defers close the parent's listener + client copies; the accepted
+        // socket is the app's end and stays open. SOCKET values truncate to
+        // the API's Int32 (the C layer's documented convention; test-process
+        // socket values are small).
+        return Spawned(pid: pid, socket: Int32(truncatingIfNeeded: accepted))
+    }
+
+    private func reap(_ spawned: Spawned) {
+        if let process = OpenProcess(DWORD(SYNCHRONIZE), false, DWORD(spawned.pid)) {
+            WaitForSingleObject(process, INFINITE)
+            CloseHandle(process)
+        }
+        // OpenProcess fails when the peer is already gone: already reaped.
+        closesocket(SOCKET(truncatingIfNeeded: spawned.socket))
+    }
+    #else
     /// Spawn the peer with the link socket on fd 3, like DeviceLink does.
     private func spawnPeer(token: String, mode: String) throws -> Spawned {
         try #require(
@@ -75,8 +189,8 @@ struct DeviceTransportTests {
     }
     #endif
 
-    #if !os(Windows)
-    /// shm create (peer) -> fd pass (SCM_RIGHTS) -> map -> read status block (app).
+    /// shm create (peer) -> pass -> map -> read status block (app): SCM_RIGHTS
+    /// on POSIX, named mappings re-opened by name on Windows.
     @Test func shmHelloRoundTrip() throws {
         let token = "test-token-\(UInt32.random(in: 0...UInt32.max))"
         let spawned = try spawnPeer(token: token, mode: "exit")
@@ -115,13 +229,12 @@ struct DeviceTransportTests {
             )
         }
     }
-    #endif
 
     /// The status block, frame ring writer/reader, and the alpha-opaque blit,
     /// all in-process (no spawn). Runs on Windows too: the helper-side
-    /// segments are pagefile-backed file mappings there (ShmSurface).
-    /// Only the spawn-based tests above stay POSIX-gated (the Windows
-    /// transport — loopback socket + hello — is not implemented yet).
+    /// segments are pagefile-backed file mappings there (ShmSurface), and
+    /// the spawn-based tests above now run on Windows as well (loopback
+    /// socket + hello transport).
     @Test func statusBlockAndFrameRingInProcess() {
         let status = StatusBlock.create()
         #expect(status.isValid)
@@ -220,6 +333,25 @@ struct DeviceTransportTests {
         }
     }
 }
+
+#if os(Windows)
+/// argv for ltm_spawn without strdup: allocate each string, free after the
+/// call (ltm_spawn copies argv into its own command line before returning).
+nonisolated private func withWindowsCStrings<R>(
+    _ strings: [String],
+    _ body: (UnsafePointer<UnsafeMutablePointer<CChar>?>?) -> R
+) -> R {
+    var owned: [UnsafeMutablePointer<CChar>?] = []
+    for s in strings {
+        let buf = UnsafeMutablePointer<CChar>.allocate(capacity: s.utf8.count + 1)
+        s.withCString { src in buf.initialize(from: src, count: s.utf8.count + 1) }
+        owned.append(buf)
+    }
+    owned.append(nil)
+    defer { for p in owned { p?.deallocate() } }
+    return owned.withUnsafeBufferPointer { base in body(base.baseAddress) }
+}
+#endif
 
 #if !os(Windows)
 nonisolated private func withCStrings<R>(
