@@ -120,3 +120,27 @@ jobs:
         continue-on-error: true
         run: |
           ctest --test-dir build -C Release --rerun-failed -V 2>&1 | Select-Object -First 250
+
+      # Direct-run diagnostics (run 40237966745): even under -V ctest
+      # shows NO QTest output for the 4 fast failures, so run the
+      # binaries directly to capture their real stdout/stderr and exit
+      # codes. A silent -1073741515 (0xC0000135) means a DLL failed to
+      # load; a 0xC0000005 is an access violation; a small nonzero code
+      # is a normal QTest failure whose output was lost. dumpbin lists
+      # each binary's DLL dependents so a missing DLL can be named.
+      - name: Diagnose failures directly
+        if: failure()
+        continue-on-error: true
+        run: |
+          Set-Location build/tests
+          $dumpbin = Get-ChildItem 'C:/Program Files/Microsoft Visual Studio/*/Enterprise/VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe' -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+          foreach ($t in @('tst_applaunch','tst_surface1','tst_surface11','tst_surface2','tst_surface12','tst_surface3')) {
+            Write-Output "=== $t ==="
+            $env:QT_QPA_PLATFORM = 'offscreen'
+            $env:LTM_BRIDGE_MOCK = '1'
+            & ".\Release\$t.exe" 2>&1 | Select-Object -First 40
+            Write-Output "exit=$LASTEXITCODE"
+            if ($dumpbin) {
+              & $dumpbin /dependents ".\Release\$t.exe" 2>$null | Select-String -Pattern '\.dll' | ForEach-Object { $_.Line.Trim() } | Select-Object -First 30
+            }
+          }

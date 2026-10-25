@@ -184,3 +184,42 @@ no change: it already picks up the exe from the ZIP automatically.
   branch): drop `QT_QPA_PLATFORM=offscreen`, use the default windows
   platform plugin like the UI repo's workflow.** If failures persist,
   the next hypothesis is the VS generator.
+
+## Fourth run diagnosis (2026-10-26, run 40237966745 on 7f93411, VS generator)
+
+- **Result: FAILED, same 5 tests, same timings, 12/17.** VS-generator
+  hypothesis REFUTED. `tst_applaunch` 0.61s, `tst_surface1` 0.92s,
+  `tst_surface11` SEGFAULT 0.90s (crash in `qt_qFindChild_helper` during
+  `eightMenusExist`, 0xc0000005), `tst_surface2` 17.35s (expired waits),
+  `tst_surface12` 0.21s. Windows CI + Linux CI on the branch: SUCCESS.
+- **The -V Diagnose step did NOT break the silence.** Even under
+  `ctest --rerun-failed -V` the 4 fast failures print NO QTest output
+  at all — only ctest's own lines. The silence is in the test processes
+  themselves, not in ctest's reporting. A normally-failing QTest binary
+  flushes its output on exit, so these processes die abnormally
+  (loader failure, abort, or crash without handler output) — or never
+  really run. surface11's crash-handler output proves the output
+  channel itself works.
+- **Control validated, code ruled out.** Diff of the green-run code
+  (`9536541`, UI repo run 38896622632, 17/17) vs the code my runs check
+  out (`819d571`, UI main HEAD) touches ONLY `packaging/*` +
+  `appimage.yml`. `tests/`, `src/`, `qml/` are IDENTICAL. The green run
+  and my runs test the same code; the variable is setup/environment.
+- **Compiler ruled out.** Green run and this run both used MSVC
+  19.51.36260.0 / cl 14.51.36231 / Visual Studio 18 2026. Runner image
+  drifted (20261007.264.1 -> 20261021.278.1) but with the same compiler
+  it is a weak lead, not the prime suspect.
+- **Remaining workflow deltas vs the green workflow:** UI sources at
+  `QtUI/` subdir vs repo root (LT_QML_DIR is absolute in both, so this
+  should not matter), install-qt `cache: true` vs absent, timeout 30
+  vs 60 min, extra port-repo checkout + exe upload step before Test.
+- **Two failure classes, possibly different mechanisms:** 4 fast silent
+  failures (+1 segfault) vs `tst_surface2`'s 17s expired waits (its mock
+  link/boot waits never resolve, while `surface3`'s mock device-list
+  wait succeeds in the same runs — timers fire, link events don't).
+- **Next experiment (this branch):** run the 5 failing binaries
+  DIRECTLY (not via ctest) with exit-code echo + `dumpbin
+  /dependents`. Exit -1073741515 (0xC0000135) = DLL failed to load;
+  0xC0000005 = access violation; small nonzero = normal QTest failure
+  whose output was lost. The dependents list names any missing DLL
+  instead of guessing.
