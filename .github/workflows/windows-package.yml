@@ -1,4 +1,4 @@
-# LightTouch cross-platform port — Windows packaging (GROUNDWORK)
+# LightTouch cross-platform port — Windows packaging
 #
 # Assembles the portable Windows ZIP from CI artifacts. Intended layout:
 #
@@ -8,16 +8,28 @@
 #     *.dll                     MinGW runtime DLLs (bundled by the emulator job)
 #     *.dll                     Swift package DLLs (from windows-ci artifacts)
 #     swiftCore.dll, ...        Swift runtime DLLs (copied from the toolchain)
-#     README.txt                contents manifest
+#     README.txt                contents manifest (generated: run id, per-package
+#                               DLL counts, qemu/Qt presence — a degraded ZIP
+#                               says so instead of passing silently)
 #
 # The layout is FLAT (no bin/ or lib/ subdirs): the Windows loader does not
 # search subdirectories for DLLs, so a flat directory is the only portable
 # layout that works without a launcher shim or PATH manipulation.
 #
-# Trigger: manual (workflow_dispatch) only. Not wired to releases yet — the
-# Qt UI <-> core integration (Phase 6) is still open, so there is no Qt UI
-# executable artifact to stage. The Qt step below starts working automatically
-# once a workflow publishes `lighttouch-qt-ui-windows-x86_64`.
+# Trigger: workflow_dispatch, plus a push self-validation run whenever this
+# file itself changes (so edits here are exercised without a dispatch).
+# Run selection: an explicit run id is validated; otherwise the newest
+# COMPLETED windows-ci run on main that actually uploaded build artifacts
+# is used. windows-ci has never gone fully green, so requiring a SUCCESS
+# run made the default path unresolvable — test failures do NOT disqualify
+# a run (build artifacts upload with if: always()), but a run whose builds
+# failed (no artifacts) is skipped. A ZIP with zero package DLLs fails loudly.
+#
+# KNOWN GAP (Phase 6): no workflow publishes `lighttouch-qt-ui-windows-x86_64`
+# yet — windows-qt-ci is a scaffold gated on QtUI/CMakeLists.txt, which does
+# not exist in this repo. Until a Qt UI build lands, the ZIP contains Swift
+# package DLLs + qemu + Swift runtime only: a validated packaging pipeline,
+# NOT a runnable app. The manifest records the missing exe honestly.
 name: Windows package
 
 on:
@@ -31,7 +43,7 @@ on:
   workflow_dispatch:
     inputs:
       windows_ci_run_id:
-        description: "Windows CI run id to package (default: latest successful run on main)"
+        description: "Windows CI run id to package (default: latest completed run on main with build artifacts)"
         required: false
         default: "latest"
 
@@ -39,8 +51,10 @@ permissions:
   contents: read
   actions: read
 
-env:
-  SWIFT_VERSION: "6.4.1"
+# NOTE: no SWIFT_VERSION env here on purpose. The toolchain is installed by
+# compnerd/gha-setup-swift below at swift-6.2.4-release, matching windows-ci
+# (which carries a stale 6.4.1 env var of its own with an explanatory
+# comment). A second version label in this file only confused readers.
 
 jobs:
   package:
@@ -68,21 +82,54 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           INPUT_RUN_ID: ${{ inputs.windows_ci_run_id }}
         run: |
-          if ($env:INPUT_RUN_ID -eq 'latest') {
-            $id = gh run list --workflow windows-ci.yml --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId'
-            if (-not $id) { Write-Error 'No successful windows-ci run found on main'; exit 1 }
+          # Explicit id (dispatch only): validate it is a windows-ci run.
+          # Empty or 'latest' (push runs carry no inputs): pick the newest
+          # COMPLETED windows-ci run on main that actually uploaded at least
+          # one swift-<pkg>-windows-x86_64 build artifact. Test failures do
+          # NOT disqualify a run — build artifacts upload with if: always()
+          # — but a run whose builds failed (no artifacts) is skipped.
+          $inputId = "$env:INPUT_RUN_ID".Trim()
+          if ($inputId -and $inputId -ne 'latest') {
+            # NOTE: gh run view's workflowName is the display name ('Windows'
+            # for windows-ci.yml), NOT the file name — the old check rejected
+            # every real windows-ci run (manual dispatch 40111942823 failed on
+            # exactly this). Validate via the API's path field instead.
+            $view = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$inputId" --jq '"\(.id) \(.path) \(.head_sha)"' 2>$null
+            if ($LASTEXITCODE -ne 0 -or -not $view) { Write-Error "Run id $inputId not found or not readable"; exit 1 }
+            $parts = $view -split '\s+'
+            if ($parts[1] -ne '.github/workflows/windows-ci.yml') { Write-Error "Run $inputId is workflow '$($parts[1])', not windows-ci"; exit 1 }
+            $id = $parts[0]; $headSha = $parts[2]
+            Write-Host "Packaging explicit windows-ci run $id"
           } else {
-            $id = $env:INPUT_RUN_ID
+            $lines = @(gh run list --workflow windows-ci.yml --branch main --limit 20 --json databaseId,conclusion,headSha --jq '.[] | select(.conclusion != null) | "\(.databaseId) \(.headSha) \(.conclusion)"')
+            $id = $null; $headSha = $null
+            foreach ($line in $lines) {
+              $parts = $line -split '\s+'
+              $candId = $parts[0]; $candSha = $parts[1]; $candConcl = $parts[2]
+              $names = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$candId/artifacts" --paginate --jq '.artifacts[].name' 2>$null
+              $hasBuild = @($names) | Where-Object { $_ -match '^swift-.*-windows-x86_64$' }
+              if ($hasBuild) { $id = $candId; $headSha = $candSha; break }
+              Write-Host "Skipping run $candId (conclusion: $candConcl, no build artifacts)"
+            }
+            if (-not $id) { Write-Error 'No completed windows-ci run on main with build artifacts found'; exit 1 }
+            Write-Host "Packaging artifacts from windows-ci run $id (head $headSha)"
           }
           "run_id=$id" >> $env:GITHUB_OUTPUT
-          Write-Host "Packaging artifacts from windows-ci run $id"
+          "head_sha=$headSha" >> $env:GITHUB_OUTPUT
 
       - name: Download Swift package artifacts
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run download ${{ steps.run-id.outputs.run_id }} --dir swift-artifacts
-          Get-ChildItem swift-artifacts -Directory | ForEach-Object { Write-Host "artifact: $($_.Name)" }
+          # Named downloads only: the blanket `gh run download` also pulls
+          # swift-*-windows-x86_64-logs artifacts, which on crash runs hold
+          # 250MB+ .dmp files. A missing per-package artifact only warns
+          # (that job's build failed); the assemble step fails if NO package
+          # DLLs were staged at all.
+          foreach ($pkg in @('HostRuntime','DeviceServices','ReleaseChecks','BuildTools','FirmwareKit','DeviceRuntime','LightTouchCore')) {
+            gh run download ${{ steps.run-id.outputs.run_id }} --name "swift-$pkg-windows-x86_64" --dir "swift-artifacts/swift-$pkg-windows-x86_64"
+            if ($LASTEXITCODE -eq 0) { Write-Host "artifact: swift-$pkg-windows-x86_64" } else { Write-Warning "build artifact missing for $pkg" }
+          }
 
       # The emulator workflow only runs when its own file changes, so a
       # successful run may not exist yet — warn and continue without qemu.
@@ -113,6 +160,9 @@ jobs:
 
           # Swift package DLLs / import libs / executables from windows-ci
           Get-ChildItem swift-artifacts -Recurse -Include *.dll,*.exe | Copy-Item -Destination $layout -Force
+          $pkgDllCount = @(Get-ChildItem swift-artifacts -Recurse -Filter *.dll).Count
+          Write-Host "Swift package DLLs staged: $pkgDllCount"
+          if ($pkgDllCount -eq 0) { Write-Error 'No Swift package DLLs staged — refusing to ship an empty ZIP'; exit 1 }
 
           # qemu-system-arm.exe + MinGW runtime DLLs (when the artifact exists)
           if (Test-Path qemu-artifact) {
@@ -126,24 +176,72 @@ jobs:
             Copy-Item qt-artifact/LightTouch.exe $layout -Force
           }
 
-          # Swift runtime DLLs ship next to swiftc.exe in the toolchain
+          # Swift runtime DLLs: swift.org's installer SPLITS compiler and
+          # runtime. swiftc lives in Toolchains\<ver>+Asserts\usr\bin (which
+          # holds dispatch/BlocksRuntime but NO stdlib DLLs); the stdlib
+          # DLLs live in Runtimes\<ver>\usr\bin, which is on PATH (that is
+          # how windows-ci test binaries load swiftCore at run time).
+          # Probe proof (run 40116520974): where.exe swiftCore.dll ->
+          # ...\Programs\Swift\Runtimes\6.2.4\usr\bin\swiftCore.dll; System32
+          # has no Swift DLLs; the toolchain root has no swiftCore at all.
           $binDir = Split-Path (Get-Command swiftc.exe).Source
-          foreach ($dll in 'swiftCore.dll', 'swift_Concurrency.dll', 'Foundation.dll', 'dispatch.dll', 'BlocksRuntime.dll') {
-            $p = Join-Path $binDir $dll
-            if (Test-Path $p) { Copy-Item $p $layout -Force } else { Write-Warning "Swift runtime DLL not found in toolchain: $dll" }
+          $libDir = Join-Path (Split-Path $binDir) 'lib\swift\windows'
+          $toolchainRoot = Split-Path (Split-Path $binDir)
+          $swiftHome = Split-Path (Split-Path $toolchainRoot)
+          $candidates = @($binDir, $libDir, (Join-Path $libDir 'x86_64'))
+          $runtimesDir = Join-Path $swiftHome 'Runtimes'
+          if (Test-Path $runtimesDir) {
+            Get-ChildItem $runtimesDir -Directory -ErrorAction SilentlyContinue | ForEach-Object { $candidates += (Join-Path $_.FullName 'usr\bin') }
           }
+          foreach ($dll in 'swiftCore.dll', 'swift_Concurrency.dll', 'Foundation.dll', 'dispatch.dll', 'BlocksRuntime.dll') {
+            $found = $false
+            $w = where.exe $dll 2>$null
+            if ($LASTEXITCODE -eq 0 -and $w) {
+              $p = ($w | Select-Object -First 1).Trim()
+              Copy-Item $p $layout -Force; Write-Host "Swift runtime $dll <- PATH: $p"; $found = $true
+            } else {
+              foreach ($d in $candidates) {
+                $p = Join-Path $d $dll
+                if (Test-Path $p) { Copy-Item $p $layout -Force; Write-Host "Swift runtime $dll <- $d"; $found = $true; break }
+              }
+            }
+            if (-not $found) { Write-Warning "Swift runtime DLL not found: $dll (searched PATH + $($candidates -join ', '))" }
+          }
+          if (-not (Test-Path (Join-Path $layout 'swiftCore.dll'))) { Write-Error 'swiftCore.dll missing after search — refusing to ship a ZIP that cannot run'; exit 1 }
 
           Write-Host '--- layout contents ---'
           Get-ChildItem $layout | Format-Table Name, Length -AutoSize | Out-String | Write-Host
 
       - name: Create portable ZIP
         run: |
-          @(
+          $lines = @(
             'LightTouch — portable Windows build (cross-platform port)'
             ''
-            'Contents: Qt UI executable (when available), qemu-system-arm.exe + MinGW'
-            'runtime DLLs, Swift package DLLs, Swift runtime DLLs.'
-          ) | Out-File LightTouch/README.txt -Encoding utf8
+            "Windows CI run: ${{ steps.run-id.outputs.run_id }} (head ${{ steps.run-id.outputs.head_sha }})"
+            ''
+            'Swift package DLLs by artifact:'
+          )
+          foreach ($pkg in @('HostRuntime','DeviceServices','ReleaseChecks','BuildTools','FirmwareKit','DeviceRuntime','LightTouchCore')) {
+            $dir = "swift-artifacts/swift-$pkg-windows-x86_64"
+            if (Test-Path $dir) {
+              $n = @(Get-ChildItem $dir -Recurse -Filter *.dll).Count
+              $lines += "  swift-$pkg-windows-x86_64 : $n DLLs"
+            } else {
+              $lines += "  swift-$pkg-windows-x86_64 : MISSING (that job's build failed)"
+            }
+          }
+          $lines += ''
+          $lines += "qemu-system-arm.exe: $(if (Test-Path LightTouch/qemu-system-arm.exe) { 'present' } else { 'MISSING — no successful emulator run / artifact expired' })"
+          $lines += "LightTouch.exe (Qt UI): $(if (Test-Path LightTouch/LightTouch.exe) { 'present' } else { 'MISSING — no Qt UI build publishes this artifact yet (Phase 6 gap)' })"
+          $lines += 'Swift runtime DLLs:'
+          foreach ($dll in 'swiftCore.dll', 'swift_Concurrency.dll', 'Foundation.dll', 'dispatch.dll', 'BlocksRuntime.dll') {
+            $lines += "  $dll : $(if (Test-Path LightTouch/$dll) { 'present' } else { 'MISSING' })"
+          }
+          $lines += "Total DLLs in layout: $(@(Get-ChildItem LightTouch -Filter *.dll).Count)"
+          $lines += ''
+          $lines += 'Staged files:'
+          $lines += (Get-ChildItem LightTouch | ForEach-Object { "  $($_.Name) ($($_.Length) bytes)" })
+          $lines | Out-File LightTouch/README.txt -Encoding utf8
           Compress-Archive -Path LightTouch -DestinationPath LightTouch-windows-x86_64.zip -Force
           Write-Host "ZIP size: $((Get-Item LightTouch-windows-x86_64.zip).Length) bytes"
 
