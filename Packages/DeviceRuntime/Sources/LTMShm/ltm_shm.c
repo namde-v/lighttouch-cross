@@ -38,7 +38,8 @@ static int wsa_to_errno(int wsa) {
 }
 
 // "LTMShm_<token>_<index>" — the token is NUL-terminated, max 63 chars.
-static void mapping_name(const char *token, int index, char *out, size_t outlen) {
+// Exported (see ltm_shm.h) so Swift creation uses this same implementation.
+void ltm_mapping_name(const char *token, int index, char *out, size_t outlen) {
     snprintf(out, outlen, "LTMShm_%s_%d", token, index);
 }
 
@@ -133,7 +134,7 @@ int ltm_recv_hello(int sock, int timeout_ms, const char *expected_token,
     int nfds = 0;
     for (uint32_t i = 0; i < hdr.nsegments; i++) {
         char name[128];
-        mapping_name(hdr.token, (int)i, name, sizeof name);
+        ltm_mapping_name(hdr.token, (int)i, name, sizeof name);
         HANDLE h = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, name);
         if (h == NULL) {
             for (int j = 0; j < nfds; j++)

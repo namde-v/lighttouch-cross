@@ -71,6 +71,11 @@ typedef struct {
     uint64_t byte_counts[LTM_SHM_MAX_SEGMENTS]; // shm size per segment, in order
 } ltm_shm_hello;
 
+// The hello mapping name for (token, index): "LTMShm_<token>_<index>".
+// Exported so Swift creation (the helper side) derives exactly the name the
+// C receive side re-opens — one implementation of the name scheme, no drift.
+void ltm_mapping_name(const char *token, int index, char *out, size_t outlen);
+
 // Helper: send the header (plus fds on POSIX). 0 on success, -errno on failure.
 int ltm_send_hello(int sock, const char *token, uint32_t protocol_version,
                    uint64_t generation, const int *fds, const uint64_t *byte_counts, int nsegments);
