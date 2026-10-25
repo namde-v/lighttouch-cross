@@ -5,12 +5,15 @@
 # upload as an artifact on EVERY run — pass or fail — so failures are
 # diagnosable without a local Windows box.
 #
-# Ownership split: W-UI owns the Qt test content; this file owns the runner
-# wiring. CONTRACT for W-UI: a CMake project at QtUI/ (see QT_UI_DIR below)
-# with enable_testing() and the QtTest-based tests registered with ctest.
-# Until QtUI/CMakeLists.txt exists, the job is skipped (no failure, no
-# wasted minutes): the paths trigger below only fires on QtUI/** changes,
-# and the job-level gate covers manual dispatches and workflow-file edits.
+# Ownership split: the Qt UI lives in its own repo (namde-v/lighttouch-ui);
+# this file owns the runner wiring. The UI repo is checked out at QtUI/
+# (see QT_UI_DIR below) — it must be a CMake project with enable_testing()
+# and the QtTest-based tests registered with ctest.
+# Trigger note: the UI is a separate repo, so port-repo QtUI/** paths never
+# match; this workflow runs on workflow-file edits and manual dispatch until
+# a cross-repo trigger (repository_dispatch/schedule) is added (see
+# docs/windows-app-wiring-gap.md). The job-level gate below still skips
+# (not fails) if the checkout does not yield QtUI/CMakeLists.txt.
 name: Windows Qt UI tests
 
 on:
@@ -41,9 +44,17 @@ jobs:
       - name: Check out
         uses: actions/checkout@v4
 
-      # Gate: everything below is skipped (not failed) until W-UI lands
-      # QtUI/CMakeLists.txt. The paths trigger above already limits runs to
-      # QtUI/** changes; this covers manual dispatches and workflow edits.
+      # The Qt UI lives in its own repo — check it out at QtUI/. (The
+      # port repo has no QtUI/ directory; the old scaffold waited for one
+      # to land here and therefore never ran.)
+      - name: Check out Qt UI repo
+        uses: actions/checkout@v4
+        with:
+          repository: namde-v/lighttouch-ui
+          path: QtUI
+
+      # Gate: everything below is skipped (not failed) if the UI checkout
+      # does not yield QtUI/CMakeLists.txt.
       - name: Check Qt UI sources exist
         id: src
         run: |
@@ -51,7 +62,7 @@ jobs:
             "present=true" >> $env:GITHUB_OUTPUT
           } else {
             "present=false" >> $env:GITHUB_OUTPUT
-            Write-Warning "QtUI/ not present yet (W-UI has not landed it) — Qt tests skipped."
+            Write-Warning "QtUI/CMakeLists.txt not present after UI checkout — Qt tests skipped."
           }
 
       - name: Install Qt
@@ -69,6 +80,21 @@ jobs:
       - name: Build
         if: steps.src.outputs.present == 'true'
         run: cmake --build build
+
+      # The build also produces the app executable (build/lighttouch.exe
+      # under the Ninja generator). Upload it under the artifact name the
+      # package workflow expects — evidence the exe compiles on Windows.
+      # NOTE: the package step downloads from the WINDOWS-CI run id, so
+      # this artifact is NOT yet consumable by packaging (see
+      # docs/windows-app-wiring-gap.md gap 2); warn, never fail, if absent.
+      - name: Upload Qt UI executable (if built)
+        if: steps.src.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttouch-qt-ui-windows-x86_64
+          path: build/lighttouch.exe
+          if-no-files-found: warn
+          retention-days: 30
 
       # QT_QPA_PLATFORM=offscreen: no display server on runners. ctest writes
       # JUnit XML (--output-junit needs CMake >= 3.21; runners are newer).
