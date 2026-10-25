@@ -11,12 +11,13 @@
 // heartbeat means the helper is wedged; stalled frames, the guest.
 //
 // Transport: POSIX shm (shm_open + mmap) on POSIX; pagefile-backed file
-// mappings (CreateFileMapping/MapViewOfFile) on Windows, helper-side only so
-// far — the app-side open() by name and the hello path are still the future
-// Windows wave (see TRANSPORT_REDESIGN.md). Each segment is unlinked
-// immediately after creation on POSIX, so no name outlives a crashed helper;
-// on Windows the mapping dies with its last handle. The app maps the fds
-// the helper's hello carries over the link socket (DeviceRendezvous.swift).
+// mappings (CreateFileMapping/MapViewOfFile) on Windows: helper-side creation
+// (pid-based or hello-token names) and app-side open() of the handles
+// ltm_recv_hello re-opens by name (see TRANSPORT_REDESIGN.md). Each segment is
+// unlinked immediately after creation on POSIX, so no name outlives a crashed
+// helper; on Windows the mapping dies with its last handle. The app maps the
+// segments the helper's hello yields: fds on POSIX, mapping handles on Windows
+// (DeviceRendezvous.swift).
 // Pixel data is assumed sRGB throughout: the macOS build tagged the surfaces
 // with an sRGB ICC profile so Core Animation would not reinterpret the guest's
 // pixels in the display's space; there is no color management on this path, so
@@ -222,16 +223,16 @@ nonisolated public final class ShmSurface: @unchecked Sendable {
     // Protected by idLock (the shm name only needs process-uniqueness).
     nonisolated(unsafe) private static var nextID: UInt64 = 0
 
-    private static func makeSegment(byteCount: Int) -> (fd: Int32, base: UnsafeMutableRawPointer, mapping: UnsafeMutableRawPointer?)? {
+    private static func makeSegment(byteCount: Int, mappingName: String? = nil) -> (fd: Int32, base: UnsafeMutableRawPointer, mapping: UnsafeMutableRawPointer?)? {
         #if os(Windows)
         // Pagefile-backed file mapping (TRANSPORT_REDESIGN.md's named-mapping
-        // direction, first step: helper-side creation only). The mapping is
-        // named pid + monotonic id so the future hello path can re-open it by
-        // name; a crashed helper's handles close with it, so no name leaks.
-        // The app-side open() by name is still unimplemented (see below).
+        // direction). With mappingName (the hello path), the segment carries
+        // exactly the name ltm_recv_hello re-opens; otherwise pid + monotonic
+        // id (in-process use). A crashed helper's handles close with it, so
+        // no name leaks.
         guard byteCount > 0, byteCount < Int(UInt32.max) else { return nil }
         let id = idLock.withLock { () -> UInt64 in defer { nextID += 1 }; return nextID }
-        let name = "LTM.\(GetCurrentProcessId()).\(id)"
+        let name = mappingName ?? "LTM.\(GetCurrentProcessId()).\(id)"
         var segment: (fd: Int32, base: UnsafeMutableRawPointer, mapping: UnsafeMutableRawPointer?)? = nil
         name.withCString(encodedAs: UTF16.self) { namePtr in
             guard let mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nil, DWORD(PAGE_READWRITE), 0, DWORD(byteCount), namePtr) else { return }
@@ -262,9 +263,27 @@ nonisolated public final class ShmSurface: @unchecked Sendable {
         preconditionFailure("ShmSurface: \(what) failed: \(String(cString: strerror(errno)))")
     }
 
+    /// The C-contract hello mapping name for (token, index): "LTMShm_<token>_<index>".
+    /// Windows only (the C function lives in the Windows half of ltm_shm.c).
+    /// The token is truncated to 63 chars first, mirroring the header
+    /// truncation in ltm_send_hello, so creation and receive derive the same
+    /// name even for an over-long token.
+    #if os(Windows)
+    public static func helloMappingName(token: String, index: Int) -> String {
+        let truncated = String(token.prefix(63))
+        var buf = [CChar](repeating: 0, count: 128)
+        truncated.withCString { tokenPtr in
+            buf.withUnsafeMutableBufferPointer { bufPtr in
+                ltm_mapping_name(tokenPtr, Int32(index), bufPtr.baseAddress, 128)
+            }
+        }
+        return String(cString: buf)
+    }
+    #endif
+
     /// The status block segment (StatusBlock.bytes).
-    public static func createStatus() -> ShmSurface {
-        guard let segment = makeSegment(byteCount: StatusBlock.bytes) else { preconditionsFailed("shm_open") }
+    public static func createStatus(mappingName: String? = nil) -> ShmSurface {
+        guard let segment = makeSegment(byteCount: StatusBlock.bytes, mappingName: mappingName) else { preconditionsFailed("shm_open") }
         return ShmSurface(
             fd: segment.fd,
             base: segment.base,
@@ -277,10 +296,10 @@ nonisolated public final class ShmSurface: @unchecked Sendable {
     }
 
     /// One frame segment: height rows of width BGRA pixels, tightly packed.
-    public static func createFrame(width: Int, height: Int) -> ShmSurface {
+    public static func createFrame(width: Int, height: Int, mappingName: String? = nil) -> ShmSurface {
         precondition(width > 0 && height > 0, "ShmSurface.createFrame: bad size \(width)x\(height)")
         let rowBytes = width * 4
-        guard let segment = makeSegment(byteCount: rowBytes * height) else { preconditionsFailed("shm_open") }
+        guard let segment = makeSegment(byteCount: rowBytes * height, mappingName: mappingName) else { preconditionsFailed("shm_open") }
         return ShmSurface(
             fd: segment.fd,
             base: segment.base,
@@ -303,7 +322,25 @@ nonisolated public final class ShmSurface: @unchecked Sendable {
         bytesPerRow: Int
     ) -> ShmSurface? {
         #if os(Windows)
-        fatalError("ShmSurface: the Windows transport uses named file mappings (not implemented yet)")
+        // fd is a mapping HANDLE from ltm_recv_hello (truncated to int), not a
+        // CRT fd: map a view of it. The handle is NOT closed here — on success
+        // the surface owns it (deinit closes it); on failure the caller still
+        // owns it (receiveHello abandons it). Mirrors the POSIX branch, where
+        // the fd is likewise only closed by the surface / the abandon path.
+        guard byteCount > 0, width > 0, height > 0, bytesPerRow >= width * 4, fd > 0 else { return nil }
+        guard let handle = UnsafeMutableRawPointer(bitPattern: Int(fd)) else { return nil }
+        // FILE_MAP_ALL_ACCESS (0xF001F per WinBase.h) is not imported by
+        // Swift's WinSDK overlay, so spell the value out (as in makeSegment).
+        guard let base = MapViewOfFile(handle, DWORD(0xF001F), 0, 0, 0) else { return nil }
+        return ShmSurface(
+            fd: -1,
+            base: base,
+            byteCount: byteCount,
+            width: width,
+            height: height,
+            bytesPerRow: bytesPerRow,
+            mapping: handle
+        )
         #else
         guard byteCount > 0, width > 0, height > 0, bytesPerRow >= width * 4 else { return nil }
         guard let base = mmap(nil, byteCount, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0),
@@ -337,13 +374,12 @@ nonisolated public struct StatusBlock: @unchecked Sendable {
     }
 
     /// The helper's block, zeroed and stamped.
-    public static func create() -> StatusBlock {
-        let block = StatusBlock(ShmSurface.createStatus())
+    public static func create(mappingName: String? = nil) -> StatusBlock {
+        let block = StatusBlock(ShmSurface.createStatus(mappingName: mappingName))
         memset(block.base, 0, bytes)
         block[.layoutVersion] = layoutVersion
         #if os(Windows)
-        // Helper-side creation works on Windows (pagefile-backed mapping);
-        // only the app-side open() by name is still unimplemented.
+        // Helper-side creation works on Windows (pagefile-backed mapping).
         block[.helperPID] = UInt64(GetCurrentProcessId())
         #else
         block[.helperPID] = UInt64(getpid())
