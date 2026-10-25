@@ -28,10 +28,9 @@ design the wiring work follows. Main code head at audit time: `9d437b5`.
 2. **Artifact contract mismatch (the key design decision).** The package
    Qt step downloads artifact `lighttouch-qt-ui-windows-x86_64` from the
    **windows-ci run id**. An exe built by any other workflow (qt-ci) will
-   NOT be found there. Follow-up must pick one: (a) move the UI exe build
-   into `windows-ci.yml` as a job, so the artifact lands on the windows-ci
-   run; or (b) change the package Qt step to fetch from the latest
-   successful qt-build run. Do not do both half-way.
+   NOT be found there — a windows-ci run never contains the Qt artifact.
+   **DECIDED (main agent, 2026-10-26 audit 04:33): see "Gap 2 decision"
+   below. Do not re-litigate the (a)/(b) choice; implement the decision.**
 3. **Qt runtime is not staged.** Even with `LightTouch.exe`, the ZIP stages
    no `Qt6*.dll` and no plugins (`platforms/qwindows.dll`). The flat
    layout vs Qt's plugin subdirectory needs a `qt.conf` or library-path
@@ -47,27 +46,58 @@ design the wiring work follows. Main code head at audit time: `9d437b5`.
    dispatch until a cross-repo trigger (`repository_dispatch` or a schedule)
    is added.
 
+## Gap 2 decision (main agent, 2026-10-26 audit 04:33 — overdue since ~02:45, decided now)
+
+The package step **must NOT** fetch the Qt exe artifact from the
+windows-ci run id anymore. That lookup is itself the gap: a windows-ci
+run never contains the Qt artifact, so the step can never succeed as
+written.
+
+**Decided rule** for the package Qt step (to be implemented once the Qt
+tests are green; implementation is deferred so it does not block the
+ongoing Qt diagnosis):
+
+1. **Primary:** download artifact `lighttouch-qt-ui-windows-x86_64` from
+   the **windows-qt-ci run whose head SHA equals the commit being
+   packaged, on the same ref** (branch). The "commit being packaged" is
+   the head SHA of the windows-ci run the package step resolved (input
+   run id, or latest successful windows-ci run on main).
+2. **Fallback:** if no windows-qt-ci run matches that SHA, download from
+   the **newest successful windows-qt-ci run on the same branch**, and
+   emit a **warning** that the exe may not match the packaged commit.
+3. If neither exists, keep the current behavior: warn and continue
+   without the exe (package stays green, MSI stays shortcut-less).
+
+**Not decided here:** Qt runtime DLL/plugin staging (gap 3) and the
+cross-repo trigger (gap 5) are separate follow-ups. The installer needs
+no change: it already picks up the exe from the ZIP automatically.
+
 ## This commit (first wiring)
 
 - `windows-qt-ci.yml` now checks out `namde-v/lighttouch-ui` at `QtUI/`.
   The scaffold becomes a real Windows UI test build: install Qt → cmake
-  configure → build → ctest offscreen. The first run on this branch is
+  configure → build → ctest. The first run on this branch is
   expected to teach us what fails under MSVC; a red first run is signal,
   not a regression (this workflow never ran before).
 - The build also uploads `build/lighttouch.exe` (Ninja single-config
   output) as `lighttouch-qt-ui-windows-x86_64` with warn semantics —
-  evidence the exe compiles on Windows. Per gap 2, this artifact is NOT
-  yet consumable by the package step.
+  evidence the exe compiles on Windows. Per the gap 2 decision above,
+  this artifact becomes consumable by packaging once the decision is
+  implemented (it is not consumable by the current package step, which
+  still looks at the windows-ci run id).
 - No change to package/installer behavior: both already pick up the exe
-  automatically once gap 2 is resolved (package stages it, installer adds
+  automatically once gap 2 is implemented (package stages it, installer adds
   the shortcut).
 
 ## Next steps (in order)
 
 1. Read the first qt-ci run on this branch: does the UI compile under
-   MSVC? What fails?
-2. Decide gap 2 (job inside windows-ci vs cross-workflow fetch) and
-   implement it.
+   MSVC? What fails? (Done — see diagnoses below; offscreen fix
+   pending verdict on run 40234747319.)
+2. Implement the gap 2 decision (package Qt step fetches from the
+   SHA-matched windows-qt-ci run, same ref, fallback newest successful
+   run on the same branch + warning) — **deferred until Qt tests green**,
+   per the main-agent decision; do not let it block Qt diagnosis.
 3. Stage Qt runtime DLLs + plugins (`qt.conf`) in the package step.
 4. Verify the MSI installs a runnable app (exe + shortcut + DLLs).
 5. Add a cross-repo trigger so lighttouch-ui pushes run qt-ci.
