@@ -114,11 +114,15 @@ The helper is a separate package, but the contract it must implement is:
 4. `WebProxyLeafIdentity` documents what its WebProxy's TLS termination
    consumes per host (DER certificate + private key).
 
-## Windows shape (implemented in C; Swift call sites pending)
+## Windows shape (C implemented; Swift rendezvous + spawn implemented)
 
 The C transport layer (`Sources/LTMShm/ltm_shm.{h,c}`) implements the Windows
-half; the Swift `#if os(Windows)` call sites are still stubbed
-(`fatalError`) for the Windows wave.
+half, and the Swift call sites for the rendezvous path are implemented:
+`DeviceRendezvous.sendHello` / `receiveHello`, `ShmSurface` hello-side naming
+and `open()` of C-recv handles, the `RendezvousTestPeer` link-socket branch,
+and the spawn tests' loopback pair (`DeviceTransportTests`). The remaining
+Swift `#if os(Windows)` stubs (`fatalError`) are the real link path —
+`DeviceLink` / `LinkChannel` — a later wave.
 
 - `ShmSurface`: named file mappings (`CreateFileMapping`/`MapViewOfFile`)
   replacing `shm_open`/`mmap`. Each segment is a NAMED mapping
@@ -141,3 +145,9 @@ half; the Swift `#if os(Windows)` call sites are still stubbed
 - `ltm_monotonic_ns`: `QueryPerformanceCounter`.
 - `ltm_recv_hello` treats the caller's timeout as a total deadline for the
   whole header (select re-armed around each recv).
+- Peer lifetime: a named mapping dies with its creator's last handle, so a
+  helper that exits immediately after hello can destroy the mapping before
+  the app opens it (POSIX has no such race — SCM_RIGHTS gives the app its
+  own reference). The test peer lingers 2 s after hello on Windows in "exit"
+  mode to cover the app's accept + recv + open; real helpers stay alive for
+  the session, so they never hit this.
