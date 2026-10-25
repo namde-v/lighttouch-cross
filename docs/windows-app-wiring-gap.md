@@ -297,3 +297,59 @@ no change: it already picks up the exe from the ZIP automatically.
   failure reasons become visible for the first time. If they are
   empty too, QTest's logger never runs and the exit codes come
   from somewhere outside QTest.
+
+## Seventh run diagnosis (2026-10-26, run 40240221119 on b5a0d52, QTest -o)
+
+- **BREAKTHROUGH: the -o files contain the full QTest output.**
+  The stdio silence was a red herring in one sense (QTest writes
+  fine to its -o file; the pipe/file-redirect path loses it for
+  reasons that no longer matter) and the real failures are now
+  visible, all five with distinct causes:
+- **applaunch (1 fail): main.qml fails to load — `module
+  "QtMultimedia" is not installed`** (`CaptureSounds.qml:9:1`,
+  via `main.qml:174`). The workflow's Qt install lacks the
+  qtmultimedia module. FIX: `modules: 'qtmultimedia'` on the
+  install-qt step (evidence-backed, not a guess).
+- **surface11 (crash): SAME root cause as applaunch.** The
+  Fixture ctor's `QVERIFY2(!rootObjects.isEmpty())` fails on the
+  same load error, the ctor returns early leaving `menuBar`
+  null, and `eightMenusExist`'s `findMenu` dereferences it ->
+  `qt_qFindChild_helper` 0xC0000005. Not a separate bug: fix the
+  module install and the crash goes away with it.
+- **surface1 (1 fail): `sidebarPopulatesAndSelects` only** — the
+  synthetic mouse click produces no `selectionChanged`
+  (selSpy 0); the other 11 functions pass. Font-dir + theme
+  warnings accompany it (offscreen rendering gaps).
+- **surface2 (4 fails):** `displayLinkAndFrames`,
+  `displayItemRenders`, `inputSeams` all "DisplayLinkReady never
+  arrived" (3x 5s waits = the 17s); `zoomModes` fails on
+  `QSettings "zoom/<ipod>"` returning "" instead of "pixel"
+  (no org/app set for QSettings in this test path).
+- **surface12 (1 fail): `dropHighlightShowsOnlyWhenAccepted`** —
+  `visible` stays false after `show(true)` on a windowless
+  QQuickItem (upstream's own diagnosis comment: the flag "does
+  not stick" windowless on Windows/Qt 6.8).
+- **surface3 (control): 5/5 pass** (same font/DeviceScreen
+  warnings, harmless).
+- **THE BASELINE WAS WRONG — UI main HEAD is not green.**
+  Verified via gh api: the green run 38896622632 ran on branch
+  **win/w-ui @ 9536541** (conclusion success), NOT on UI main.
+  UI main HEAD 819d571 ("17/17 green" merge) does NOT contain
+  the fix line: win/w-ui is 6 commits ahead of main
+  (8872406 wait-for-first-frame, 6e01ca0 QSettings org for
+  surface2, 19ee00f mock frame-ring Windows port, 10b6013 fix 4
+  test failures, 1d7d4e1 direct-run diagnostics, 9536541
+  dropHighlight window parenting). win/w-ui's own workflow
+  installs `modules: "qtmultimedia"` with the comment
+  "CaptureSounds.qml needs QtMultimedia" — the same fix made
+  here, upstream-confirmed. The merge 819d571's parents
+  (511b4c6, db99848) do not include the fix line.
+- **Decision (this branch): pin the QtUI checkout to `win/w-ui`**
+  instead of UI main, and keep the qtmultimedia module install.
+  Re-fixing on main would duplicate upstream's already-landed
+  fixes. The checkout pin is recorded in the workflow with the
+  full reason. **Open item for main agent:** merge win/w-ui
+  into UI main as upstream cleanup, so main HEAD becomes
+  actually-green and the pin can be dropped.
+- Gap 2 package implementation still deferred until Qt tests
+  green (this run should now be green on win/w-ui + multimedia).

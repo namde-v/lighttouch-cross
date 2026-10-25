@@ -52,6 +52,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: namde-v/lighttouch-ui
+          # Pin win/w-ui, NOT main: UI main HEAD (819d571, "17/17 green"
+          # merge) does NOT contain the Windows test fixes — the green
+          # run 38896622632 ran on win/w-ui @ 9536541, which is 6 commits
+          # ahead of main (QSettings org, frame-ring port, 4 test fixes,
+          # dropHighlight window parenting). Checking out main re-fails
+          # all 5 tests that win/w-ui already fixed.
+          ref: win/w-ui
           path: QtUI
 
       # Gate: everything below is skipped (not failed) if the UI checkout
@@ -74,6 +81,7 @@ jobs:
           host: windows
           target: desktop
           arch: win64_msvc2022_64
+          modules: 'qtmultimedia'
           cache: true
 
       # Default Visual Studio generator (no -G Ninja): this matches the
