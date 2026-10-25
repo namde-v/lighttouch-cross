@@ -197,6 +197,10 @@ import Testing
         try url.resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize! / 1024
     }
 
+    // Windows: the fake preparer is a POSIX shell script, and Windows CI has no shell in the
+    // subprocess launch path (CreateProcess on a #!/bin/sh file fails win32(193)); the fake
+    // never launches, so this test can only fail there. Same gate as LockdownToolsTests.
+#if !os(Windows)
     @Test func publishesFailsAndCancelsAgainstTheFakePreparer() async throws {
         try await LibraryFixtures.withScratch { tmp in
             let f = try Fixture(tmp)
@@ -360,6 +364,7 @@ import Testing
             try removalAndSweeps(f, device: device, other: device4)
         }
     }
+#endif
 
     /// Erase and Delete stay inside the device's own storage; Delete Device goes through .deleting-<uuid> with its
     /// read-only base; the launch sweeps finish torn deletes and Preparing/ leftovers.

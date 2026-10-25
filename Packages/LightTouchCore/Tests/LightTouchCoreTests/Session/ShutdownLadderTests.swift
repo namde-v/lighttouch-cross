@@ -12,11 +12,13 @@ struct ShutdownLadderTests {
     func session(_ directory: URL, state: VMState = .booting) -> FakeSession {
         let s = FakeSession(directory: directory)
         s.state = state
-        // Halt budget generous for loaded CI (2-vCPU VM): the fake helper
-        // needs time to exit under batch load; 0.3s was too tight and the
-        // helper was killed, failing terms==1. serviceTeardown stays short
-        // so aStuckServicesWorkerCantHoldStop still completes in <2s.
-        s.ladder.budgets.halt = 5
+        // Halt budget generous for loaded CI (2-vCPU VM): the fake helper's
+        // exit hop queues behind MainActor work from 400+ parallel tests, and
+        // on Windows CI that hop alone exceeds 5s, so the helper was killed,
+        // failing terms==1. 15s still proves the halt doesn't wait on the 60s
+        // guest the tests below assert against. serviceTeardown stays short;
+        // the wall-clock bounds in the tests themselves carry the load slack.
+        s.ladder.budgets.halt = 15
         s.ladder.budgets.serviceTeardown = 0.3
         s.ladder.budgets.shutdown = 5
         return s
@@ -93,9 +95,12 @@ struct ShutdownLadderTests {
             stuck.hangWorker = true
             let started = Date()
             #expect(await halt(stuck))
-            // <10s (not <2s): the assertion is "the halt doesn't wait for the
-            // stuck worker"; under batch load MainActor scheduling takes seconds.
-            #expect(stuck.fakeHelper!.terms == 1 && !stuck.shuttingDown && Date().timeIntervalSince(started) < 10)
+            // <30s (not <2s): the assertion is "the halt doesn't wait for the
+            // stuck worker" — that worker never finishes, so any finite bound
+            // proves it; the 0.3s teardown budget is what bounds the wait
+            // itself. 30s tolerates Windows CI, where the helper-exit hop plus
+            // MainActor queueing alone took 21.8s (Linux already takes ~12s).
+            #expect(stuck.fakeHelper!.terms == 1 && !stuck.shuttingDown && Date().timeIntervalSince(started) < 30)
             let stuckHung = session(directory)
             stuckHung.hangWorker = true
             stuckHung.fakeHelper!.hung = true
@@ -168,9 +173,12 @@ struct ShutdownLadderTests {
                 #expect(readiness?.isCancelled == true && watchdog?.isCancelled == true, "the boot's watches end")
                 #expect(c.link.commands.isEmpty, "no guest shutdown asked")
                 #expect(await shutdown.value == .forced)
-                // <10s (not <2s): "a halt, not the shutdown budget" (5s); under
-                // batch load MainActor scheduling takes seconds.
-                #expect(Date().timeIntervalSince(started) < 10, "a halt, not the shutdown budget")
+                // <25s (not <2s): "a halt, not the shutdown budget" (30s in
+                // this test); the .forced outcome above already proves the halt
+                // path, so this bound only guards against pathological
+                // slowness. 25s tolerates Windows CI hop delays (observed
+                // 14.4s/11.7s) while staying under the shutdown budget.
+                #expect(Date().timeIntervalSince(started) < 25, "a halt, not the shutdown budget")
                 #expect(c.fakeHelper!.terms == 1 && c.steps.prefix(2) == ["willStop", "retire"])
                 await eventually("the startup banner went") { !c.preparingDevice }
                 // USB answering now moves no boot stage: the boot is over.

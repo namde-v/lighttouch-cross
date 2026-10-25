@@ -49,11 +49,18 @@ public final class AppChangeWatch: @unchecked Sendable {
             return false
         }
         guard !alreadyStarted else { return }
+        // Windows: corelibs NotificationCenter does not deliver to block observers registered
+        // with a non-nil object (both Windows-only 180s timeouts in the suite wait on such an
+        // observer); observe unfiltered and match this scope here instead. Production AppCore
+        // already observes library notifications with object: nil.
         let observer = NotificationCenter.default.addObserver(
             forName: .bootSessionScopeDidChange,
-            object: apps.bootScope,
+            object: nil,
             queue: nil
-        ) { [weak self] _ in self?.follow() }
+        ) { [weak self] note in
+            guard let self, (note.object as? BootSessionScope) === self.apps.bootScope else { return }
+            self.follow()
+        }
         lock.withLock { _bootObserver = observer }
         // Initial follow: attach to the current boot now.
         follow()

@@ -253,9 +253,15 @@ struct BootCycleTests {
             let cancelled = ContinuousClock.now
             c.retireBoot()
             await task?.value
-            // <5s (not <1s): "it ends at once, not when the latch wait runs out"
-            // (5s); under batch load MainActor scheduling takes seconds.
-            #expect(ContinuousClock.now - cancelled < .seconds(5), "it ends at once, not when the latch wait runs out")
+            // The property is "cancelled while waiting for the latch, not run
+            // out the latch wait" — and state proves it directly: a latch
+            // expiry ends the boot via endBoot(.guestPoweredOff) -> .poweredOff,
+            // while a cancellation leaves the state at .booting. A <5s bound
+            // cannot prove that under batch load (Windows CI cancellation
+            // delivery alone took 10.9s/12.4s), so it measured the scheduler,
+            // not the product. The liveness bound below only proves it ends.
+            #expect(c.state == .booting, "cancelled, not run out the latch wait")
+            #expect(ContinuousClock.now - cancelled < .seconds(30), "it ends")
             #expect(!c.cycle.poweringOn && c.link.commands == [.machine(.reset)], "and never resumes the machine")
         }
     }

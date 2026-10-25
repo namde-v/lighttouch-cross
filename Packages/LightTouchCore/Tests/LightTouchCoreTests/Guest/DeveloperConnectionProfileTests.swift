@@ -11,7 +11,11 @@ struct DeveloperConnectionProfileTests {
             let state = folder.appendingPathComponent("state")
             let tools = folder.appendingPathComponent("MacOS")
             try FileManager.default.createDirectory(at: tools, withIntermediateDirectories: true)
+            #if os(Windows)
+            let inetcat = tools.appendingPathComponent("inetcat.exe")
+            #else
             let inetcat = tools.appendingPathComponent("inetcat")
+            #endif
             try Data("#!/bin/sh\nexit 0\n".utf8).write(to: inetcat)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: inetcat.path)
             let instance = UUID()
@@ -44,6 +48,9 @@ struct DeveloperConnectionProfileTests {
                     && old.usbmux == "127.0.0.1:4010"
             )
             #expect(old.inetcat == inetcat.path, "the bundled forwarding tool comes first")
+            #if !os(Windows)
+            // POSIX permissions have no Windows equivalent (owner-only by
+            // default ACL instead); same guard as StorageLocationsTests.
             #expect(
                 (try FileManager.default.attributesOfItem(atPath: profile.path)[.posixPermissions] as? NSNumber)?
                     .intValue == 0o600
@@ -52,6 +59,7 @@ struct DeveloperConnectionProfileTests {
                 (try FileManager.default.attributesOfItem(atPath: root.path)[.posixPermissions] as? NSNumber)?.intValue
                     == 0o700
             )
+            #endif
 
             try publish(second, "127.0.0.1:4020", "second-device")
             DeveloperConnectionProfile.retire(instance: instance, session: first, state: state)

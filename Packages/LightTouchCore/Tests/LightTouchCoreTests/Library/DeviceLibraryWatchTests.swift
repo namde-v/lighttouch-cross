@@ -237,11 +237,15 @@ struct DeviceLibraryWatchTests {
             var sessions = [Started(gone, directory: scratch), Started(kept, directory: scratch)]
             var dropped: [UUID] = []
             let vanished = VanishedDevices()
+            // Windows: corelibs NotificationCenter does not deliver to block observers registered
+            // with a non-nil object (this test timed out 180s on exactly that); observe unfiltered
+            // and match this library here, as production AppCore already does.
             let observer = NotificationCenter.default.addObserver(
                 forName: DeviceLibrary.didChangeNotification,
-                object: library,
+                object: nil,
                 queue: nil
-            ) { _ in
+            ) { note in
+                guard (note.object as? DeviceLibrary) === library else { return }
                 MainActor.assumeIsolated {
                     vanished.stop(sessions, library: library) { session in
                         dropped.append(session.instance.id)

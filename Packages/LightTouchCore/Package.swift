@@ -54,7 +54,11 @@ let package = Package(
         // The tests stay in the Swift 5 language mode for now (their fixtures share state across threads by design).
         .testTarget(
             name: "LightTouchCoreTests",
-            dependencies: ["LightTouchCore", "TestIsolation"],
+            dependencies: [
+                "LightTouchCore", "TestIsolation",
+                // LibraryFixtures builds test zips in process (restoreZip).
+                .product(name: "ZIPFoundation", package: "ZIPFoundation"),
+            ],
             swiftSettings: settings + [.swiftLanguageMode(.v5)]
         ),
     ],

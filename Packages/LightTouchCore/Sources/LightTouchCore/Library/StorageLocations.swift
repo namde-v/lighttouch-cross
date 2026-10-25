@@ -73,8 +73,14 @@ public nonisolated enum StorageLocations {
         // LockFileEx on the CRT descriptor's HANDLE (see Bundled.windowsTryLock).
         let fd = open(old.appendingPathComponent(".app-lock").path, O_RDWR | O_CREAT | _O_NOINHERIT, 0o600)
         guard fd >= 0 else { throw posixError() }
-        defer { close(fd) }
-        guard windowsTryLock(fd) else {
+        // Close before the move: Windows denies moving a directory while a
+        // handle inside it is open (POSIX allows it), and this fd is inside
+        // the moved tree. The lock check is point-in-time ("is another build
+        // running"); migration is idempotent, so a second mover's guard above
+        // returns early once old is gone.
+        let locked = windowsTryLock(fd)
+        close(fd)
+        guard locked else {
             throw CocoaError(
                 .fileLocking,
                 userInfo: [NSLocalizedDescriptionKey: "Light Touch is already running with this library."]

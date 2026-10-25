@@ -136,7 +136,12 @@ struct QuitCoordinatorTests {
         #expect(request(quit, log, running: [{ late = $0 }]) == .later)
         try await settle()
         #expect(!log.events.contains("reply"))
-        let deadline = Date().addingTimeInterval(10)
+        // 30s, not 10s: the backstop itself is 0.5s, but its reply hop queues
+        // behind MainActor work from 400+ parallel tests, and on Windows CI it
+        // took over 10s once (~9s another run). The property — the reply comes
+        // from the backstop, not the halt — is preserved because late?() is
+        // still invoked only after this expect.
+        let deadline = Date().addingTimeInterval(30)
         while !log.events.contains("reply") && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
         #expect(log.events.filter { $0 == "reply" }.count == 1 && !quit.awaitingTermination)
         late?()

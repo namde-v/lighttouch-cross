@@ -12,7 +12,8 @@ struct BundledTests {
     // Linux: Apple's `aa` CLI (which builds the test .aar) and AppleArchive
     // (which unpacks it) are macOS-only; FirmwareKit's GuestArchive is a
     // documented no-op on Linux, so there is nothing to exercise here.
-    #if os(Linux)
+    // Windows: same tools missing (`/usr/bin/aa` does not exist there).
+    #if os(Linux) || os(Windows)
     @Test(.disabled("needs macOS-only Apple Archive tooling"))
     #else
     @Test
