@@ -54,13 +54,6 @@ struct DeviceTransportTests {
     private struct Spawned {
         var pid: pid_t
         var socket: Int32
-        // DIAGNOSTIC (temporary): peer stdout/stderr capture path (Windows only, "" elsewhere).
-        var peerLog: String = ""
-        // DIAGNOSTIC (temporary, round 2): retained peer process-handle value
-        // (Windows only, 0 elsewhere). Round 1 opened the process in reap(),
-        // but by then the peer had already exited with no handle held, so its
-        // process object was gone and OpenProcess failed — no exit code.
-        var processHandleValue: UInt = 0
     }
 
     #if os(Windows)
@@ -152,85 +145,28 @@ struct DeviceTransportTests {
         }
         var noTimeout: DWORD = 0
         setsockopt(accepted, SOL_SOCKET, SO_RCVTIMEO, &noTimeout, Int32(MemoryLayout<DWORD>.size))
-        // DIAGNOSTIC (temporary): capture the peer's stdout/stderr in a temp
-        // file so a peer-side failure is visible in test.log — otherwise it
-        // goes to NUL and the app only sees EOF. Best-effort: if the file
-        // can't be created, the peer still runs with NUL output.
-        let peerLogURL = FileManager.default.temporaryDirectory.appendingPathComponent("ltm-peer-\(UUID().uuidString).log")
-        var peerLogHandle: HANDLE? = nil
-        var peerOut: Int32 = -1
-        var peerLogPath = ""
-        if let outHandle = CreateFileA(peerLogURL.path, DWORD(GENERIC_WRITE), DWORD(FILE_SHARE_READ | FILE_SHARE_WRITE), nil, DWORD(CREATE_ALWAYS), DWORD(FILE_ATTRIBUTE_NORMAL), nil),
-           outHandle != INVALID_HANDLE_VALUE {
-            peerLogHandle = outHandle
-            peerOut = Int32(truncatingIfNeeded: Int(bitPattern: outHandle))
-            peerLogPath = peerLogURL.path
-        }
         // Spawn: the child inherits the connected client socket.
-        // DIAGNOSTIC (temporary, round 2): hand the peer its log path via env
-        // so its crash-proof markers (see main.swift peerLog) land in the same
-        // temp file the test already dumps in reap().
         let argv = [peer.path, token, mode]
         let pid: pid_t = withWindowsCStrings(argv) { cargv in
-            withWindowsCStrings(["LTM_PEER_LOG=\(peerLogPath)"]) { cenv in
-                ltm_spawn(peer.path, cargv, cenv, peerOut, Int32(truncatingIfNeeded: client))
-            }
+            ltm_spawn(peer.path, cargv, nil, -1, Int32(truncatingIfNeeded: client))
         }
-        // Parent's out copy: the child holds its own inherited copy.
-        if let outHandle = peerLogHandle { CloseHandle(outHandle) }
         guard pid > 0 else {
             closesocket(accepted)
             throw POSIXError(POSIXErrorCode(rawValue: -pid) ?? .EIO)
         }
-        // DIAGNOSTIC (temporary, round 2): retain a handle to the peer NOW,
-        // before receiveHello runs — once it exits with no handle held, its
-        // process object vanishes and reap() can no longer get the exit code.
-        // PROCESS_QUERY_LIMITED_INFORMATION is 0x1000 (winnt.h); needed for
-        // GetExitCodeProcess alongside SYNCHRONIZE for the wait.
-        var procValue: UInt = 0
-        if let process = OpenProcess(DWORD(SYNCHRONIZE) | DWORD(0x1000), false, DWORD(pid)) {
-            procValue = UInt(bitPattern: process)
-        }
-        print("spawned peer pid=\(pid) client=\(client) accepted=\(accepted) peerLog=\(peerLogPath)")
         // The defers close the parent's listener + client copies; the accepted
         // socket is the app's end and stays open. SOCKET values truncate to
         // the API's Int32 (the C layer's documented convention; test-process
         // socket values are small).
-        return Spawned(pid: pid, socket: Int32(truncatingIfNeeded: accepted), peerLog: peerLogPath, processHandleValue: procValue)
+        return Spawned(pid: pid, socket: Int32(truncatingIfNeeded: accepted))
     }
 
     private func reap(_ spawned: Spawned) {
-        // DIAGNOSTIC (temporary, round 2): the retained handle is the reliable
-        // path — round 1's OpenProcess-here failed because the peer was
-        // already gone. 64 means env/argc, 1 means WSAStartup/sendHello, a
-        // crash code means a trap, 0xC0000135 means a DLL failed to load.
-        if spawned.processHandleValue != 0, let process = HANDLE(bitPattern: spawned.processHandleValue) {
+        if let process = OpenProcess(DWORD(SYNCHRONIZE), false, DWORD(spawned.pid)) {
             WaitForSingleObject(process, INFINITE)
-            var code: DWORD = 0
-            if GetExitCodeProcess(process, &code) {
-                print("peer exit code: \(code) (0x\(String(code, radix: 16)))")
-            } else {
-                print("peer exit code: (GetExitCodeProcess failed)")
-            }
             CloseHandle(process)
-        } else if let process = OpenProcess(DWORD(SYNCHRONIZE), false, DWORD(spawned.pid)) {
-            WaitForSingleObject(process, INFINITE)
-            var code: DWORD = 0
-            if GetExitCodeProcess(process, &code) {
-                print("peer exit code: \(code) (0x\(String(code, radix: 16)))")
-            } else {
-                print("peer exit code: (GetExitCodeProcess failed)")
-            }
-            CloseHandle(process)
-        } else {
-            print("peer exit code: (no retained handle, OpenProcess failed — peer already gone)")
         }
         // OpenProcess fails when the peer is already gone: already reaped.
-        // DIAGNOSTIC (temporary): dump the peer's captured output, if any.
-        if !spawned.peerLog.isEmpty {
-            let log = (try? String(contentsOfFile: spawned.peerLog, encoding: .utf8)) ?? "(peer log unreadable)"
-            print("peer log (\(spawned.peerLog)):\n\(log)")
-        }
         closesocket(SOCKET(truncatingIfNeeded: spawned.socket))
     }
     #else
