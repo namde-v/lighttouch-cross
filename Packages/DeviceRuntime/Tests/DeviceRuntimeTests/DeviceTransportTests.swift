@@ -54,6 +54,8 @@ struct DeviceTransportTests {
     private struct Spawned {
         var pid: pid_t
         var socket: Int32
+        // DIAGNOSTIC (temporary): peer stdout/stderr capture path (Windows only, "" elsewhere).
+        var peerLog: String = ""
     }
 
     #if os(Windows)
@@ -145,28 +147,56 @@ struct DeviceTransportTests {
         }
         var noTimeout: DWORD = 0
         setsockopt(accepted, SOL_SOCKET, SO_RCVTIMEO, &noTimeout, Int32(MemoryLayout<DWORD>.size))
+        // DIAGNOSTIC (temporary): capture the peer's stdout/stderr in a temp
+        // file so a peer-side failure is visible in test.log — otherwise it
+        // goes to NUL and the app only sees EOF. Best-effort: if the file
+        // can't be created, the peer still runs with NUL output.
+        let peerLogURL = FileManager.default.temporaryDirectory.appendingPathComponent("ltm-peer-\(UUID().uuidString).log")
+        var peerLogHandle: HANDLE? = nil
+        var peerOut: Int32 = -1
+        var peerLogPath = ""
+        if let outHandle = CreateFileA(peerLogURL.path, DWORD(GENERIC_WRITE), DWORD(FILE_SHARE_READ | FILE_SHARE_WRITE), nil, DWORD(CREATE_ALWAYS), DWORD(FILE_ATTRIBUTE_NORMAL), nil),
+           outHandle != INVALID_HANDLE_VALUE {
+            peerLogHandle = outHandle
+            peerOut = Int32(truncatingIfNeeded: Int(bitPattern: outHandle))
+            peerLogPath = peerLogURL.path
+        }
         // Spawn: the child inherits the connected client socket.
         let argv = [peer.path, token, mode]
         let pid: pid_t = withWindowsCStrings(argv) { cargv in
-            ltm_spawn(peer.path, cargv, nil, -1, Int32(truncatingIfNeeded: client))
+            ltm_spawn(peer.path, cargv, nil, peerOut, Int32(truncatingIfNeeded: client))
         }
+        // Parent's out copy: the child holds its own inherited copy.
+        if let outHandle = peerLogHandle { CloseHandle(outHandle) }
         guard pid > 0 else {
             closesocket(accepted)
             throw POSIXError(POSIXErrorCode(rawValue: -pid) ?? .EIO)
         }
+        print("spawned peer pid=\(pid) client=\(client) accepted=\(accepted) peerLog=\(peerLogPath)")
         // The defers close the parent's listener + client copies; the accepted
         // socket is the app's end and stays open. SOCKET values truncate to
         // the API's Int32 (the C layer's documented convention; test-process
         // socket values are small).
-        return Spawned(pid: pid, socket: Int32(truncatingIfNeeded: accepted))
+        return Spawned(pid: pid, socket: Int32(truncatingIfNeeded: accepted), peerLog: peerLogPath)
     }
 
     private func reap(_ spawned: Spawned) {
         if let process = OpenProcess(DWORD(SYNCHRONIZE), false, DWORD(spawned.pid)) {
             WaitForSingleObject(process, INFINITE)
+            // DIAGNOSTIC (temporary): surface the peer's exit code — 64 means
+            // env/argc, 1 means WSAStartup/sendHello, a crash code means a trap.
+            var code: DWORD = 0
+            if GetExitCodeProcess(process, &code) {
+                print("peer exit code: \(code) (0x\(String(code, radix: 16)))")
+            }
             CloseHandle(process)
         }
         // OpenProcess fails when the peer is already gone: already reaped.
+        // DIAGNOSTIC (temporary): dump the peer's captured output, if any.
+        if !spawned.peerLog.isEmpty {
+            let log = (try? String(contentsOfFile: spawned.peerLog, encoding: .utf8)) ?? "(peer log unreadable)"
+            print("peer log (\(spawned.peerLog)):\n\(log)")
+        }
         closesocket(SOCKET(truncatingIfNeeded: spawned.socket))
     }
     #else

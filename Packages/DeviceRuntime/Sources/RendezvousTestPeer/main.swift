@@ -19,17 +19,21 @@ import Foundation
 // WSAStartup in this process too (the C layer does not do it).
 var wsadata = WSADATA()
 guard WSAStartup(0x0202, &wsadata) == 0 else { exit(1) }
+print("peer: WSAStartup ok")
 guard let linkValue = ProcessInfo.processInfo.environment["LTM_LINK_SOCKET"],
       let linkSocket = UInt64(linkValue)
 else { exit(64) }
+print("peer: LTM_LINK_SOCKET=\(linkSocket)")
 let arguments = CommandLine.arguments
 guard arguments.count == 3 else { exit(64) }
 // The status segment carries the C-contract hello name, so the app's
 // ltm_recv_hello can re-open it by name (see TRANSPORT_REDESIGN.md).
 let status = StatusBlock.create(mappingName: ShmSurface.helloMappingName(token: arguments[1], index: 0))
+print("peer: status ok")
 status[.heartbeat] = 7
 let rc = DeviceRendezvous.sendHello(socket: Int32(truncatingIfNeeded: linkSocket), token: arguments[1], generation: 0, segments: [status.surface])
 guard rc == 0 else { exit(1) }
+print("peer: sendHello rc=0")
 if arguments[2] == "stay" {
     while true { Sleep(60_000) }
 } else {
