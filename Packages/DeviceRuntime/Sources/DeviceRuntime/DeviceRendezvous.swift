@@ -19,6 +19,14 @@
 // A random process cannot hold the socket's other end, so no code-signing
 // attestation is needed. Control never leaves the socketpair either: it
 // carries the length-framed JSON from DeviceLinkProtocol.swift after the hello.
+//
+// Windows: the same header over a loopback TCP socket (Winsock has no
+// socketpair, no SCM_RIGHTS). Segments are named file mappings
+// ("LTMShm_<token>_<index>"); the app re-opens them by name inside
+// ltm_recv_hello, so the hello carries no handles. There is no
+// SCM_CREDENTIALS equivalent for loopback sockets, so the pid check is
+// skipped and the one-time token is the authentication (the socket is still
+// private to this spawn).
 
 #if os(Linux)
 import Glibc
@@ -79,14 +87,19 @@ nonisolated public enum DeviceRendezvous {
         generation: UInt64,
         segments: [ShmSurface]
     ) -> Int32 {
-        #if os(Windows)
-        fatalError("DeviceRendezvous: the Windows transport is not implemented yet (see TRANSPORT_REDESIGN.md)")
-        #else
         let expected = generation == 0 ? 1 : Int(LTM_SHM_MAX_SEGMENTS)
         guard segments.count == expected else { return EINVAL }
-        let fds = segments.map { $0.takeFD() }
         let counts = segments.map { UInt64($0.byteCount) }
+        #if os(Windows)
+        // Windows: the C layer ignores fds (segments are re-opened by name),
+        // and the helper MUST keep its mapping handles alive until the app
+        // opens them — so never takeFD here (takeFD would hand the fd off and
+        // the mapping would die with the helper's last handle).
+        let fds = [Int32](repeating: -1, count: segments.count)
+        #else
+        let fds = segments.map { $0.takeFD() }
         defer { for fd in fds where fd >= 0 { ltmClose(fd) } }
+        #endif
         let rc = fds.withUnsafeBufferPointer { fdsPtr in
             counts.withUnsafeBufferPointer { countsPtr in
                 token.withCString { tokenPtr in
@@ -103,7 +116,6 @@ nonisolated public enum DeviceRendezvous {
             }
         }
         return rc == 0 ? 0 : -rc
-        #endif
     }
 
     /// App side: block up to `timeout` for the helper's hello on the link
@@ -115,9 +127,6 @@ nonisolated public enum DeviceRendezvous {
         pid: pid_t,
         timeout: TimeInterval
     ) throws -> Hello {
-        #if os(Windows)
-        fatalError("DeviceRendezvous: the Windows transport is not implemented yet (see TRANSPORT_REDESIGN.md)")
-        #else
         var hello = ltm_shm_hello()
         let rc = token.withCString { tokenPtr in
             ltm_recv_hello(
@@ -149,7 +158,10 @@ nonisolated public enum DeviceRendezvous {
             throw DeviceRendezvousError.malformed("nsegments \(n)")
         }
         func abandon(_ from: Int) {
-            for fd in fds.dropFirst(from) where fd >= 0 { ltmClose(fd) }
+            // ltmCloseHandle, not ltmClose: on Windows these are mapping
+            // HANDLEs from ltm_recv_hello, not CRT fds (identical to ltmClose
+            // on POSIX).
+            for fd in fds.dropFirst(from) where fd >= 0 { ltmCloseHandle(fd) }
         }
         guard
             let statusSurface = ShmSurface.open(
@@ -195,6 +207,5 @@ nonisolated public enum DeviceRendezvous {
             }
         }
         return Hello(generation: hello.generation, status: statusSurface, frames: frames)
-        #endif
     }
 }
