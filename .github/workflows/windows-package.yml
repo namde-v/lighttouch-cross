@@ -84,10 +84,20 @@ jobs:
         run: |
           # Explicit id (dispatch only): validate it is a windows-ci run.
           # Empty or 'latest' (push runs carry no inputs): pick the newest
-          # COMPLETED windows-ci run on main that actually uploaded at least
-          # one swift-<pkg>-windows-x86_64 build artifact. Test failures do
+          # COMPLETED windows-ci run on main that uploaded ALL SEVEN
+          # swift-<pkg>-windows-x86_64 build artifacts. Test failures do
           # NOT disqualify a run — build artifacts upload with if: always()
-          # — but a run whose builds failed (no artifacts) is skipped.
+          # — but a run whose builds failed (missing artifacts) is skipped.
+          # WHY ALL SEVEN + COMPLETED (post-merge run 40197207503 failed):
+          # the old filter `select(.conclusion != null)` does NOT exclude
+          # in-progress runs — gh emits an EMPTY-STRING conclusion, not
+          # JSON null, for unfinished runs (log: "Skipping run 40197207466
+          # (conclusion: , no build artifacts)"), and the old "at least
+          # one build artifact" bar let the still-running run 40196082917
+          # (5/7 artifacts uploaded, LTC + FirmwareKit jobs unfinished)
+          # through. Packaging from a partial run then failed at download.
+          # --status completed is server-side; the all-seven check is the
+          # belt-and-braces guard against partial-artifact runs.
           $inputId = "$env:INPUT_RUN_ID".Trim()
           if ($inputId -and $inputId -ne 'latest') {
             # NOTE: gh run view's workflowName is the display name ('Windows'
@@ -101,15 +111,16 @@ jobs:
             $id = $parts[0]; $headSha = $parts[2]
             Write-Host "Packaging explicit windows-ci run $id"
           } else {
-            $lines = @(gh run list --workflow windows-ci.yml --branch main --limit 20 --json databaseId,conclusion,headSha --jq '.[] | select(.conclusion != null) | "\(.databaseId) \(.headSha) \(.conclusion)"')
+            $lines = @(gh run list --workflow windows-ci.yml --branch main --status completed --limit 20 --json databaseId,conclusion,headSha --jq '.[] | "\(.databaseId) \(.headSha) \(.conclusion)"')
             $id = $null; $headSha = $null
+            $pkgs = @('HostRuntime','DeviceServices','ReleaseChecks','BuildTools','FirmwareKit','DeviceRuntime','LightTouchCore')
             foreach ($line in $lines) {
               $parts = $line -split '\s+'
               $candId = $parts[0]; $candSha = $parts[1]; $candConcl = $parts[2]
               $names = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$candId/artifacts" --paginate --jq '.artifacts[].name' 2>$null
-              $hasBuild = @($names) | Where-Object { $_ -match '^swift-.*-windows-x86_64$' }
-              if ($hasBuild) { $id = $candId; $headSha = $candSha; break }
-              Write-Host "Skipping run $candId (conclusion: $candConcl, no build artifacts)"
+              $missing = @($pkgs | Where-Object { $names -notcontains "swift-$_-windows-x86_64" })
+              if (-not $missing) { $id = $candId; $headSha = $candSha; break }
+              Write-Host "Skipping run $candId (conclusion: $candConcl, missing build artifacts: $($missing -join ', '))"
             }
             if (-not $id) { Write-Error 'No completed windows-ci run on main with build artifacts found'; exit 1 }
             Write-Host "Packaging artifacts from windows-ci run $id (head $headSha)"
@@ -125,11 +136,16 @@ jobs:
           # swift-*-windows-x86_64-logs artifacts, which on crash runs hold
           # 250MB+ .dmp files. A missing per-package artifact only warns
           # (that job's build failed); the assemble step fails if NO package
-          # DLLs were staged at all.
+          # DLLs were staged at all. NOTE: the trailing `$LASTEXITCODE = 0`
+          # is load-bearing, not cosmetic — pwsh propagates the final
+          # native exit code, so without it a failed LAST download
+          # (LightTouchCore, last in the list) failed the whole step in
+          # post-merge run 40197207503 despite the warn-only intent.
           foreach ($pkg in @('HostRuntime','DeviceServices','ReleaseChecks','BuildTools','FirmwareKit','DeviceRuntime','LightTouchCore')) {
             gh run download ${{ steps.run-id.outputs.run_id }} --name "swift-$pkg-windows-x86_64" --dir "swift-artifacts/swift-$pkg-windows-x86_64"
             if ($LASTEXITCODE -eq 0) { Write-Host "artifact: swift-$pkg-windows-x86_64" } else { Write-Warning "build artifact missing for $pkg" }
           }
+          $LASTEXITCODE = 0
 
       # The emulator workflow only runs when its own file changes, so a
       # successful run may not exist yet — warn and continue without qemu.
