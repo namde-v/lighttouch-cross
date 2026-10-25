@@ -197,6 +197,24 @@ static char *quote_arg(const char *a) {
     return r;
 }
 
+// True when the "NAME=VALUE" entry's NAME matches one of the override names
+// (envp[] entries, compared by NAME part only) or the extra name. Used to
+// drop parent-environment entries that an override replaces, so the child's
+// environment block never carries a variable twice.
+static int env_name_overridden(const char *entry, char *const envp[], int envc, const char *extra) {
+    const char *eq = strchr(entry, '=');
+    size_t nlen = eq ? (size_t)(eq - entry) : strlen(entry);
+    if (extra && strlen(extra) == nlen && strncmp(entry, extra, nlen) == 0)
+        return 1;
+    for (int i = 0; i < envc; i++) {
+        const char *eeq = strchr(envp[i], '=');
+        size_t elen = eeq ? (size_t)(eeq - envp[i]) : strlen(envp[i]);
+        if (elen == nlen && strncmp(entry, envp[i], nlen) == 0)
+            return 1;
+    }
+    return 0;
+}
+
 pid_t ltm_spawn(const char *path, char *const argv[], char *const envp[], int out_fd, int link_fd) {
     if (!path || !argv || !argv[0])
         return -EINVAL;
@@ -222,13 +240,28 @@ pid_t ltm_spawn(const char *path, char *const argv[], char *const envp[], int ou
         free(q);
     }
 
-    // Environment block: envp[] plus LTM_LINK_SOCKET=<handle value>.
-    // The helper reads LTM_LINK_SOCKET to find the link socket.
+    // Environment block: the PARENT's environment, plus envp[] overrides,
+    // plus LTM_LINK_SOCKET=<handle value>. The helper reads LTM_LINK_SOCKET
+    // to find the link socket.
+    // DO NOT build the block from envp[] alone: an earlier version did, which
+    // STRIPPED the parent's environment — the child then had no PATH, so the
+    // loader could not find the Swift runtime DLLs and the peer died instantly
+    // with 0xC0000135 (STATUS_DLL_NOT_FOUND) before main() ran, surfacing in
+    // the test only as EOF/helperDied. Inheriting the parent environment also
+    // matches the POSIX branch, where posix_spawn with envp == NULL inherits
+    // environ (and the POSIX test passes NULL).
+    LPCH parent_env = GetEnvironmentStringsA();
     size_t envlen = 1; // final double NUL
     int envc = 0;
     if (envp) {
         for (; envp[envc]; envc++)
             envlen += strlen(envp[envc]) + 1;
+    }
+    if (parent_env) {
+        for (LPCH pe = parent_env; *pe; pe += strlen(pe) + 1) {
+            if (!env_name_overridden(pe, envp, envc, "LTM_LINK_SOCKET"))
+                envlen += strlen(pe) + 1;
+        }
     }
     char linkvar[64];
     int linkvar_len = 0;
@@ -241,10 +274,22 @@ pid_t ltm_spawn(const char *path, char *const argv[], char *const envp[], int ou
     }
     char *envblock = (char *)malloc(envlen);
     if (!envblock) {
+        if (parent_env)
+            FreeEnvironmentStringsA(parent_env);
         free(cmd);
         return -ENOMEM;
     }
     char *e = envblock;
+    if (parent_env) {
+        for (LPCH pe = parent_env; *pe; pe += strlen(pe) + 1) {
+            if (env_name_overridden(pe, envp, envc, "LTM_LINK_SOCKET"))
+                continue;
+            size_t n = strlen(pe) + 1;
+            memcpy(e, pe, n);
+            e += n;
+        }
+        FreeEnvironmentStringsA(parent_env);
+    }
     if (envp) {
         for (int i = 0; i < envc; i++) {
             size_t n = strlen(envp[i]) + 1;
