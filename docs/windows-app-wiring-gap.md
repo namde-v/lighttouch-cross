@@ -96,8 +96,18 @@ no change: it already picks up the exe from the ZIP automatically.
    REFUTED on run 40234747319, VS-generator fix now pending its run.)
 2. Implement the gap 2 decision (package Qt step fetches from the
    SHA-matched windows-qt-ci run, same ref, fallback newest successful
-   run on the same branch + warning) — **deferred until Qt tests green**,
-   per the main-agent decision; do not let it block Qt diagnosis.
+   run on the same branch + warning) — **IMPLEMENTED (commit on
+   win/w-app-wire, 2026-10-26 ~05:45 +07):** package workflow gains a
+   `qt-run-id` step (primary = newest successful qt-ci run on the
+   packaged run's branch with matching head SHA; fallback = newest
+   successful qt-ci run on that branch + warning; neither = warn and
+   continue without exe) and the Qt download step uses it instead of
+   the windows-ci run id; the `run-id` step now also outputs
+   `head_branch`. The stale "scaffold" header comment is corrected.
+   Validation: self-validation run on push (warn path for main) +
+   dispatch with windows-ci run 40239601402 (branch win/w-app-wire,
+   head 600128c) for the fallback path (exe from qt-ci run
+   40240995447, head a2c2144, + warning).
 3. Stage Qt runtime DLLs + plugins (`qt.conf`) in the package step.
 4. Verify the MSI installs a runnable app (exe + shortcut + DLLs).
 5. Add a cross-repo trigger so lighttouch-ui pushes run qt-ci.

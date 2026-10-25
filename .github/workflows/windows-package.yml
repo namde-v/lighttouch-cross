@@ -3,7 +3,9 @@
 # Assembles the portable Windows ZIP from CI artifacts. Intended layout:
 #
 #   LightTouch/
-#     LightTouch.exe            Qt 6 UI executable (PENDING — see below)
+#     LightTouch.exe            Qt 6 UI executable (from the windows-qt-ci
+#                               run resolved by Gap 2 below; absent when no
+#                               successful qt-ci run exists for the branch)
 #     qemu-system-arm.exe       from the windows-emulator-ci artifact
 #     *.dll                     MinGW runtime DLLs (bundled by the emulator job)
 #     *.dll                     Swift package DLLs (from windows-ci artifacts)
@@ -25,11 +27,12 @@
 # a run (build artifacts upload with if: always()), but a run whose builds
 # failed (no artifacts) is skipped. A ZIP with zero package DLLs fails loudly.
 #
-# KNOWN GAP (Phase 6): no workflow publishes `lighttouch-qt-ui-windows-x86_64`
-# yet — windows-qt-ci is a scaffold gated on QtUI/CMakeLists.txt, which does
-# not exist in this repo. Until a Qt UI build lands, the ZIP contains Swift
-# package DLLs + qemu + Swift runtime only: a validated packaging pipeline,
-# NOT a runnable app. The manifest records the missing exe honestly.
+# Gap 2 (implemented): the Qt exe comes from windows-qt-ci runs, resolved
+# by the qt-run-id step (SHA-matched successful run on the same branch,
+# else newest successful run on the branch + warning, else no exe). The
+# installer picks the exe up from the ZIP automatically. Still open
+# (separate follow-ups): Qt runtime DLL/plugin staging (gap 3) and the
+# cross-repo trigger so lighttouch-ui pushes run qt-ci (gap 5).
 name: Windows package
 
 on:
@@ -104,22 +107,22 @@ jobs:
             # for windows-ci.yml), NOT the file name — the old check rejected
             # every real windows-ci run (manual dispatch 40111942823 failed on
             # exactly this). Validate via the API's path field instead.
-            $view = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$inputId" --jq '"\(.id) \(.path) \(.head_sha)"' 2>$null
+            $view = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$inputId" --jq '"\(.id) \(.path) \(.head_sha) \(.head_branch)"' 2>$null
             if ($LASTEXITCODE -ne 0 -or -not $view) { Write-Error "Run id $inputId not found or not readable"; exit 1 }
             $parts = $view -split '\s+'
             if ($parts[1] -ne '.github/workflows/windows-ci.yml') { Write-Error "Run $inputId is workflow '$($parts[1])', not windows-ci"; exit 1 }
-            $id = $parts[0]; $headSha = $parts[2]
+            $id = $parts[0]; $headSha = $parts[2]; $headBranch = $parts[3]
             Write-Host "Packaging explicit windows-ci run $id"
           } else {
-            $lines = @(gh run list --workflow windows-ci.yml --branch main --status completed --limit 20 --json databaseId,conclusion,headSha --jq '.[] | "\(.databaseId) \(.headSha) \(.conclusion)"')
-            $id = $null; $headSha = $null
+            $lines = @(gh run list --workflow windows-ci.yml --branch main --status completed --limit 20 --json databaseId,conclusion,headSha,headBranch --jq '.[] | "\(.databaseId) \(.headSha) \(.conclusion) \(.headBranch)"')
+            $id = $null; $headSha = $null; $headBranch = $null
             $pkgs = @('HostRuntime','DeviceServices','ReleaseChecks','BuildTools','FirmwareKit','DeviceRuntime','LightTouchCore')
             foreach ($line in $lines) {
               $parts = $line -split '\s+'
               $candId = $parts[0]; $candSha = $parts[1]; $candConcl = $parts[2]
               $names = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$candId/artifacts" --paginate --jq '.artifacts[].name' 2>$null
               $missing = @($pkgs | Where-Object { $names -notcontains "swift-$_-windows-x86_64" })
-              if (-not $missing) { $id = $candId; $headSha = $candSha; break }
+              if (-not $missing) { $id = $candId; $headSha = $candSha; $headBranch = $parts[3]; break }
               Write-Host "Skipping run $candId (conclusion: $candConcl, missing build artifacts: $($missing -join ', '))"
             }
             if (-not $id) { Write-Error 'No completed windows-ci run on main with build artifacts found'; exit 1 }
@@ -127,6 +130,44 @@ jobs:
           }
           "run_id=$id" >> $env:GITHUB_OUTPUT
           "head_sha=$headSha" >> $env:GITHUB_OUTPUT
+          "head_branch=$headBranch" >> $env:GITHUB_OUTPUT
+
+      # Gap 2 (main-agent decision 2026-10-26): the Qt exe artifact lives
+      # on windows-qt-ci runs, NEVER on the windows-ci run id above — so
+      # the Qt step must resolve its own run id. Primary: newest
+      # SUCCESSFUL windows-qt-ci run on the same branch whose head SHA
+      # equals the packaged commit. Fallback: newest successful
+      # windows-qt-ci run on the same branch + warning. Neither: empty
+      # output, and the Qt step keeps the warn-and-continue behavior.
+      # Success is required in both cases: a qt-ci run with red tests
+      # must not contribute its exe.
+      - name: Resolve Qt UI run id (Gap 2)
+        id: qt-run-id
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $targetSha = "${{ steps.run-id.outputs.head_sha }}"
+          $branch = "${{ steps.run-id.outputs.head_branch }}"
+          $lines = @(gh run list --workflow windows-qt-ci.yml --branch $branch --status completed --limit 20 --json databaseId,headSha,conclusion --jq '.[] | "\(.databaseId) \(.headSha) \(.conclusion)"')
+          $qtId = $null
+          foreach ($line in $lines) {
+            $parts = $line -split '\s+'
+            if ($parts[1] -eq $targetSha -and $parts[2] -eq 'success') { $qtId = $parts[0]; break }
+          }
+          if ($qtId) {
+            Write-Host "Qt exe from SHA-matched windows-qt-ci run $qtId (head $targetSha, branch $branch)"
+          } else {
+            foreach ($line in $lines) {
+              $parts = $line -split '\s+'
+              if ($parts[2] -eq 'success') {
+                $qtId = $parts[0]
+                Write-Warning "No windows-qt-ci run matches head $targetSha on $branch; using newest successful run $qtId (head $($parts[1])) — exe may not match the packaged commit"
+                break
+              }
+            }
+            if (-not $qtId) { Write-Warning "No successful windows-qt-ci run on $branch; continuing without LightTouch.exe" }
+          }
+          if ($qtId) { "qt_run_id=$qtId" >> $env:GITHUB_OUTPUT }
 
       - name: Download Swift package artifacts
         env:
@@ -158,16 +199,18 @@ jobs:
           if (-not $id) { Write-Warning 'No successful windows-emulator-ci run found; qemu-system-arm.exe will be missing from the ZIP'; exit 1 }
           gh run download $id --name qemu-system-arm-windows-x86_64 --dir qemu-artifact
 
-      # PENDING (Phase 6): no workflow publishes this artifact yet. Kept as a
-      # real download attempt so packaging starts including LightTouch.exe the
-      # moment the Qt UI build workflow lands — no workflow edit needed then.
-      - name: Download Qt UI executable (pending Phase 6)
+      # Gap 2: fetch from the windows-qt-ci run resolved above, NOT from
+      # the windows-ci run id (a windows-ci run never contains the Qt
+      # artifact). No resolved id -> warn and continue without the exe.
+      - name: Download Qt UI executable (Gap 2)
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run download ${{ steps.run-id.outputs.run_id }} --name lighttouch-qt-ui-windows-x86_64 --dir qt-artifact
-          if (-not (Test-Path qt-artifact/LightTouch.exe)) { Write-Warning 'Qt UI artifact not present yet (expected until Phase 6 lands)'; exit 1 }
+          $qtId = "${{ steps.qt-run-id.outputs.qt_run_id }}"
+          if (-not $qtId) { Write-Warning 'No windows-qt-ci run resolved; continuing without LightTouch.exe'; exit 1 }
+          gh run download $qtId --name lighttouch-qt-ui-windows-x86_64 --dir qt-artifact
+          if (-not (Test-Path qt-artifact/LightTouch.exe)) { Write-Warning "Qt UI artifact from run $qtId has no LightTouch.exe"; exit 1 }
 
       - name: Assemble portable layout
         run: |
