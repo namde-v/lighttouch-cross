@@ -291,8 +291,52 @@ jobs:
             Get-Content "full-stderr.log" | Tee-Object -FilePath test.log | Select-Object -Last 5 | Write-Host
             if ($p.ExitCode -ne 0) { exit $p.ExitCode }
           } else {
-            swift test --configuration release --skip-build 2>&1 | Tee-Object -FilePath test.log
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            # Progress watchdog (2026-10-25): HostRuntime hung TWICE at
+            # SwiftPM planning (test.log held only "[0/1] Planning build",
+            # zero test output) on win/w-dr-discovery 6faf951 — attempt 1
+            # burned the 240-min job ceiling, attempt 2 was cancelled at
+            # ~61 min with a byte-identical log. The plain
+            # `swift test | Tee-Object` pipeline blocks forever with no
+            # watchdog, so a planning hang looks like silence. Run swift
+            # test as a child process and watch the logs grow: 10 min with
+            # no new output = hang, kill and fail fast so the log shows
+            # WHERE it stuck. Same 10-min rule as the LightTouchCore
+            # branch above; applies to every non-LTC package here.
+            $p = Start-Process -FilePath "swift" -ArgumentList "test","--configuration","release","--skip-build" -RedirectStandardOutput "full-stdout.log" -RedirectStandardError "full-stderr.log" -NoNewWindow -PassThru
+            $lastSize = -1
+            $stalledSince = [DateTime]::UtcNow
+            $deadline = [DateTime]::UtcNow.AddMinutes(220)
+            $reason = ""
+            while (-not $p.HasExited) {
+              Start-Sleep -Seconds 30
+              if ([DateTime]::UtcNow -ge $deadline) {
+                $reason = "TIMEOUT after 220 min"
+                break
+              }
+              $size = 0
+              foreach ($f in @("full-stdout.log", "full-stderr.log")) {
+                $item = Get-Item $f -ErrorAction SilentlyContinue
+                if ($null -ne $item) { $size += $item.Length }
+              }
+              if ($size -gt $lastSize) {
+                $lastSize = $size
+                $stalledSince = [DateTime]::UtcNow
+              } elseif ([DateTime]::UtcNow - $stalledSince -gt [TimeSpan]::FromMinutes(10)) {
+                $reason = "STALLED — no test output for 10 min (last size $lastSize bytes)"
+                break
+              }
+            }
+            # Merge both streams into test.log (the triage + artifact file);
+            # ordering across streams is approximate, content is complete.
+            Get-Content "full-stdout.log" -ErrorAction SilentlyContinue | Out-File -FilePath test.log -Encoding utf8
+            Get-Content "full-stderr.log" -ErrorAction SilentlyContinue | Out-File -FilePath test.log -Encoding utf8 -Append
+            if (-not $p.HasExited) {
+              Write-Host "TEST RESULT: $reason"
+              $p.Kill()
+              exit 1
+            }
+            Write-Host ("TEST RESULT: exited, code={0}" -f $p.ExitCode)
+            if ($p.ExitCode -ne 0) { exit $p.ExitCode }
           }
 
       # if: always() — binaries AND logs upload on every run, pass or fail.
