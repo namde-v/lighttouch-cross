@@ -89,3 +89,28 @@ design the wiring work follows. Main code head at audit time: `9d437b5`.
   size 22 bytes)`), caught by the watchdog at ~10 min. This branch
   touches no Swift code (docs + qt-ci workflow only); the stall is the
   known intermittent, not a regression. Linux CI on this branch: success.
+
+## Second run diagnosis (2026-10-26, run 40229752935 on 031accd)
+
+- **MSVC fix worked: Build SUCCESS, exe artifact uploaded and verified**
+  (`lighttouch.exe`, MZ-PE, 456,192 bytes). Windows CI + Linux CI on
+  the branch: both SUCCESS. Only the test step failed: **12/17 pass,
+  5 fail** — `tst_applaunch`, `tst_surface1`, `tst_surface11`
+  (SEGFAULT), `tst_surface2`, `tst_surface12`, all in the
+  surface/applaunch area. No QTest `FAIL!` lines in the log.
+- **Triage — the UI repo's own workflow is the control.** The
+  lighttouch-ui repo's `windows-ci.yml` runs this same suite 17/17 green
+  on windows-latest (merge `819d571`, 2026-10-16). Test sources are
+  unchanged since (local clone is stale at the import, but `tests/`
+  differs from origin main only in `CMakeLists.txt`, the backslash-path
+  fix). Differences between that green setup and this qt-ci run:
+  (a) they do NOT set `QT_QPA_PLATFORM=offscreen` — this run did;
+  (b) they use the default Visual Studio generator, this run uses Ninja.
+- **Hypothesis (prime suspect): offscreen-on-Windows.** Under the
+  offscreen platform, `QQuickWindow::isExposed()` never becomes true
+  (applaunch waits on it), scene-graph/texture paths run with no real
+  window (surface11 segfault plausibly lives in `DisplayItem` texture
+  creation), while on Linux offscreen the same tests pass. **Fix (this
+  branch): drop `QT_QPA_PLATFORM=offscreen`, use the default windows
+  platform plugin like the UI repo's workflow.** If failures persist,
+  the next hypothesis is the VS generator.

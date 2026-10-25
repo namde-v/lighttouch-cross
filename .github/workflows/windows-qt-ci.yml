@@ -34,7 +34,7 @@ env:
 
 jobs:
   qt-tests:
-    name: Qt offscreen tests (Windows)
+    name: Qt tests (Windows)
     runs-on: windows-latest
     timeout-minutes: 30
     defaults:
@@ -105,12 +105,16 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      # QT_QPA_PLATFORM=offscreen: no display server on runners. ctest writes
-      # JUnit XML (--output-junit needs CMake >= 3.21; runners are newer).
-      - name: Test (offscreen)
+      # NOTE: no QT_QPA_PLATFORM=offscreen here — deliberately. The UI
+      # repo's own windows-ci.yml runs this suite 17/17 green on
+      # windows-latest with the DEFAULT platform plugin, and offscreen on
+      # Windows is the prime suspect for the 5 failures of run 40229752935
+      # (isExposed() never true, scene-graph/texture paths with no real
+      # window, one segfault in tst_surface11). If this run still fails,
+      # the next hypothesis is the VS generator (the UI repo's workflow
+      # uses the default Visual Studio generator, not Ninja).
+      - name: Test
         if: steps.src.outputs.present == 'true'
-        env:
-          QT_QPA_PLATFORM: offscreen
         run: |
           ctest --test-dir build --output-on-failure --output-junit test-results.xml 2>&1 | Tee-Object -FilePath ctest.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
