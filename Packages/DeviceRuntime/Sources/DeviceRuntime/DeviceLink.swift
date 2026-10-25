@@ -337,7 +337,11 @@ nonisolated public final class DeviceLink: @unchecked Sendable {
             var code: DWORD = 0
             let ok = GetExitCodeProcess(process, &code)
             CloseHandle(process)
-            self.queue.async { self.finishTermination(ok ? .exited(Int32(bitPattern: code)) : .unknown) }
+            // Compute the termination as a let first: queue.async takes a
+            // @Sendable closure, which may not capture the var `code`
+            // (Swift 6 error, caught by Windows CI on c44246d).
+            let termination: DeviceTermination = ok ? .exited(Int32(bitPattern: code)) : .unknown
+            self.queue.async { self.finishTermination(termination) }
         }
         #else
         DispatchQueue.global(qos: .utility).async { [weak self] in
