@@ -361,5 +361,13 @@ no change: it already picks up the exe from the ZIP automatically.
   full reason. **Open item for main agent:** merge win/w-ui
   into UI main as upstream cleanup, so main HEAD becomes
   actually-green and the pin can be dropped.
+  ASSESSMENT (W5, 2026-10-26 ~06:10 +07, no merge by W5):
+  diverged (ahead 6, behind 11); main's 11 are packaging-only
+  (appimage.yml + packaging/*) with ZERO file overlap vs win/w-ui's
+  files -> merge expected CLEAN, no content conflicts. Brings the
+  6 fix commits + qtmultimedia install. Risks: post-merge
+  windows-ci run on main needed to confirm green; mockcore/.build
+  generated files ride along (gitignore them after, separate
+  cleanup); drop the qt-ci pin only after merge + green run.
 - Gap 2 package implementation still deferred until Qt tests
   green (this run should now be green on win/w-ui + multimedia).
