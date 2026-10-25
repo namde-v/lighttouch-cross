@@ -222,8 +222,17 @@ nonisolated public final class LinkChannel<
         source.setEventHandler { [unowned self] in
             var chunk = [UInt8](repeating: 0, count: 65536)
             #if os(Windows)
-            // UCRT read takes a UInt32 count and returns Int32.
-            let n = read(fd, &chunk, UInt32(chunk.count))
+            // A link fd is a SOCKET, not a CRT fd: UCRT read() would fail
+            // with EBADF, so recv() on the socket value (same shape as the
+            // spawn tests' socket code). The shared tail below treats a
+            // negative return as a close; recv on a blocking socket does
+            // not produce transient EAGAIN/EINTR returns.
+            let sock = SOCKET(UInt64(bitPattern: Int64(fd)))
+            let n = chunk.withUnsafeMutableBufferPointer { buf in
+                buf.baseAddress!.withMemoryRebound(to: CChar.self, capacity: buf.count) { ptr in
+                    WinSDK.recv(sock, ptr, Int32(buf.count), 0)
+                }
+            }
             #else
             let n = read(fd, &chunk, chunk.count)
             #endif
@@ -236,7 +245,9 @@ nonisolated public final class LinkChannel<
             deliverFrames()
         }
         onCloseHandler = onClose
-        source.setCancelHandler { ltmClose(fd) }
+        // The fd is a link socket on every platform: closesocket on Windows
+        // (WinSDK.close would leak it and never signal EOF to the peer).
+        source.setCancelHandler { ltmCloseSocket(fd) }
         source.resume()
     }
 
@@ -260,7 +271,29 @@ nonisolated public final class LinkChannel<
     /// channel closes. On `queue`; never blocks (reads only what poll reports ready).
     public func drainIncoming() {
         #if os(Windows)
-        fatalError("LinkChannel: the Windows transport is not implemented yet (see TRANSPORT_REDESIGN.md)")
+        // No poll(2) for sockets on Windows: select() with a zero timeout
+        // reports readability without blocking, then recv() consumes.
+        // (fd_set is a fixed 64-entry array; one socket is all this needs.)
+        let sock = SOCKET(UInt64(bitPattern: Int64(fd)))
+        var chunk = [UInt8](repeating: 0, count: 65536)
+        while !closed {
+            var readfds = fd_set()
+            readfds.fd_count = 1
+            readfds.fd_array.0 = sock
+            var tv = timeval()
+            tv.tv_sec = 0
+            tv.tv_usec = 0
+            let ready = WinSDK.select(0, &readfds, nil, nil, &tv)
+            guard ready > 0 else { return }
+            let n = chunk.withUnsafeMutableBufferPointer { buf in
+                buf.baseAddress!.withMemoryRebound(to: CChar.self, capacity: buf.count) { ptr in
+                    WinSDK.recv(sock, ptr, Int32(buf.count), 0)
+                }
+            }
+            guard n > 0 else { return }
+            buffer.append(contentsOf: chunk[0..<Int(n)])
+            deliverFrames()
+        }
         #else
         var chunk = [UInt8](repeating: 0, count: 65536)
         while !closed {
@@ -331,7 +364,12 @@ nonisolated public final class LinkChannel<
         #if os(Linux)
         Glibc.send(fd, buffer, count, flags)
         #elseif os(Windows)
-        fatalError("LinkChannel: the Windows transport is not implemented yet (see TRANSPORT_REDESIGN.md)")
+        // A link fd is a SOCKET: WinSDK.send on the socket value (flags are
+        // ignored on Windows — there is no MSG_NOSIGNAL, and no SIGPIPE).
+        let sock = SOCKET(UInt64(bitPattern: Int64(fd)))
+        let ptr = buffer?.assumingMemoryBound(to: CChar.self)
+        let sent = WinSDK.send(sock, ptr, Int32(count), 0)
+        return sent == -1 ? -1 : Int(sent)
         #else
         Darwin.send(fd, buffer, count, flags)
         #endif

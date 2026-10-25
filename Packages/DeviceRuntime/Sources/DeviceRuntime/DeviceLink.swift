@@ -11,9 +11,9 @@ import LTMShm
 
 #if os(Windows)
 // UCRT's signal.h has no SIGKILL (a Windows process can't be killed by
-// signal); the value is documentation only: ltmKill is a Windows stub that
-// fatalErrors (see PlatformLibc.swift), and start() below is stubbed too,
-// so these kill paths are unreachable on Windows.
+// signal); the value is documentation only: ltmKill terminates the process
+// outright on Windows (see PlatformLibc.swift), so terminate() and kill()
+// both terminate there — there is no SIGTERM/SIGKILL distinction.
 private let SIGKILL: Int32 = 9
 #endif
 
@@ -151,14 +151,98 @@ nonisolated public final class DeviceLink: @unchecked Sendable {
 
     /// Spawn the helper and connect. Completes once, on `queue`.
     ///
-    /// The helper is spawned with a private socketpair (its end is fd 3) and a
-    /// one-time token on its argv. Its first bytes on the socket are the shm
+    /// The helper is spawned with a private link socket (a socketpair on POSIX,
+    /// a loopback TCP pair on Windows; the child's end is fd 3 on POSIX, the
+    /// inherited client socket on Windows) and a one-time token on its argv. Its first bytes on the socket are the shm
     /// hello (DeviceRendezvous); only then does the JSON control channel come
     /// up. There is no shared rendezvous namespace and no code-signing
     /// attestation: a process the app did not spawn cannot hold the socket.
     public func start(completion: @escaping @Sendable (Result<HelperInfo, DeviceLinkError>) -> Void) {
         #if os(Windows)
-        fatalError("DeviceLink: the Windows transport is not implemented yet (see TRANSPORT_REDESIGN.md)")
+        // Windows has no socketpair (Winsock has none). Build the loopback
+        // pair exactly like the spawn tests do (DeviceTransportTests.spawnPeer):
+        // listener on 127.0.0.1:0, client connects, accept gives the app's end.
+        // The child inherits the CONNECTED client socket (ltm_spawn +
+        // LTM_LINK_SOCKET); the app reads the hello on the accepted socket.
+        // WSAStartup is refcounted and process-wide; no WSACleanup here —
+        // other links share Winsock for the life of the app, same as the
+        // spawn tests.
+        var wsadata = WSADATA()
+        guard WSAStartup(0x0202, &wsadata) == 0 else {
+            return queue.async { completion(.failure(.spawnFailed(WSAGetLastError()))) }
+        }
+        // IPPROTO_TCP is 6 (winsock2.h); the overlay types it IPPROTO, not
+        // Int32, so spell the value out (same precedent as 0xF001F for
+        // FILE_MAP_ALL_ACCESS in SharedStatus.swift).
+        let listener = socket(AF_INET, SOCK_STREAM, 6)
+        guard listener != INVALID_SOCKET else {
+            return queue.async { completion(.failure(.spawnFailed(WSAGetLastError()))) }
+        }
+        var addr = sockaddr_in()
+        addr.sin_family = ADDRESS_FAMILY(AF_INET)
+        // inet_addr returns UInt32 in the overlay, not in_addr, and in_addr's
+        // union members aren't addressable from Swift — write the 4
+        // network-order bytes directly (same as the spawn tests).
+        withUnsafeMutableBytes(of: &addr.sin_addr) { $0.storeBytes(of: inet_addr("127.0.0.1"), as: UInt32.self) }
+        addr.sin_port = 0
+        let bound = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(listener, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bound == 0, listen(listener, SOMAXCONN) == 0 else {
+            let e = WSAGetLastError()
+            closesocket(listener)
+            return queue.async { completion(.failure(.spawnFailed(e))) }
+        }
+        // Bound port (network order — copied as-is to the client, no htons dance).
+        var boundAddr = sockaddr_in()
+        var boundLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let gotName = withUnsafeMutablePointer(to: &boundAddr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                getsockname(listener, $0, &boundLen)
+            }
+        }
+        guard gotName == 0 else {
+            let e = WSAGetLastError()
+            closesocket(listener)
+            return queue.async { completion(.failure(.spawnFailed(e))) }
+        }
+        let client = socket(AF_INET, SOCK_STREAM, 6)
+        guard client != INVALID_SOCKET else {
+            let e = WSAGetLastError()
+            closesocket(listener)
+            return queue.async { completion(.failure(.spawnFailed(e))) }
+        }
+        var clientAddr = sockaddr_in()
+        clientAddr.sin_family = ADDRESS_FAMILY(AF_INET)
+        withUnsafeMutableBytes(of: &clientAddr.sin_addr) { $0.storeBytes(of: inet_addr("127.0.0.1"), as: UInt32.self) }
+        clientAddr.sin_port = boundAddr.sin_port
+        let connected = withUnsafePointer(to: &clientAddr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(client, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard connected == 0 else {
+            let e = WSAGetLastError()
+            closesocket(client)
+            closesocket(listener)
+            return queue.async { completion(.failure(.spawnFailed(e))) }
+        }
+        // The client already connected, so a connection is queued: accept
+        // returns at once (no timeout needed here, unlike the spawn tests'
+        // defensive accept bound — the queue is never empty).
+        let accepted = accept(listener, nil, nil)
+        guard accepted != INVALID_SOCKET else {
+            let e = WSAGetLastError()
+            closesocket(client)
+            closesocket(listener)
+            return queue.async { completion(.failure(.spawnFailed(e))) }
+        }
+        // SOCKET values truncate to the API's Int32 (the C layer's documented
+        // convention; test-process socket values are small).
+        let childSocket = Int32(truncatingIfNeeded: client)
+        let appSocket = Int32(truncatingIfNeeded: accepted)
         #else
         var sv: [Int32] = [-1, -1]
         guard socketpair(AF_UNIX, ltmSockStream, 0, &sv) == 0 else {
@@ -167,6 +251,9 @@ nonisolated public final class DeviceLink: @unchecked Sendable {
         }
         _ = fcntl(sv[0], F_SETFD, FD_CLOEXEC)
         _ = fcntl(sv[1], F_SETFD, FD_CLOEXEC)  // the child gets it via dup2 onto 3
+        let childSocket = sv[1]
+        let appSocket = sv[0]
+        #endif
         let token = (0..<4).map { _ in String(format: "%08x", UInt32.random(in: UInt32.min...UInt32.max)) }.joined()
         // HelperLaunch.Mode.connect.service is vestigial on the new transport
         // (no bootstrap namespace); the token on argv is the authentication.
@@ -182,13 +269,20 @@ nonisolated public final class DeviceLink: @unchecked Sendable {
 
         let pid: pid_t = withCStrings(argv) { cargv in
             withCStrings(envp) { cenv in
-                ltm_spawn(configuration.helper.path, cargv, cenv, configuration.outputDescriptor, sv[1])
+                ltm_spawn(configuration.helper.path, cargv, cenv, configuration.outputDescriptor, childSocket)
             }
         }
         argv.removeAll()
-        ltmClose(sv[1])
+        // Parent's copies of the child's end: the child holds its own
+        // inherited copies, so closing these does not affect it.
+        #if os(Windows)
+        closesocket(listener)
+        closesocket(client)
+        #else
+        ltmCloseSocket(sv[1])
+        #endif
         guard pid > 0 else {
-            ltmClose(sv[0])
+            ltmCloseSocket(appSocket)
             lock.withLock { startCompletion = nil }
             return queue.async { completion(.failure(.spawnFailed(-pid))) }
         }
@@ -199,9 +293,8 @@ nonisolated public final class DeviceLink: @unchecked Sendable {
         // it is the first bytes on the socket. Off the calling thread, with
         // the connect timeout.
         let connectTimeout = configuration.connectTimeout
-        let appSocket = sv[0]
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self else { ltmClose(appSocket); return }
+            guard let self else { ltmCloseSocket(appSocket); return }
             do {
                 let hello = try DeviceRendezvous.receiveHello(
                     socket: appSocket,
@@ -211,7 +304,7 @@ nonisolated public final class DeviceLink: @unchecked Sendable {
                 )
                 self.queue.async { self.helloArrived(hello, socket: appSocket) }
             } catch {
-                ltmClose(appSocket)
+                ltmCloseSocket(appSocket)
                 self.queue.async { self.helloFailed(error, pid: pid) }
             }
         }
@@ -219,14 +312,33 @@ nonisolated public final class DeviceLink: @unchecked Sendable {
             guard let self, lock.withLock({ self.startCompletion != nil }) else { return }
             invalidate(.timedOut, kill: true)
         }
-        #endif
     }
 
-    /// One thread per link, blocked in waitpid until the helper is gone (no
-    /// kqueue/EVFILT_PROC on Linux; a blocking waitpid has no exit race).
+    /// One thread per link, blocked until the helper is gone (waitpid on
+    /// POSIX — no kqueue/EVFILT_PROC on Linux, and a blocking waitpid has no
+    /// exit race; WaitForSingleObject on a process handle on Windows).
     private func watchForExit(_ pid: pid_t) {
         #if os(Windows)
-        fatalError("DeviceLink: the Windows transport is not implemented yet (see TRANSPORT_REDESIGN.md)")
+        // Windows has no waitpid/signals: wait on the process handle, then
+        // read the exit code. A process killed with TerminateProcess reports
+        // its termination code as its exit code; there is no signaled state.
+        // The wait return is ignored deliberately: with INFINITE it only
+        // returns on exit except for a near-impossible invalid-handle failure,
+        // in which case GetExitCodeProcess failing reports .unknown below.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            guard let process = OpenProcess(DWORD(SYNCHRONIZE), false, DWORD(pid)) else {
+                // Already gone (its process object vanished with no handle
+                // held): report unknown, same as a lost reap.
+                self.queue.async { self.finishTermination(.unknown) }
+                return
+            }
+            WaitForSingleObject(process, INFINITE)
+            var code: DWORD = 0
+            let ok = GetExitCodeProcess(process, &code)
+            CloseHandle(process)
+            self.queue.async { self.finishTermination(ok ? .exited(Int32(bitPattern: code)) : .unknown) }
+        }
         #else
         DispatchQueue.global(qos: .utility).async { [weak self] in
             var status: Int32 = 0
@@ -246,7 +358,7 @@ nonisolated public final class DeviceLink: @unchecked Sendable {
         guard lock.withLock({ startCompletion != nil }) else {
             // Start already finished another way (timeout, exit); the mapped
             // segments die with `hello`, but the socket still needs closing.
-            ltmClose(socket)
+            ltmCloseSocket(socket)
             return
         }
         let status = StatusBlock(hello.status)
@@ -406,6 +518,13 @@ nonisolated public final class DeviceLink: @unchecked Sendable {
         } else {
             termination = .unknown
         }
+        finishTermination(termination)
+    }
+
+    /// Shared tail of every reap path (POSIX waitpid, Windows handle wait):
+    /// zero the pid, drain last messages, invalidate, report. Runs on `queue`
+    /// (drainIncoming requires it).
+    private func finishTermination(_ termination: DeviceTermination) {
         // Zero the pid now: a late terminate() or kill() must not signal a reused one.
         lock.withLock { _pid = 0 }
         // Its last messages (qemuExited) may still be unread: deliver them before the close.

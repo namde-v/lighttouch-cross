@@ -7,11 +7,30 @@ import Darwin
 #endif
 import DeviceRuntime
 import Foundation
+import HostRuntime
 
 // A stand-in helper for DeviceRuntimeTests: creates the status block, stamps a
 // sentinel heartbeat, and sends the new-transport hello (the shm fd over the
 // link socket, fd 3, exactly like a real helper) with <token>; then exits
 // ("exit") or stays until killed ("stay").
+//
+// Two argv forms, both accepted:
+//   - [token, mode] (the transport tests), or
+//   - [HelperLaunch JSON] (DeviceLink.start: a single JSON argument whose
+//     .connect mode supplies the token; the peer exits after hello, since
+//     DeviceLink has no "stay" mode — its test drives start() to a clean
+//     failure + termination).
+
+// Resolve (token, mode) from argv; nil unless exactly one form parses.
+func resolvePeerArgs(_ arguments: [String]) -> (token: String, mode: String)? {
+    if arguments.count == 3 { return (arguments[1], arguments[2]) }
+    if arguments.count == 2,
+       let launch = try? HelperLaunch(arguments: [arguments[1]]),
+       case .connect(_, let token, _) = launch.mode {
+        return (token, "exit")
+    }
+    return nil
+}
 
 #if os(Windows)
 // Windows helper: the link socket is the connected socket the app passed via
@@ -22,15 +41,14 @@ guard WSAStartup(0x0202, &wsadata) == 0 else { exit(1) }
 guard let linkValue = ProcessInfo.processInfo.environment["LTM_LINK_SOCKET"],
       let linkSocket = UInt64(linkValue)
 else { exit(64) }
-let arguments = CommandLine.arguments
-guard arguments.count == 3 else { exit(64) }
+guard let (token, mode) = resolvePeerArgs(CommandLine.arguments) else { exit(64) }
 // The status segment carries the C-contract hello name, so the app's
 // ltm_recv_hello can re-open it by name (see TRANSPORT_REDESIGN.md).
-let status = StatusBlock.create(mappingName: ShmSurface.helloMappingName(token: arguments[1], index: 0))
+let status = StatusBlock.create(mappingName: ShmSurface.helloMappingName(token: token, index: 0))
 status[.heartbeat] = 7
-let rc = DeviceRendezvous.sendHello(socket: Int32(truncatingIfNeeded: linkSocket), token: arguments[1], generation: 0, segments: [status.surface])
+let rc = DeviceRendezvous.sendHello(socket: Int32(truncatingIfNeeded: linkSocket), token: token, generation: 0, segments: [status.surface])
 guard rc == 0 else { exit(1) }
-if arguments[2] == "stay" {
+if mode == "stay" {
     while true { Sleep(60_000) }
 } else {
     // Linger so the app can open the named mapping before this process exits:
@@ -42,13 +60,12 @@ if arguments[2] == "stay" {
 }
 exit(0)
 #else
-let arguments = CommandLine.arguments
-guard arguments.count == 3 else { exit(64) }
+guard let (token, mode) = resolvePeerArgs(CommandLine.arguments) else { exit(64) }
 let status = StatusBlock.create()
 status[.heartbeat] = 7
-let rc = DeviceRendezvous.sendHello(socket: 3, token: arguments[1], generation: 0, segments: [status.surface])
+let rc = DeviceRendezvous.sendHello(socket: 3, token: token, generation: 0, segments: [status.surface])
 guard rc == 0 else { exit(1) }
-if arguments[2] == "stay" {
+if mode == "stay" {
     while true { sleep(60) }
 }
 exit(0)
