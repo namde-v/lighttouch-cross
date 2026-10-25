@@ -56,6 +56,11 @@ struct DeviceTransportTests {
         var socket: Int32
         // DIAGNOSTIC (temporary): peer stdout/stderr capture path (Windows only, "" elsewhere).
         var peerLog: String = ""
+        // DIAGNOSTIC (temporary, round 2): retained peer process-handle value
+        // (Windows only, 0 elsewhere). Round 1 opened the process in reap(),
+        // but by then the peer had already exited with no handle held, so its
+        // process object was gone and OpenProcess failed — no exit code.
+        var processHandleValue: UInt = 0
     }
 
     #if os(Windows)
@@ -162,9 +167,14 @@ struct DeviceTransportTests {
             peerLogPath = peerLogURL.path
         }
         // Spawn: the child inherits the connected client socket.
+        // DIAGNOSTIC (temporary, round 2): hand the peer its log path via env
+        // so its crash-proof markers (see main.swift peerLog) land in the same
+        // temp file the test already dumps in reap().
         let argv = [peer.path, token, mode]
         let pid: pid_t = withWindowsCStrings(argv) { cargv in
-            ltm_spawn(peer.path, cargv, nil, peerOut, Int32(truncatingIfNeeded: client))
+            withWindowsCStrings(["LTM_PEER_LOG=\(peerLogPath)"]) { cenv in
+                ltm_spawn(peer.path, cargv, cenv, peerOut, Int32(truncatingIfNeeded: client))
+            }
         }
         // Parent's out copy: the child holds its own inherited copy.
         if let outHandle = peerLogHandle { CloseHandle(outHandle) }
@@ -172,24 +182,48 @@ struct DeviceTransportTests {
             closesocket(accepted)
             throw POSIXError(POSIXErrorCode(rawValue: -pid) ?? .EIO)
         }
+        // DIAGNOSTIC (temporary, round 2): retain a handle to the peer NOW,
+        // before receiveHello runs — once it exits with no handle held, its
+        // process object vanishes and reap() can no longer get the exit code.
+        // PROCESS_QUERY_LIMITED_INFORMATION is 0x1000 (winnt.h); needed for
+        // GetExitCodeProcess alongside SYNCHRONIZE for the wait.
+        var procValue: UInt = 0
+        if let process = OpenProcess(DWORD(SYNCHRONIZE) | DWORD(0x1000), false, DWORD(pid)) {
+            procValue = UInt(bitPattern: process)
+        }
         print("spawned peer pid=\(pid) client=\(client) accepted=\(accepted) peerLog=\(peerLogPath)")
         // The defers close the parent's listener + client copies; the accepted
         // socket is the app's end and stays open. SOCKET values truncate to
         // the API's Int32 (the C layer's documented convention; test-process
         // socket values are small).
-        return Spawned(pid: pid, socket: Int32(truncatingIfNeeded: accepted), peerLog: peerLogPath)
+        return Spawned(pid: pid, socket: Int32(truncatingIfNeeded: accepted), peerLog: peerLogPath, processHandleValue: procValue)
     }
 
     private func reap(_ spawned: Spawned) {
-        if let process = OpenProcess(DWORD(SYNCHRONIZE), false, DWORD(spawned.pid)) {
+        // DIAGNOSTIC (temporary, round 2): the retained handle is the reliable
+        // path — round 1's OpenProcess-here failed because the peer was
+        // already gone. 64 means env/argc, 1 means WSAStartup/sendHello, a
+        // crash code means a trap, 0xC0000135 means a DLL failed to load.
+        if spawned.processHandleValue != 0, let process = HANDLE(bitPattern: spawned.processHandleValue) {
             WaitForSingleObject(process, INFINITE)
-            // DIAGNOSTIC (temporary): surface the peer's exit code — 64 means
-            // env/argc, 1 means WSAStartup/sendHello, a crash code means a trap.
             var code: DWORD = 0
             if GetExitCodeProcess(process, &code) {
                 print("peer exit code: \(code) (0x\(String(code, radix: 16)))")
+            } else {
+                print("peer exit code: (GetExitCodeProcess failed)")
             }
             CloseHandle(process)
+        } else if let process = OpenProcess(DWORD(SYNCHRONIZE), false, DWORD(spawned.pid)) {
+            WaitForSingleObject(process, INFINITE)
+            var code: DWORD = 0
+            if GetExitCodeProcess(process, &code) {
+                print("peer exit code: \(code) (0x\(String(code, radix: 16)))")
+            } else {
+                print("peer exit code: (GetExitCodeProcess failed)")
+            }
+            CloseHandle(process)
+        } else {
+            print("peer exit code: (no retained handle, OpenProcess failed — peer already gone)")
         }
         // OpenProcess fails when the peer is already gone: already reaped.
         // DIAGNOSTIC (temporary): dump the peer's captured output, if any.
