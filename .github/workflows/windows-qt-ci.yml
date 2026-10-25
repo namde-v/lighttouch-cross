@@ -138,10 +138,16 @@ jobs:
             Write-Output "=== $t ==="
             $env:QT_QPA_PLATFORM = 'offscreen'
             $env:LTM_BRIDGE_MOCK = '1'
-            & ".\Release\$t.exe" *> "diag-$t.txt"
+            & ".\Release\$t.exe" -o "qtest-$t.txt"
             Write-Output "exit=$LASTEXITCODE"
-            if (Test-Path "diag-$t.txt") { Get-Content "diag-$t.txt" -TotalCount 80 } else { Write-Output "(no output file)" }
+            if (Test-Path "qtest-$t.txt") { Get-Content "qtest-$t.txt" -TotalCount 80 } else { Write-Output "(no qtest file)" }
             if ($dumpbin) {
               & $dumpbin /dependents ".\Release\$t.exe" 2>$null | Select-String -Pattern '\.dll' | ForEach-Object { $_.Line.Trim() } | Select-Object -First 30
             }
           }
+          Write-Output "=== probe: tst_applaunch -functions ==="
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:LTM_BRIDGE_MOCK = '1'
+          & ".\Release\tst_applaunch.exe" -functions *> "funcs.txt"
+          Write-Output "exit=$LASTEXITCODE"
+          if (Test-Path "funcs.txt") { Get-Content "funcs.txt" -TotalCount 40 } else { Write-Output "(no funcs file)" }

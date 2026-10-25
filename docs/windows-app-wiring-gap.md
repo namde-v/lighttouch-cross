@@ -268,3 +268,32 @@ no change: it already picks up the exe from the ZIP automatically.
   the FAIL lines appear, the actual failure reasons become visible
   for the first time and the fix follows from them, not from
   guessing.
+
+## Sixth run diagnosis (2026-10-26, run 40239601314 on 600128c, file redirect)
+
+- **Result: FAILED, same 5 tests, 12/17.** The `*> diag-$t.txt`
+  files are EMPTY for applaunch/surface1/surface2/surface12 —
+  Get-Content prints nothing between header and exit. The binaries
+  genuinely emit zero bytes to stdout AND stderr (ctest -V in the
+  same run confirms: failing tests' captured output is empty;
+  only surface11's crash-handler text appears, via the stderr
+  path). The pipe was NOT the problem. The silence is at the
+  binary level.
+- **Green-run log check (UI repo run 38896622632):** no QTest
+  lines either — but that run had no failures, and passing tests'
+  output is not shown without -V, so it proves nothing about
+  output. Our -V failing-test output being empty IS the anomaly:
+  a normally-failing QTest binary prints FAIL lines under -V.
+- **Consequence:** exit codes 1/4 cannot be ordinary QTest
+  function failures (those print). Something exits the process
+  with a small code before/around QTest's printing — or QTest's
+  stdout path itself is broken in this build/environment while
+  the crash handler's stderr path works. Either way, stdio-based
+  diagnosis is exhausted.
+- **Next experiment (this branch):** bypass stdio entirely with
+  QTest's own `-o qtest-$t.txt` file output, plus a `-functions`
+  probe on applaunch (does QTest's main even run and list
+  functions?). If the -o files contain the FAIL lines, the
+  failure reasons become visible for the first time. If they are
+  empty too, QTest's logger never runs and the exit codes come
+  from somewhere outside QTest.
