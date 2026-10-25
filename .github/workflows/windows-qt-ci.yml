@@ -73,6 +73,15 @@ jobs:
           arch: win64_msvc2022_64
           cache: true
 
+      # Qt is installed for MSVC (win64_msvc2022_64) but Ninja otherwise
+      # defaults to the MinGW gcc on PATH — that mismatch produced a wall
+      # of undefined Qt symbols at link time (run 40226999464: configure
+      # picked "GNU 15.2.0", every Qt symbol unresolved). Set up the MSVC
+      # environment so CMake picks cl.exe.
+      - name: Set up MSVC environment
+        if: steps.src.outputs.present == 'true'
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Configure
         if: steps.src.outputs.present == 'true'
         run: cmake -S ${{ env.QT_UI_DIR }} -B build -G Ninja -DCMAKE_BUILD_TYPE=Release

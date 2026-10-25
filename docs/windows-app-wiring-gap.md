@@ -71,3 +71,21 @@ design the wiring work follows. Main code head at audit time: `9d437b5`.
 3. Stage Qt runtime DLLs + plugins (`qt.conf`) in the package step.
 4. Verify the MSI installs a runnable app (exe + shortcut + DLLs).
 5. Add a cross-repo trigger so lighttouch-ui pushes run qt-ci.
+
+## First run diagnosis (2026-10-26, run 40226999464 on 388144c)
+
+- **Result: FAILED at the link step, after all sources compiled.** The
+  failure is a toolchain mismatch, not a UI source problem: configure
+  picked MinGW `GNU 15.2.0` (`C:/mingw64/bin/c++.exe`) while Qt was
+  installed as `win64_msvc2022_64` (MSVC build). MinGW `ld.exe` then
+  reported every Qt symbol as an undefined `__imp__` reference.
+- **Fix (this branch):** add an `ilammy/msvc-dev-cmd` step before
+  Configure so CMake picks `cl.exe` — the arch choice already intended
+  MSVC, the environment setup was the missing piece. The next run will
+  show whether the UI sources also compile clean under MSVC.
+- **Unrelated, same push:** windows-ci run 40226999489 on this branch
+  failed only on HostRuntime with the known SwiftPM planning stall
+  signature (`TEST RESULT: STALLED — no test output for 10 min (last
+  size 22 bytes)`), caught by the watchdog at ~10 min. This branch
+  touches no Swift code (docs + qt-ci workflow only); the stall is the
+  known intermittent, not a regression. Linux CI on this branch: success.
