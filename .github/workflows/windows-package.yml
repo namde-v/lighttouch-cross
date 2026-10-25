@@ -140,7 +140,10 @@ jobs:
       # windows-qt-ci run on the same branch + warning. Neither: empty
       # output, and the Qt step keeps the warn-and-continue behavior.
       # Success is required in both cases: a qt-ci run with red tests
-      # must not contribute its exe.
+      # must not contribute its exe. Artifact presence is also required:
+      # scaffold-era successful qt-ci runs on main (e.g. 39113095570)
+      # carry no lighttouch-qt-ui-windows-x86_64 artifact at all, and
+      # selecting one only produces a misleading download warning.
       - name: Resolve Qt UI run id (Gap 2)
         id: qt-run-id
         env:
@@ -149,23 +152,27 @@ jobs:
           $targetSha = "${{ steps.run-id.outputs.head_sha }}"
           $branch = "${{ steps.run-id.outputs.head_branch }}"
           $lines = @(gh run list --workflow windows-qt-ci.yml --branch $branch --status completed --limit 20 --json databaseId,headSha,conclusion --jq '.[] | "\(.databaseId) \(.headSha) \(.conclusion)"')
+          function Has-QtArtifact($runId) {
+            $names = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$runId/artifacts" --jq '.artifacts[].name' 2>$null
+            return ($names -contains 'lighttouch-qt-ui-windows-x86_64')
+          }
           $qtId = $null
           foreach ($line in $lines) {
             $parts = $line -split '\s+'
-            if ($parts[1] -eq $targetSha -and $parts[2] -eq 'success') { $qtId = $parts[0]; break }
+            if ($parts[1] -eq $targetSha -and $parts[2] -eq 'success' -and (Has-QtArtifact $parts[0])) { $qtId = $parts[0]; break }
           }
           if ($qtId) {
             Write-Host "Qt exe from SHA-matched windows-qt-ci run $qtId (head $targetSha, branch $branch)"
           } else {
             foreach ($line in $lines) {
               $parts = $line -split '\s+'
-              if ($parts[2] -eq 'success') {
+              if ($parts[2] -eq 'success' -and (Has-QtArtifact $parts[0])) {
                 $qtId = $parts[0]
                 Write-Warning "No windows-qt-ci run matches head $targetSha on $branch; using newest successful run $qtId (head $($parts[1])) — exe may not match the packaged commit"
                 break
               }
             }
-            if (-not $qtId) { Write-Warning "No successful windows-qt-ci run on $branch; continuing without LightTouch.exe" }
+            if (-not $qtId) { Write-Warning "No successful windows-qt-ci run with the Qt artifact on $branch; continuing without LightTouch.exe" }
           }
           if ($qtId) { "qt_run_id=$qtId" >> $env:GITHUB_OUTPUT }
 
