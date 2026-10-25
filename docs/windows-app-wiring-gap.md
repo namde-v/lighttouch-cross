@@ -92,8 +92,8 @@ no change: it already picks up the exe from the ZIP automatically.
 ## Next steps (in order)
 
 1. Read the first qt-ci run on this branch: does the UI compile under
-   MSVC? What fails? (Done — see diagnoses below; offscreen fix
-   pending verdict on run 40234747319.)
+   MSVC? What fails? (Done — see diagnoses below; offscreen hypothesis
+   REFUTED on run 40234747319, VS-generator fix now pending its run.)
 2. Implement the gap 2 decision (package Qt step fetches from the
    SHA-matched windows-qt-ci run, same ref, fallback newest successful
    run on the same branch + warning) — **deferred until Qt tests green**,
@@ -119,6 +119,46 @@ no change: it already picks up the exe from the ZIP automatically.
   size 22 bytes)`), caught by the watchdog at ~10 min. This branch
   touches no Swift code (docs + qt-ci workflow only); the stall is the
   known intermittent, not a regression. Linux CI on this branch: success.
+
+## Third run diagnosis (2026-10-26, run 40234747319 on 0c48026)
+
+- **Result: FAILED, same 5 tests, 12/17.** `tst_applaunch`, `tst_surface1`,
+  `tst_surface11` (SEGFAULT), `tst_surface2`, `tst_surface12`. Windows
+  CI + Linux CI on the branch: both SUCCESS. Build SUCCESS, exe
+  artifact uploaded.
+- **The offscreen hypothesis is REFUTED as stated — and the fix was a
+  no-op.** The tests set `QT_QPA_PLATFORM=offscreen` THEMSELVES via
+  `set_tests_properties(... ENVIRONMENT "QT_QPA_PLATFORM=offscreen")`
+  in the UI repo's `tests/CMakeLists.txt`; ctest test properties
+  override the process env, so removing offscreen from the workflow's
+  Test step changed nothing about the test environment. The workflow
+  env never mattered. (The UI repo's workflow is equally "offscreen"
+  through the same mechanism — and was green.)
+- **New evidence from ctest.log:** the 5 failing tests print NO QTest
+  output at all (no `FAIL!` lines, no loader errors) — only the ctest
+  summary lines. surface11's crash stack ends in
+  `qt_qFindChild_helper` during `eightMenusExist` — a symptom of
+  `findChild` on a null root, not a cause: the QML root object is
+  missing, i.e. main.qml produced no root. But the split is NOT
+  DisplayItem or DeviceScreen per se: surface3 registers DisplayItem
+  AND loads DeviceScreen.qml and PASSES, while surface12 loads the same
+  DeviceScreen and fails in 0.20s. deviceList refresh/count is also not
+  the split (surface10 refreshes and passes; surface2 never refreshes
+  and fails in 17.92s — multiple expired waits).
+- **Runner image ruled out:** the UI repo's green run (2026-10-16) used
+  the same `windows-2025-vs2026` image as this run. **Caveat on the
+  control:** that green run is 10 days old and the UI repo's workflow
+  has not run since (it triggers only on win/** pushes + PRs to main,
+  and win/w-ui has not moved) — there is no CURRENT green evidence.
+- **Next hypothesis (now implemented on this branch): the VS
+  generator.** The workflow now converges on the UI repo's
+  windows-ci.yml exactly for build/test: default Visual Studio
+  generator (no `-G Ninja`), `--config Release`, `-C Release`,
+  `host: windows, target: desktop` in install-qt, no msvc-dev-cmd
+  (CMake finds MSVC itself), and the UI repo's "Diagnose failures"
+  step (`ctest --rerun-failed -V`, first 250 lines) so the next failure
+  shows its raw output instead of the empty summary. Exe upload path
+  moves to `build/Release/lighttouch.exe` (VS multi-config layout).
 
 ## Second run diagnosis (2026-10-26, run 40229752935 on 031accd)
 

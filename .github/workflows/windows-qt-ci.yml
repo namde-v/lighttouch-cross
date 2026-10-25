@@ -1,9 +1,10 @@
-# LightTouch cross-platform port — Qt UI tests on Windows (scaffold)
+# LightTouch cross-platform port — Qt UI tests on Windows
 #
-# Runs the Qt 6 UI test suite headless via QT_QPA_PLATFORM=offscreen + ctest.
-# The runners are the test machines: ctest results (JUnit XML + full log)
-# upload as an artifact on EVERY run — pass or fail — so failures are
-# diagnosable without a local Windows box.
+# Runs the Qt 6 UI test suite via ctest. The build/test steps converge on
+# the UI repo's own windows-ci.yml (the known-green reference: 17/17 on
+# windows-latest 2026-10-16) — default Visual Studio generator, Release
+# config, no workflow-level QT_QPA_PLATFORM (the tests set offscreen
+# themselves via tests/CMakeLists.txt set_tests_properties).
 #
 # Ownership split: the Qt UI lives in its own repo (namde-v/lighttouch-ui);
 # this file owns the runner wiring. The UI repo is checked out at QtUI/
@@ -70,62 +71,52 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
           arch: win64_msvc2022_64
           cache: true
 
-      # Qt is installed for MSVC (win64_msvc2022_64) but Ninja otherwise
-      # defaults to the MinGW gcc on PATH — that mismatch produced a wall
-      # of undefined Qt symbols at link time (run 40226999464: configure
-      # picked "GNU 15.2.0", every Qt symbol unresolved). Set up the MSVC
-      # environment so CMake picks cl.exe.
-      - name: Set up MSVC environment
-        if: steps.src.outputs.present == 'true'
-        uses: ilammy/msvc-dev-cmd@v1
-
+      # Default Visual Studio generator (no -G Ninja): this matches the
+      # UI repo's own windows-ci.yml, the known-green reference. The
+      # Ninja build was the remaining setup difference after the
+      # offscreen hypothesis was ruled out (run 40234747319 failed the
+      # same 5 tests with the default platform plugin — and the tests set
+      # QT_QPA_PLATFORM=offscreen themselves via set_tests_properties,
+      # so the workflow env never mattered). The VS generator also needs
+      # no msvc-dev-cmd: CMake finds MSVC itself.
       - name: Configure
         if: steps.src.outputs.present == 'true'
-        run: cmake -S ${{ env.QT_UI_DIR }} -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S ${{ env.QT_UI_DIR }} -B build
 
       - name: Build
         if: steps.src.outputs.present == 'true'
-        run: cmake --build build
+        run: cmake --build build --config Release --parallel
 
-      # The build also produces the app executable (build/lighttouch.exe
-      # under the Ninja generator). Upload it under the artifact name the
-      # package workflow expects — evidence the exe compiles on Windows.
-      # NOTE: the package step downloads from the WINDOWS-CI run id, so
-      # this artifact is NOT yet consumable by packaging (see
-      # docs/windows-app-wiring-gap.md gap 2); warn, never fail, if absent.
+      # The build also produces the app executable (build/Release/
+      # lighttouch.exe under the VS generator). Upload it under the
+      # artifact name the package workflow expects — evidence the exe
+      # compiles on Windows. NOTE: it is NOT yet consumable by packaging
+      # until the gap 2 decision is implemented (see
+      # docs/windows-app-wiring-gap.md); warn, never fail, if absent.
       - name: Upload Qt UI executable (if built)
         if: steps.src.outputs.present == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: lighttouch-qt-ui-windows-x86_64
-          path: build/lighttouch.exe
+          path: build/Release/lighttouch.exe
           if-no-files-found: warn
           retention-days: 30
 
-      # NOTE: no QT_QPA_PLATFORM=offscreen here — deliberately. The UI
-      # repo's own windows-ci.yml runs this suite 17/17 green on
-      # windows-latest with the DEFAULT platform plugin, and offscreen on
-      # Windows is the prime suspect for the 5 failures of run 40229752935
-      # (isExposed() never true, scene-graph/texture paths with no real
-      # window, one segfault in tst_surface11). If this run still fails,
-      # the next hypothesis is the VS generator (the UI repo's workflow
-      # uses the default Visual Studio generator, not Ninja).
       - name: Test
         if: steps.src.outputs.present == 'true'
-        run: |
-          ctest --test-dir build --output-on-failure --output-junit test-results.xml 2>&1 | Tee-Object -FilePath ctest.log
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        run: ctest --test-dir build -C Release --output-on-failure
 
-      - name: Upload test results
-        if: always() && steps.src.outputs.present == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: qt-ui-tests-windows-x86_64
-          path: |
-            test-results.xml
-            ctest.log
-          if-no-files-found: warn
-          retention-days: 30
+      # Bring-up diagnostics, copied from the UI repo's workflow: rerun
+      # failures verbosely so the raw test output (or loader errors) is
+      # visible in the log. The plain ctest summary hides the failure
+      # lines for these tests (no FAIL! lines, no output at all).
+      - name: Diagnose failures
+        if: failure()
+        continue-on-error: true
+        run: |
+          ctest --test-dir build -C Release --rerun-failed -V 2>&1 | Select-Object -First 250
