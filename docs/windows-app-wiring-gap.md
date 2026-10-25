@@ -223,3 +223,48 @@ no change: it already picks up the exe from the ZIP automatically.
   0xC0000005 = access violation; small nonzero = normal QTest failure
   whose output was lost. The dependents list names any missing DLL
   instead of guessing.
+
+## Fifth run diagnosis (2026-10-26, run 40238812735 on 421d03e, direct run)
+
+- **Result: FAILED, same 5 tests, 12/17.** Direct-run exit codes:
+  `tst_applaunch` 1, `tst_surface1` 1, `tst_surface11`
+  -1073741819 (0xC0000005, crash in `qt_qFindChild_helper` during
+  `eightMenusExist`), `tst_surface2` 4 (~17s), `tst_surface12` 1,
+  control `tst_surface3` 0. **No loader failure anywhere** — every
+  binary launches; `dumpbin /dependents` shows only Qt6 DLLs + system
+  CRT for all six. The 0xC0000135 theory is DEAD.
+- **The "die abnormally" theory from run 4 is REFUTED for 4 of 5:**
+  applaunch/surface1/surface2/surface12 exit with NORMAL QTest
+  failure codes (1/4 = failed-test-function counts), not crash codes.
+  They run to completion and report failure — but print NOTHING.
+- **The silence is stdout-specific, not a dead output channel.**
+  surface11's crash-handler output (stderr path) comes through the
+  same log, while even the PASSING control (surface3, exit 0) prints
+  no QTest lines. QTest writes to stdout; the crash handler writes
+  via the stderr path. Something in this CI environment swallows
+  these binaries' stdout (tests use plain `add_executable`, console
+  subsystem, so it is not a WIN32-subsystem artifact).
+- **surface11 crash mechanism identified (hypothesis, fits all
+  evidence):** the Fixture constructor's `QVERIFY2(menuBar !=
+  nullptr)` fails (main.qml loads without a `menuBar` child, or
+  fails to load), the QVERIFY failure message goes to the swallowed
+  stdout, the constructor returns early leaving `menuBar` null, and
+  `eightMenusExist`'s `findMenu` dereferences it ->
+  `qt_qFindChild_helper` on null. `main.qml` DOES declare
+  `objectName: "menuBar"` (line 89), so the load itself (or an
+  import it needs) must be failing — but no QML warning appears
+  either, consistent with stdout loss (qWarning goes to stderr
+  normally... which weakens this; the load failure, if any, is
+  still unproven).
+- **surface2's 17s = 3x link waits, not a hang:** exit 4 with ~17s
+  matches `displayLinkAndFrames` + `displayItemRenders` +
+  `inputSeams` each burning a 5s `waitLink()` ("DisplayLinkReady
+  never arrived"), plus one more failed function. The mock's link
+  events never arrive while surface3's device-list wait succeeds.
+- **Next experiment (this branch):** redirect each binary's FULL
+  output to a file (`*> diag-$t.txt`) and dump the file. This
+  settles whether stdout is lost in the pipe (file will contain
+  the FAIL lines) or genuinely never produced (file empty). If
+  the FAIL lines appear, the actual failure reasons become visible
+  for the first time and the fix follows from them, not from
+  guessing.
