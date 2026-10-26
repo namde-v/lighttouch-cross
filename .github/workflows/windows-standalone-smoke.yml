@@ -50,7 +50,7 @@ jobs:
         run: |
           if ($env:INPUT_RUN_ID -and $env:INPUT_RUN_ID -ne 'latest') {
             $runId = $env:INPUT_RUN_ID
-            $run = gh api repos/namde-v/lighttouch-cross/actions/runs/$runId --jq '{conclusion: .conclusion, head_branch: .head_branch}'
+            $run = gh api repos/namde-v/lighttouch-cross/actions/runs/$runId --jq '{conclusion: .conclusion, head_branch: .head_branch}' | ConvertFrom-Json
             if ($run.conclusion -ne 'success') { Write-Error "package run $runId is not successful ($($run.conclusion))"; exit 1 }
           } else {
             $runId = gh api repos/namde-v/lighttouch-cross/actions/workflows/windows-package.yml/runs --jq '[.workflow_runs[] | select(.head_branch == "main" and .status == "completed" and .conclusion == "success")] | first | .id'
