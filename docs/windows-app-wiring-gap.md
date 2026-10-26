@@ -120,7 +120,10 @@ no change: it already picks up the exe from the ZIP automatically.
    after deploy, and skips (warn) when no exe was staged. Manifest
    gains a Qt runtime line; the stale Phase-6 exe message is fixed.
    Pin-drop note: UI main merged win/w-ui as 5e96de7, pin dropped in
-   fe3d0d3, qt-ci 40247528572 17/17 on merged main.
+   fe3d0d3, qt-ci 40247528572 17/17 on merged main. VALIDATED:
+   dispatch package run 40248104984 (windows-ci 40243608258, qt
+   fallback 40247528572) SUCCESS; ZIP artifact verified: exe + 31
+   Qt6 DLLs + platforms/qwindows.dll + full plugin tree, 1372 files.
 4. Verify the MSI installs a runnable app (exe + shortcut + DLLs).
 5. Add a cross-repo trigger so lighttouch-ui pushes run qt-ci.
 
