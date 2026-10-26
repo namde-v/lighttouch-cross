@@ -16,6 +16,17 @@
 # not log lines. A non-mock launch attempt runs second, non-gating,
 # and its outcome is recorded (it exercises the real core-DLL path).
 #
+# Crash-dump capture: the real-core launch runs with procdump
+# attached (-ma -e, immediately after launch), so an unhandled
+# exception in the real core (e.g. the 0xC0000374 heap corruption on
+# smoke 40413923104, which left only an exit code) writes a full
+# minidump to smoke-dumps/, uploaded as the standalone-smoke-dumps
+# artifact (always, warn if none). The mock launch is untouched:
+# its gating proof (alive + Qt6Core from layout) is unchanged.
+# procdump is installed by its own step (choco, Sysinternals
+# fallback — same as windows-ci.yml); if install fails, the run
+# still proves aliveness but logs loudly that no dump was captured.
+#
 # Dispatch-only: gh workflow run windows-standalone-smoke.yml
 #   --ref win/w-app-smoke [-f package_run_id=<id>|latest]
 
@@ -99,11 +110,63 @@ jobs:
             exit 1
           }
 
+      - name: Install procdump (crash-dump capture for the real-core launch)
+        id: procdump
+        run: |
+          # procdump is NOT preinstalled on the windows-latest runner image.
+          # Same two-method install as windows-ci.yml (choco, then direct
+          # Sysinternals download). Soft-fail by design: the smoke run still
+          # proves mock/real aliveness without it, but the real launch then
+          # runs WITHOUT dump capture and the log says so loudly.
+          $available = $false
+          if (Get-Command procdump -ErrorAction SilentlyContinue) {
+            Write-Host "procdump already on PATH"
+            $available = $true
+          } else {
+            try {
+              choco install procdump -y --no-progress 2>&1 | Select-Object -Last 3 | Write-Host
+              if (Get-Command procdump -ErrorAction SilentlyContinue) { $available = $true }
+            } catch { Write-Host "choco install failed (non-fatal): $_" }
+            if (-not $available) {
+              Write-Host "Falling back to direct Sysinternals download..."
+              try {
+                $zip = Join-Path $env:RUNNER_TEMP "procdump.zip"
+                $dir = Join-Path $env:RUNNER_TEMP "procdump"
+                Invoke-WebRequest -Uri "https://download.sysinternals.com/files/Procdump.zip" -OutFile $zip
+                Expand-Archive -Path $zip -DestinationPath $dir -Force
+                $dir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+                $env:PATH = "$dir;$env:PATH"
+                if (Get-Command procdump -ErrorAction SilentlyContinue) { $available = $true }
+              } catch { Write-Host "Sysinternals download failed (non-fatal): $_" }
+            }
+          }
+          if ($available) {
+            & procdump -accepteula -? 2>&1 | Select-Object -First 2 | Write-Host
+            Write-Host "procdump ready"
+          } else {
+            Write-Host "WARNING: procdump unavailable — real-core launch will run WITHOUT crash-dump capture"
+          }
+          "available=$($available.ToString().ToLower())" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       - name: Launch (real core path, offscreen) — NON-GATING, recorded
         run: |
           $env:QT_QPA_PLATFORM = 'offscreen'
           Remove-Item Env:LTM_BRIDGE_MOCK -ErrorAction SilentlyContinue
           $p = Start-Process -FilePath extracted/LightTouch/LightTouch.exe -WorkingDirectory extracted/LightTouch -PassThru -NoNewWindow -RedirectStandardOutput smoke-real-stdout.txt -RedirectStandardError smoke-real-stderr.txt
+          # Crash-dump capture: attach procdump to the real-core process so an
+          # unhandled exception (e.g. 0xC0000374 heap corruption) writes a
+          # full minidump (-ma) to smoke-dumps/ instead of vanishing with
+          # only an exit code. Attach immediately: the crash takes seconds
+          # (Qt + core init + QML load), procdump attaches in <1s.
+          $dumpArmed = $false
+          if ('${{ steps.procdump.outputs.available }}' -eq 'true') {
+            New-Item -ItemType Directory -Force smoke-dumps | Out-Null
+            Start-Process procdump -ArgumentList "-accepteula -ma -e $($p.Id) smoke-dumps" -NoNewWindow -PassThru | Out-Null
+            $dumpArmed = $true
+            Write-Host "procdump attached to real-core PID $($p.Id) (dump dir: smoke-dumps)"
+          } else {
+            Write-Host "WARNING: procdump unavailable — real-core launch runs WITHOUT crash-dump capture"
+          }
           Start-Sleep -Seconds 20
           if (-not $p.HasExited) {
             Write-Host "REAL LAUNCH: process $($p.Id) ALIVE after 20s (core path works standalone)"
@@ -111,6 +174,23 @@ jobs:
           } else {
             Write-Host "REAL LAUNCH: process EXITED early, exit code $($p.ExitCode) — recorded, not gating (mock launch is the Qt-runtime proof)"
           }
+          if ($dumpArmed) {
+            Start-Sleep -Seconds 2
+            $dumps = @(Get-ChildItem smoke-dumps -Filter *.dmp -ErrorAction SilentlyContinue)
+            if ($dumps.Count -gt 0) {
+              $dumps | ForEach-Object { Write-Host "CRASH DUMP CAPTURED: $($_.FullName) ($($_.Length) bytes)" }
+            } else {
+              Write-Host "No crash dump (process alive-and-stopped, or exit without unhandled exception)"
+            }
+          }
+
+      - name: Upload crash dumps
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: standalone-smoke-dumps
+          path: smoke-dumps/*.dmp
+          if-no-files-found: warn
 
       - name: Upload smoke logs
         if: always()
