@@ -3,7 +3,9 @@
 # Assembles the portable Windows ZIP from CI artifacts. Intended layout:
 #
 #   LightTouch/
-#     LightTouch.exe            Qt 6 UI executable (PENDING — see below)
+#     LightTouch.exe            Qt 6 UI executable (from the windows-qt-ci
+#                               run resolved by Gap 2 below; absent when no
+#                               successful qt-ci run exists for the branch)
 #     qemu-system-arm.exe       from the windows-emulator-ci artifact
 #     *.dll                     MinGW runtime DLLs (bundled by the emulator job)
 #     *.dll                     Swift package DLLs (from windows-ci artifacts)
@@ -25,11 +27,14 @@
 # a run (build artifacts upload with if: always()), but a run whose builds
 # failed (no artifacts) is skipped. A ZIP with zero package DLLs fails loudly.
 #
-# KNOWN GAP (Phase 6): no workflow publishes `lighttouch-qt-ui-windows-x86_64`
-# yet — windows-qt-ci is a scaffold gated on QtUI/CMakeLists.txt, which does
-# not exist in this repo. Until a Qt UI build lands, the ZIP contains Swift
-# package DLLs + qemu + Swift runtime only: a validated packaging pipeline,
-# NOT a runnable app. The manifest records the missing exe honestly.
+# Gap 2 (implemented): the Qt exe comes from windows-qt-ci runs, resolved
+# by the qt-run-id step (SHA-matched successful run on the same branch,
+# else newest successful run on the branch + warning, else no exe). The
+# installer picks the exe up from the ZIP automatically. Gap 3 (first
+# commit): windeployqt stages the Qt runtime (DLLs + plugins) next to
+# the exe; the exe's QML is embedded (qrc), so no qml/ staging is needed,
+# and Swift core DLLs were already staged. Still open: the cross-repo
+# trigger so lighttouch-ui pushes run qt-ci (gap 5).
 name: Windows package
 
 on:
@@ -68,6 +73,15 @@ jobs:
       - name: Check out
         uses: actions/checkout@v4
 
+      # QtUI sources are needed only as windeployqt's --qmldir input (the
+      # QML import scan); the exe itself embeds its QML via resources
+      # (qrc:/qml/main.qml), so no qml/ files are staged into the ZIP.
+      - name: Check out Qt UI repo (windeployqt qmldir)
+        uses: actions/checkout@v4
+        with:
+          repository: namde-v/lighttouch-ui
+          path: QtUI
+
       # Only needed as the source of the Swift runtime DLLs (swiftCore.dll,
       # ...); nothing is compiled in this job.
       - name: Install Swift
@@ -75,6 +89,20 @@ jobs:
         with:
           swift-version: swift-6.2.4-release
           swift-build: 6.2.4-RELEASE
+
+      # Qt install for windeployqt: must match the Qt that built the exe
+      # (6.8.3 msvc2022_64, qtmultimedia for CaptureSounds) — same
+      # coordinates as windows-qt-ci.yml. Installed, not downloaded from
+      # artifacts: no workflow publishes the Qt runtime DLLs.
+      - name: Install Qt (windeployqt)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: "qtmultimedia"
+          cache: true
 
       - name: Resolve Windows CI run id
         id: run-id
@@ -104,22 +132,22 @@ jobs:
             # for windows-ci.yml), NOT the file name — the old check rejected
             # every real windows-ci run (manual dispatch 40111942823 failed on
             # exactly this). Validate via the API's path field instead.
-            $view = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$inputId" --jq '"\(.id) \(.path) \(.head_sha)"' 2>$null
+            $view = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$inputId" --jq '"\(.id) \(.path) \(.head_sha) \(.head_branch)"' 2>$null
             if ($LASTEXITCODE -ne 0 -or -not $view) { Write-Error "Run id $inputId not found or not readable"; exit 1 }
             $parts = $view -split '\s+'
             if ($parts[1] -ne '.github/workflows/windows-ci.yml') { Write-Error "Run $inputId is workflow '$($parts[1])', not windows-ci"; exit 1 }
-            $id = $parts[0]; $headSha = $parts[2]
+            $id = $parts[0]; $headSha = $parts[2]; $headBranch = $parts[3]
             Write-Host "Packaging explicit windows-ci run $id"
           } else {
-            $lines = @(gh run list --workflow windows-ci.yml --branch main --status completed --limit 20 --json databaseId,conclusion,headSha --jq '.[] | "\(.databaseId) \(.headSha) \(.conclusion)"')
-            $id = $null; $headSha = $null
+            $lines = @(gh run list --workflow windows-ci.yml --branch main --status completed --limit 20 --json databaseId,conclusion,headSha,headBranch --jq '.[] | "\(.databaseId) \(.headSha) \(.conclusion) \(.headBranch)"')
+            $id = $null; $headSha = $null; $headBranch = $null
             $pkgs = @('HostRuntime','DeviceServices','ReleaseChecks','BuildTools','FirmwareKit','DeviceRuntime','LightTouchCore')
             foreach ($line in $lines) {
               $parts = $line -split '\s+'
               $candId = $parts[0]; $candSha = $parts[1]; $candConcl = $parts[2]
               $names = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$candId/artifacts" --paginate --jq '.artifacts[].name' 2>$null
               $missing = @($pkgs | Where-Object { $names -notcontains "swift-$_-windows-x86_64" })
-              if (-not $missing) { $id = $candId; $headSha = $candSha; break }
+              if (-not $missing) { $id = $candId; $headSha = $candSha; $headBranch = $parts[3]; break }
               Write-Host "Skipping run $candId (conclusion: $candConcl, missing build artifacts: $($missing -join ', '))"
             }
             if (-not $id) { Write-Error 'No completed windows-ci run on main with build artifacts found'; exit 1 }
@@ -127,6 +155,51 @@ jobs:
           }
           "run_id=$id" >> $env:GITHUB_OUTPUT
           "head_sha=$headSha" >> $env:GITHUB_OUTPUT
+          "head_branch=$headBranch" >> $env:GITHUB_OUTPUT
+
+      # Gap 2 (main-agent decision 2026-10-26): the Qt exe artifact lives
+      # on windows-qt-ci runs, NEVER on the windows-ci run id above — so
+      # the Qt step must resolve its own run id. Primary: newest
+      # SUCCESSFUL windows-qt-ci run on the same branch whose head SHA
+      # equals the packaged commit. Fallback: newest successful
+      # windows-qt-ci run on the same branch + warning. Neither: empty
+      # output, and the Qt step keeps the warn-and-continue behavior.
+      # Success is required in both cases: a qt-ci run with red tests
+      # must not contribute its exe. Artifact presence is also required:
+      # scaffold-era successful qt-ci runs on main (e.g. 39113095570)
+      # carry no lighttouch-qt-ui-windows-x86_64 artifact at all, and
+      # selecting one only produces a misleading download warning.
+      - name: Resolve Qt UI run id (Gap 2)
+        id: qt-run-id
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $targetSha = "${{ steps.run-id.outputs.head_sha }}"
+          $branch = "${{ steps.run-id.outputs.head_branch }}"
+          $lines = @(gh run list --workflow windows-qt-ci.yml --branch $branch --status completed --limit 20 --json databaseId,headSha,conclusion --jq '.[] | "\(.databaseId) \(.headSha) \(.conclusion)"')
+          function Has-QtArtifact($runId) {
+            $names = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$runId/artifacts" --jq '.artifacts[].name' 2>$null
+            return ($names -contains 'lighttouch-qt-ui-windows-x86_64')
+          }
+          $qtId = $null
+          foreach ($line in $lines) {
+            $parts = $line -split '\s+'
+            if ($parts[1] -eq $targetSha -and $parts[2] -eq 'success' -and (Has-QtArtifact $parts[0])) { $qtId = $parts[0]; break }
+          }
+          if ($qtId) {
+            Write-Host "Qt exe from SHA-matched windows-qt-ci run $qtId (head $targetSha, branch $branch)"
+          } else {
+            foreach ($line in $lines) {
+              $parts = $line -split '\s+'
+              if ($parts[2] -eq 'success' -and (Has-QtArtifact $parts[0])) {
+                $qtId = $parts[0]
+                Write-Warning "No windows-qt-ci run matches head $targetSha on $branch; using newest successful run $qtId (head $($parts[1])) — exe may not match the packaged commit"
+                break
+              }
+            }
+            if (-not $qtId) { Write-Warning "No successful windows-qt-ci run with the Qt artifact on $branch; continuing without LightTouch.exe" }
+          }
+          if ($qtId) { "qt_run_id=$qtId" >> $env:GITHUB_OUTPUT }
 
       - name: Download Swift package artifacts
         env:
@@ -158,16 +231,18 @@ jobs:
           if (-not $id) { Write-Warning 'No successful windows-emulator-ci run found; qemu-system-arm.exe will be missing from the ZIP'; exit 1 }
           gh run download $id --name qemu-system-arm-windows-x86_64 --dir qemu-artifact
 
-      # PENDING (Phase 6): no workflow publishes this artifact yet. Kept as a
-      # real download attempt so packaging starts including LightTouch.exe the
-      # moment the Qt UI build workflow lands — no workflow edit needed then.
-      - name: Download Qt UI executable (pending Phase 6)
+      # Gap 2: fetch from the windows-qt-ci run resolved above, NOT from
+      # the windows-ci run id (a windows-ci run never contains the Qt
+      # artifact). No resolved id -> warn and continue without the exe.
+      - name: Download Qt UI executable (Gap 2)
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run download ${{ steps.run-id.outputs.run_id }} --name lighttouch-qt-ui-windows-x86_64 --dir qt-artifact
-          if (-not (Test-Path qt-artifact/LightTouch.exe)) { Write-Warning 'Qt UI artifact not present yet (expected until Phase 6 lands)'; exit 1 }
+          $qtId = "${{ steps.qt-run-id.outputs.qt_run_id }}"
+          if (-not $qtId) { Write-Warning 'No windows-qt-ci run resolved; continuing without LightTouch.exe'; exit 1 }
+          gh run download $qtId --name lighttouch-qt-ui-windows-x86_64 --dir qt-artifact
+          if (-not (Test-Path qt-artifact/LightTouch.exe)) { Write-Warning "Qt UI artifact from run $qtId has no LightTouch.exe"; exit 1 }
 
       - name: Assemble portable layout
         run: |
@@ -228,6 +303,33 @@ jobs:
           Write-Host '--- layout contents ---'
           Get-ChildItem $layout | Format-Table Name, Length -AutoSize | Out-String | Write-Host
 
+      # Gap 3 (first commit): stage the Qt runtime next to the exe so it
+      # runs standalone. windeployqt copies the Qt6 DLLs the exe links
+      # (flat, next to the exe — the loader requires that) and the plugins
+      # (platforms/qwindows.dll, imageformats, QML imports) into their
+      # standard subdirs, which Qt finds relative to the exe dir. No
+      # qt.conf needed for that layout. Skipped (warn, job stays green)
+      # when no exe was staged; a windeployqt failure with an exe present
+      # fails the job loudly — shipping a ZIP whose exe cannot start
+      # must not pass silently. Core DLLs need no new work here: the
+      # Swift package DLLs are already staged above, and the exe's QML
+      # is embedded (qrc:/qml/main.qml), so no qml/ files are staged.
+      - name: Deploy Qt runtime (windeployqt, Gap 3)
+        run: |
+          if (-not (Test-Path LightTouch/LightTouch.exe)) { Write-Warning 'No LightTouch.exe staged; skipping Qt deploy'; exit 0 }
+          $windeployqt = (Get-Command windeployqt -ErrorAction SilentlyContinue).Source
+          if (-not $windeployqt -and $env:QT_ROOT_DIR) {
+            $cand = Join-Path $env:QT_ROOT_DIR 'bin\windeployqt.exe'
+            if (Test-Path $cand) { $windeployqt = $cand }
+          }
+          if (-not $windeployqt) { Write-Error 'windeployqt not found (Qt install step must provide it)'; exit 1 }
+          & $windeployqt --release --compiler-runtime --qmldir QtUI/qml LightTouch/LightTouch.exe
+          if ($LASTEXITCODE -ne 0) { Write-Error "windeployqt failed with exit code $LASTEXITCODE"; exit 1 }
+          if (-not (Test-Path LightTouch/Qt6Core.dll)) { Write-Error 'Qt6Core.dll missing after windeployqt'; exit 1 }
+          if (-not (Test-Path LightTouch/platforms/qwindows.dll)) { Write-Error 'platforms/qwindows.dll missing after windeployqt'; exit 1 }
+          $qtDlls = @(Get-ChildItem LightTouch -Filter Qt6*.dll).Count
+          Write-Host "Qt runtime staged: $qtDlls Qt6 DLLs + plugins (platforms/qwindows.dll present)"
+
       - name: Create portable ZIP
         run: |
           $lines = @(
@@ -248,7 +350,8 @@ jobs:
           }
           $lines += ''
           $lines += "qemu-system-arm.exe: $(if (Test-Path LightTouch/qemu-system-arm.exe) { 'present' } else { 'MISSING — no successful emulator run / artifact expired' })"
-          $lines += "LightTouch.exe (Qt UI): $(if (Test-Path LightTouch/LightTouch.exe) { 'present' } else { 'MISSING — no Qt UI build publishes this artifact yet (Phase 6 gap)' })"
+          $lines += "LightTouch.exe (Qt UI): $(if (Test-Path LightTouch/LightTouch.exe) { 'present' } else { 'MISSING — no windows-qt-ci run with the Qt artifact for this branch (Gap 2)' })"
+          $lines += "Qt runtime (Gap 3): $(@(Get-ChildItem LightTouch -Filter Qt6*.dll).Count) Qt6 DLLs; platforms/qwindows.dll: $(if (Test-Path LightTouch/platforms/qwindows.dll) { 'present' } else { 'MISSING' })"
           $lines += 'Swift runtime DLLs:'
           foreach ($dll in 'swiftCore.dll', 'swift_Concurrency.dll', 'Foundation.dll', 'dispatch.dll', 'BlocksRuntime.dll') {
             $lines += "  $dll : $(if (Test-Path LightTouch/$dll) { 'present' } else { 'MISSING' })"

@@ -1,16 +1,20 @@
-# LightTouch cross-platform port — Qt UI tests on Windows (scaffold)
+# LightTouch cross-platform port — Qt UI tests on Windows
 #
-# Runs the Qt 6 UI test suite headless via QT_QPA_PLATFORM=offscreen + ctest.
-# The runners are the test machines: ctest results (JUnit XML + full log)
-# upload as an artifact on EVERY run — pass or fail — so failures are
-# diagnosable without a local Windows box.
+# Runs the Qt 6 UI test suite via ctest. The build/test steps converge on
+# the UI repo's own windows-ci.yml (the known-green reference: 17/17 on
+# windows-latest 2026-10-16) — default Visual Studio generator, Release
+# config, no workflow-level QT_QPA_PLATFORM (the tests set offscreen
+# themselves via tests/CMakeLists.txt set_tests_properties).
 #
-# Ownership split: W-UI owns the Qt test content; this file owns the runner
-# wiring. CONTRACT for W-UI: a CMake project at QtUI/ (see QT_UI_DIR below)
-# with enable_testing() and the QtTest-based tests registered with ctest.
-# Until QtUI/CMakeLists.txt exists, the job is skipped (no failure, no
-# wasted minutes): the paths trigger below only fires on QtUI/** changes,
-# and the job-level gate covers manual dispatches and workflow-file edits.
+# Ownership split: the Qt UI lives in its own repo (namde-v/lighttouch-ui);
+# this file owns the runner wiring. The UI repo is checked out at QtUI/
+# (see QT_UI_DIR below) — it must be a CMake project with enable_testing()
+# and the QtTest-based tests registered with ctest.
+# Trigger note: the UI is a separate repo, so port-repo QtUI/** paths never
+# match; this workflow runs on workflow-file edits and manual dispatch until
+# a cross-repo trigger (repository_dispatch/schedule) is added (see
+# docs/windows-app-wiring-gap.md). The job-level gate below still skips
+# (not fails) if the checkout does not yield QtUI/CMakeLists.txt.
 name: Windows Qt UI tests
 
 on:
@@ -31,7 +35,7 @@ env:
 
 jobs:
   qt-tests:
-    name: Qt offscreen tests (Windows)
+    name: Qt tests (Windows)
     runs-on: windows-latest
     timeout-minutes: 30
     defaults:
@@ -41,9 +45,22 @@ jobs:
       - name: Check out
         uses: actions/checkout@v4
 
-      # Gate: everything below is skipped (not failed) until W-UI lands
-      # QtUI/CMakeLists.txt. The paths trigger above already limits runs to
-      # QtUI/** changes; this covers manual dispatches and workflow edits.
+      # The Qt UI lives in its own repo — check it out at QtUI/. (The
+      # port repo has no QtUI/ directory; the old scaffold waited for one
+      # to land here and therefore never ran.)
+      - name: Check out Qt UI repo
+        uses: actions/checkout@v4
+        with:
+          repository: namde-v/lighttouch-ui
+          # Default branch (main) now contains the Windows test fixes:
+          # UI main merged win/w-ui as 5e96de7 (parents 819d571 +
+          # 9536541), and post-merge windows-ci run 40244451546 on main
+          # is green. The win/w-ui pin (a2c2144) is therefore dropped;
+          # if main ever regresses, re-pin to the known-green branch.
+          path: QtUI
+
+      # Gate: everything below is skipped (not failed) if the UI checkout
+      # does not yield QtUI/CMakeLists.txt.
       - name: Check Qt UI sources exist
         id: src
         run: |
@@ -51,7 +68,7 @@ jobs:
             "present=true" >> $env:GITHUB_OUTPUT
           } else {
             "present=false" >> $env:GITHUB_OUTPUT
-            Write-Warning "QtUI/ not present yet (W-UI has not landed it) — Qt tests skipped."
+            Write-Warning "QtUI/CMakeLists.txt not present after UI checkout — Qt tests skipped."
           }
 
       - name: Install Qt
@@ -59,34 +76,84 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
           arch: win64_msvc2022_64
+          modules: 'qtmultimedia'
           cache: true
 
+      # Default Visual Studio generator (no -G Ninja): this matches the
+      # UI repo's own windows-ci.yml, the known-green reference. The
+      # Ninja build was the remaining setup difference after the
+      # offscreen hypothesis was ruled out (run 40234747319 failed the
+      # same 5 tests with the default platform plugin — and the tests set
+      # QT_QPA_PLATFORM=offscreen themselves via set_tests_properties,
+      # so the workflow env never mattered). The VS generator also needs
+      # no msvc-dev-cmd: CMake finds MSVC itself.
       - name: Configure
         if: steps.src.outputs.present == 'true'
-        run: cmake -S ${{ env.QT_UI_DIR }} -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S ${{ env.QT_UI_DIR }} -B build
 
       - name: Build
         if: steps.src.outputs.present == 'true'
-        run: cmake --build build
+        run: cmake --build build --config Release --parallel
 
-      # QT_QPA_PLATFORM=offscreen: no display server on runners. ctest writes
-      # JUnit XML (--output-junit needs CMake >= 3.21; runners are newer).
-      - name: Test (offscreen)
+      # The build also produces the app executable (build/Release/
+      # lighttouch.exe under the VS generator). Upload it under the
+      # artifact name the package workflow expects — evidence the exe
+      # compiles on Windows. NOTE: it is NOT yet consumable by packaging
+      # until the gap 2 decision is implemented (see
+      # docs/windows-app-wiring-gap.md); warn, never fail, if absent.
+      - name: Upload Qt UI executable (if built)
         if: steps.src.outputs.present == 'true'
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: |
-          ctest --test-dir build --output-on-failure --output-junit test-results.xml 2>&1 | Tee-Object -FilePath ctest.log
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Upload test results
-        if: always() && steps.src.outputs.present == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: qt-ui-tests-windows-x86_64
-          path: |
-            test-results.xml
-            ctest.log
+          name: lighttouch-qt-ui-windows-x86_64
+          path: build/Release/lighttouch.exe
           if-no-files-found: warn
           retention-days: 30
+
+      - name: Test
+        if: steps.src.outputs.present == 'true'
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      # Bring-up diagnostics, copied from the UI repo's workflow: rerun
+      # failures verbosely so the raw test output (or loader errors) is
+      # visible in the log. The plain ctest summary hides the failure
+      # lines for these tests (no FAIL! lines, no output at all).
+      - name: Diagnose failures
+        if: failure()
+        continue-on-error: true
+        run: |
+          ctest --test-dir build -C Release --rerun-failed -V 2>&1 | Select-Object -First 250
+
+      # Direct-run diagnostics (run 40237966745): even under -V ctest
+      # shows NO QTest output for the 4 fast failures, so run the
+      # binaries directly to capture their real stdout/stderr and exit
+      # codes. A silent -1073741515 (0xC0000135) means a DLL failed to
+      # load; a 0xC0000005 is an access violation; a small nonzero code
+      # is a normal QTest failure whose output was lost. dumpbin lists
+      # each binary's DLL dependents so a missing DLL can be named.
+      - name: Diagnose failures directly
+        if: failure()
+        continue-on-error: true
+        run: |
+          Set-Location build/tests
+          $dumpbin = Get-ChildItem 'C:/Program Files/Microsoft Visual Studio/*/Enterprise/VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe' -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+          foreach ($t in @('tst_applaunch','tst_surface1','tst_surface11','tst_surface2','tst_surface12','tst_surface3')) {
+            Write-Output "=== $t ==="
+            $env:QT_QPA_PLATFORM = 'offscreen'
+            $env:LTM_BRIDGE_MOCK = '1'
+            & ".\Release\$t.exe" -o "qtest-$t.txt"
+            Write-Output "exit=$LASTEXITCODE"
+            if (Test-Path "qtest-$t.txt") { Get-Content "qtest-$t.txt" -TotalCount 80 } else { Write-Output "(no qtest file)" }
+            if ($dumpbin) {
+              & $dumpbin /dependents ".\Release\$t.exe" 2>$null | Select-String -Pattern '\.dll' | ForEach-Object { $_.Line.Trim() } | Select-Object -First 30
+            }
+          }
+          Write-Output "=== probe: tst_applaunch -functions ==="
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:LTM_BRIDGE_MOCK = '1'
+          & ".\Release\tst_applaunch.exe" -functions *> "funcs.txt"
+          Write-Output "exit=$LASTEXITCODE"
+          if (Test-Path "funcs.txt") { Get-Content "funcs.txt" -TotalCount 40 } else { Write-Output "(no funcs file)" }
