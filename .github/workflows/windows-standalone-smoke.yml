@@ -1,0 +1,121 @@
+# Standalone launch smoke test for the portable Windows ZIP.
+#
+# Proves the ZIP runs, not just packages: a FRESH windows-latest runner
+# (no Qt installed — this job deliberately has no install-qt step)
+# downloads the portable ZIP from a windows-package run, extracts it,
+# and launches LightTouch.exe from the extracted layout.
+#
+# Why offscreen + mock: the runner has no display session, so the app
+# runs under QT_QPA_PLATFORM=offscreen; LTM_BRIDGE_MOCK=1 boots the app
+# without libLTAppCore, which is exactly the Qt-runtime + QML proof:
+# a missing DLL kills the process instantly (0xC0000135), a QML load
+# failure exits via main.cpp's failure path, so a process that is still
+# alive after 25s with Qt6Core.dll loaded FROM THE LAYOUT DIR is a
+# running app. The exe is a WIN32-subsystem app, so redirected stdout
+# is expected to be empty — aliveness + loaded modules are the signal,
+# not log lines. A non-mock launch attempt runs second, non-gating,
+# and its outcome is recorded (it exercises the real core-DLL path).
+#
+# Dispatch-only: gh workflow run windows-standalone-smoke.yml
+#   --ref win/w-app-smoke [-f package_run_id=<id>|latest]
+
+name: Windows standalone smoke test
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_run_id:
+        description: "Windows package run id to smoke-test (default: latest successful run on main)"
+        required: false
+        default: "latest"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  smoke:
+    name: Launch portable ZIP standalone
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Resolve package run id
+        id: pkg
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_RUN_ID: ${{ inputs.package_run_id }}
+        run: |
+          if ($env:INPUT_RUN_ID -and $env:INPUT_RUN_ID -ne 'latest') {
+            $runId = $env:INPUT_RUN_ID
+            $run = gh api repos/namde-v/lighttouch-cross/actions/runs/$runId --jq '{conclusion: .conclusion, head_branch: .head_branch}'
+            if ($run.conclusion -ne 'success') { Write-Error "package run $runId is not successful ($($run.conclusion))"; exit 1 }
+          } else {
+            $runId = gh api repos/namde-v/lighttouch-cross/actions/workflows/windows-package.yml/runs --jq '[.workflow_runs[] | select(.head_branch == "main" and .status == "completed" and .conclusion == "success")] | first | .id'
+            if (-not $runId) { Write-Error 'no successful windows-package run on main'; exit 1 }
+          }
+          "run_id=$runId" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "package run: $runId"
+
+      - name: Download + extract portable ZIP
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PKG_RUN_ID: ${{ steps.pkg.outputs.run_id }}
+        run: |
+          $artId = gh api repos/namde-v/lighttouch-cross/actions/runs/$env:PKG_RUN_ID/artifacts --jq '.artifacts[] | select(.name == "lighttouch-windows-x86_64-portable") | .id'
+          if (-not $artId) { Write-Error 'portable ZIP artifact not found on that package run'; exit 1 }
+          gh api repos/namde-v/lighttouch-cross/actions/artifacts/$artId/zip --method GET > portable-artifact.zip
+          Expand-Archive portable-artifact.zip -DestinationPath artifact-out -Force
+          Expand-Archive artifact-out/LightTouch-windows-x86_64.zip -DestinationPath extracted -Force
+          if (-not (Test-Path extracted/LightTouch/LightTouch.exe)) { Write-Error 'LightTouch.exe missing from ZIP'; exit 1 }
+          if (-not (Test-Path extracted/LightTouch/Qt6Core.dll)) { Write-Error 'Qt6Core.dll missing from ZIP'; exit 1 }
+          if (-not (Test-Path extracted/LightTouch/platforms/qwindows.dll)) { Write-Error 'platforms/qwindows.dll missing from ZIP'; exit 1 }
+          if (-not (Test-Path extracted/LightTouch/platforms/qoffscreen.dll)) { Write-Error 'platforms/qoffscreen.dll missing from ZIP (headless launch needs it; Gap 3 stages it from the Qt install)'; exit 1 }
+          Write-Host '--- platforms/ in ZIP ---'
+          Get-ChildItem extracted/LightTouch/platforms | ForEach-Object { Write-Host "  $($_.Name)" }
+          Write-Host "--- Qt6 DLLs: $((Get-ChildItem extracted/LightTouch -Filter Qt6*.dll).Count) ---"
+
+      - name: Launch (mock bridge, offscreen) — GATING
+        id: mock
+        run: |
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:LTM_BRIDGE_MOCK = '1'
+          $p = Start-Process -FilePath extracted/LightTouch/LightTouch.exe -WorkingDirectory extracted/LightTouch -PassThru -NoNewWindow -RedirectStandardOutput smoke-mock-stdout.txt -RedirectStandardError smoke-mock-stderr.txt
+          Start-Sleep -Seconds 25
+          $alive = -not $p.HasExited
+          "alive=$alive" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          if ($alive) {
+            $mods = @(Get-Process -Id $p.Id -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Modules -ErrorAction SilentlyContinue | Where-Object { $_.FileName -like '*Qt6Core.dll*' })
+            $fromLayout = @($mods | Where-Object { $_.FileName -like '*extracted*' }).Count -gt 0
+            Write-Host "MOCK LAUNCH: process $($p.Id) ALIVE after 25s; Qt6Core loaded from layout: $fromLayout"
+            $mods | ForEach-Object { Write-Host "  loaded: $($_.FileName)" }
+            if (-not $fromLayout) { Write-Error 'Qt6Core.dll NOT loaded from the extracted layout'; Stop-Process -Id $p.Id -Force; exit 1 }
+            Stop-Process -Id $p.Id -Force
+          } else {
+            $code = $p.ExitCode
+            Write-Error "MOCK LAUNCH: process EXITED early, exit code $code (0xC0000135 = missing DLL, 0xC0000005 = access violation)"
+            exit 1
+          }
+
+      - name: Launch (real core path, offscreen) — NON-GATING, recorded
+        run: |
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          Remove-Item Env:LTM_BRIDGE_MOCK -ErrorAction SilentlyContinue
+          $p = Start-Process -FilePath extracted/LightTouch/LightTouch.exe -WorkingDirectory extracted/LightTouch -PassThru -NoNewWindow -RedirectStandardOutput smoke-real-stdout.txt -RedirectStandardError smoke-real-stderr.txt
+          Start-Sleep -Seconds 20
+          if (-not $p.HasExited) {
+            Write-Host "REAL LAUNCH: process $($p.Id) ALIVE after 20s (core path works standalone)"
+            Stop-Process -Id $p.Id -Force
+          } else {
+            Write-Host "REAL LAUNCH: process EXITED early, exit code $($p.ExitCode) — recorded, not gating (mock launch is the Qt-runtime proof)"
+          }
+
+      - name: Upload smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: standalone-smoke-logs
+          path: smoke-*.txt
+          if-no-files-found: warn
