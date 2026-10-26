@@ -176,7 +176,9 @@ nonisolated public enum DeviceLinkWireError: Error, Equatable {
 
 /// One end of the socketpair: framed messages in, framed messages out.
 ///
-/// Reads run on a dispatch read source; writes go through a private serial
+/// Reads run on a dispatch read source (Windows: a dedicated thread with
+/// blocking recv — libdispatch-Windows makeReadSource on a SOCKET fd kills
+/// the process, proven by diagnostic rounds 4-5); writes go through a private serial
 /// queue, so a wedged peer can never block the caller (the app's main thread).
 /// `onClose` fires once: EOF, a read error, or a protocol violation.
 nonisolated public final class LinkChannel<
@@ -184,7 +186,7 @@ nonisolated public final class LinkChannel<
     Outgoing: Encodable & SendableMetatype
 >: @unchecked Sendable {
     public let fd: Int32
-    private let source: DispatchSourceRead
+    private let source: DispatchSourceRead?  // nil on Windows (read thread instead)
     private let writeQueue: DispatchQueue
     private let queue: DispatchQueue
     private var buffer = Data()
@@ -219,25 +221,46 @@ nonisolated public final class LinkChannel<
         var one: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
         #endif
-        source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
-        diagLinkChan("source created")
-        source.setEventHandler { [unowned self] in
-            var chunk = [UInt8](repeating: 0, count: 65536)
-            #if os(Windows)
-            // A link fd is a SOCKET, not a CRT fd: UCRT read() would fail
-            // with EBADF, so recv() on the socket value (same shape as the
-            // spawn tests' socket code). The shared tail below treats a
-            // negative return as a close; recv on a blocking socket does
-            // not produce transient EAGAIN/EINTR returns.
+        #if os(Windows)
+        // PROVEN by diagnostic rounds 4-5: libdispatch-Windows
+        // DispatchSource.makeReadSource on a SOCKET fd kills the process
+        // (death inside makeReadSource, no dump, exit 1). Windows therefore
+        // reads on a dedicated thread with blocking recv. Bytes are handed
+        // to `queue` for framing, preserving the single-queue invariant for
+        // buffer state; the thread exits when recv fails, which finish()
+        // forces by closing the socket (see below).
+        source = nil
+        let readQueue = DispatchQueue(label: "LightTouch.link.read.\(fd)")
+        readQueue.async { [weak self] in
+            guard let self else { return }
             let sock = SOCKET(UInt64(bitPattern: Int64(fd)))
-            let n = chunk.withUnsafeMutableBufferPointer { buf in
-                buf.baseAddress!.withMemoryRebound(to: CChar.self, capacity: buf.count) { ptr in
-                    WinSDK.recv(sock, ptr, Int32(buf.count), 0)
+            while true {
+                var chunk = [UInt8](repeating: 0, count: 65536)
+                let n = chunk.withUnsafeMutableBufferPointer { buf in
+                    buf.baseAddress!.withMemoryRebound(to: CChar.self, capacity: buf.count) { ptr in
+                        WinSDK.recv(sock, ptr, Int32(buf.count), 0)
+                    }
+                }
+                if n <= 0 {
+                    // EOF (peer closed) or error. The error value is
+                    // diagnostic only here; EOF (the common path) is nil.
+                    self.queue.async { self.finish(n == 0 ? nil : POSIXError(.EIO)) }
+                    return
+                }
+                let data = Data(chunk[0..<Int(n)])
+                self.queue.async {
+                    self.buffer.append(contentsOf: data)
+                    self.deliverFrames()
                 }
             }
-            #else
+        }
+        diagLinkChan("read thread started")
+        #else
+        source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
+        diagLinkChan("source created")
+        source?.setEventHandler { [unowned self] in
+            var chunk = [UInt8](repeating: 0, count: 65536)
             let n = read(fd, &chunk, chunk.count)
-            #endif
             if n < 0, errno == EAGAIN || errno == EINTR { return }
             if n <= 0 {
                 finish(n == 0 ? nil : POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO))
@@ -246,13 +269,12 @@ nonisolated public final class LinkChannel<
             buffer.append(contentsOf: chunk[0..<Int(n)])
             deliverFrames()
         }
-        onCloseHandler = onClose
-        // The fd is a link socket on every platform: closesocket on Windows
-        // (WinSDK.close would leak it and never signal EOF to the peer).
-        source.setCancelHandler { ltmCloseSocket(fd) }
+        source?.setCancelHandler { ltmCloseSocket(fd) }
         diagLinkChan("cancel handler set")
-        source.resume()
+        source?.resume()
         diagLinkChan("resumed")
+        #endif
+        onCloseHandler = onClose
     }
 
     private var onCloseHandler: ((Error?) -> Void)?
@@ -271,7 +293,7 @@ nonisolated public final class LinkChannel<
     }
 
     /// The peer is gone: deliver what it wrote before exiting (its last messages may
-    /// still sit in the socket, the read source not yet run) so they land before the
+    /// still sit in the socket, the reader not yet run) so they land before the
     /// channel closes. On `queue`; never blocks (reads only what poll reports ready).
     public func drainIncoming() {
         #if os(Windows)
@@ -314,7 +336,14 @@ nonisolated public final class LinkChannel<
     private func finish(_ error: Error?) {
         guard !closed else { return }
         closed = true
-        source.cancel()
+        #if os(Windows)
+        // No read source on Windows: close the socket directly, which
+        // unblocks the read thread's recv (its redundant finish call is a
+        // no-op via the guard above).
+        ltmCloseSocket(fd)
+        #else
+        source?.cancel()
+        #endif
         let handler = onCloseHandler
         onCloseHandler = nil
         handler?(error)
