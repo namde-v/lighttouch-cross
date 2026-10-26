@@ -284,10 +284,10 @@ jobs:
           if (Test-Path $runtimesDir) {
             Get-ChildItem $runtimesDir -Directory -ErrorAction SilentlyContinue | ForEach-Object { $candidates += (Join-Path $_.FullName 'usr\bin') }
           }
-          # LTAppCore.dll load-time imports (objdump, no delay-load table): these 8 Swift runtime DLLs must ship
+          # LTAppCore.dll load-time imports (objdump, no delay-load table): these 10 Swift runtime DLLs must ship
           # or the bridge dlopen fails -> real-core exit 1. dispatch.dll (C library) does NOT substitute for
           # swiftDispatch.dll (Swift overlay) - the Windows loader matches exact file names.
-          foreach ($dll in 'swiftCore.dll', 'swift_Concurrency.dll', 'Foundation.dll', 'dispatch.dll', 'BlocksRuntime.dll', 'FoundationEssentials.dll', 'FoundationInternationalization.dll', 'FoundationNetworking.dll', 'swiftCRT.dll', 'swiftDispatch.dll', 'swiftObservation.dll', 'swiftWinSDK.dll', 'swift_StringProcessing.dll') {
+          foreach ($dll in 'swiftCore.dll', 'swift_Concurrency.dll', 'Foundation.dll', 'dispatch.dll', 'BlocksRuntime.dll', 'FoundationEssentials.dll', 'FoundationInternationalization.dll', 'FoundationNetworking.dll', 'swiftCRT.dll', 'swiftDispatch.dll', 'swiftObservation.dll', 'swiftWinSDK.dll', 'swift_StringProcessing.dll', '_FoundationICU.dll', 'swift_RegexParser.dll') {
             $found = $false
             $w = where.exe $dll 2>$null
             if ($LASTEXITCODE -eq 0 -and $w) {
@@ -302,7 +302,7 @@ jobs:
             if (-not $found) { Write-Warning "Swift runtime DLL not found: $dll (searched PATH + $($candidates -join ', '))" }
           }
           if (-not (Test-Path (Join-Path $layout 'swiftCore.dll'))) { Write-Error 'swiftCore.dll missing after search — refusing to ship a ZIP that cannot run'; exit 1 }
-          foreach ($dll in 'FoundationEssentials.dll', 'FoundationInternationalization.dll', 'FoundationNetworking.dll', 'swiftCRT.dll', 'swiftDispatch.dll', 'swiftObservation.dll', 'swiftWinSDK.dll', 'swift_StringProcessing.dll') {
+          foreach ($dll in 'FoundationEssentials.dll', 'FoundationInternationalization.dll', 'FoundationNetworking.dll', 'swiftCRT.dll', 'swiftDispatch.dll', 'swiftObservation.dll', 'swiftWinSDK.dll', 'swift_StringProcessing.dll', '_FoundationICU.dll', 'swift_RegexParser.dll') {
             if (-not (Test-Path (Join-Path $layout $dll))) { Write-Error "LTAppCore runtime DLL missing after search: $dll — refusing to ship a ZIP whose real core cannot load"; exit 1 }
           }
 
@@ -371,7 +371,7 @@ jobs:
           $lines += "LightTouch.exe (Qt UI): $(if (Test-Path LightTouch/LightTouch.exe) { 'present' } else { 'MISSING — no windows-qt-ci run with the Qt artifact for this branch (Gap 2)' })"
           $lines += "Qt runtime (Gap 3): $(@(Get-ChildItem LightTouch -Filter Qt6*.dll).Count) Qt6 DLLs; platforms/qwindows.dll: $(if (Test-Path LightTouch/platforms/qwindows.dll) { 'present' } else { 'MISSING' })"
           $lines += 'Swift runtime DLLs:'
-          foreach ($dll in 'swiftCore.dll', 'swift_Concurrency.dll', 'Foundation.dll', 'dispatch.dll', 'BlocksRuntime.dll', 'FoundationEssentials.dll', 'FoundationInternationalization.dll', 'FoundationNetworking.dll', 'swiftCRT.dll', 'swiftDispatch.dll', 'swiftObservation.dll', 'swiftWinSDK.dll', 'swift_StringProcessing.dll') {
+          foreach ($dll in 'swiftCore.dll', 'swift_Concurrency.dll', 'Foundation.dll', 'dispatch.dll', 'BlocksRuntime.dll', 'FoundationEssentials.dll', 'FoundationInternationalization.dll', 'FoundationNetworking.dll', 'swiftCRT.dll', 'swiftDispatch.dll', 'swiftObservation.dll', 'swiftWinSDK.dll', 'swift_StringProcessing.dll', '_FoundationICU.dll', 'swift_RegexParser.dll') {
             $lines += "  $dll : $(if (Test-Path LightTouch/$dll) { 'present' } else { 'MISSING' })"
           }
           $lines += "Total DLLs in layout: $(@(Get-ChildItem LightTouch -Filter *.dll).Count)"
