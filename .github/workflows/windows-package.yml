@@ -306,6 +306,16 @@ jobs:
             if (-not (Test-Path (Join-Path $layout $dll))) { Write-Error "LTAppCore runtime DLL missing after search: $dll — refusing to ship a ZIP whose real core cannot load"; exit 1 }
           }
 
+          # resources/ (firmware catalog; appDir + "/resources")
+          # Bridge.cpp sets resourceDir = appDir + "/resources", appDir =
+          # the exe dir, so resources go to LightTouch/resources.
+          # CAVEAT (not a run-1 fix): run-1 is still under W1 diagnosis;
+          # this only fills the known missing-resources/ gap (packages
+          # shipped no resources/, catalog always empty).
+          if (-not (Test-Path LightTouchMac/Resources/firmware-catalog.json)) { Write-Error 'resources source missing: LightTouchMac/Resources/firmware-catalog.json'; exit 1 }
+          New-Item -ItemType Directory -Force -Path LightTouch/resources | Out-Null
+          Copy-Item LightTouchMac/Resources/* LightTouch/resources -Force
+
           Write-Host '--- layout contents ---'
           Get-ChildItem $layout | Format-Table Name, Length -AutoSize | Out-String | Write-Host
 
