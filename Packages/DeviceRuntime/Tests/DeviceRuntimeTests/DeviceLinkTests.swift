@@ -48,14 +48,13 @@ private func diagLink(_ message: String) {
     /// start() must: complete with .failure, never hang, and report the
     /// peer's exit (0) via onTerminated. The link's status block must be set
     /// (the hello was mapped) even though the link then failed.
-    // DIAGNOSTIC round 2 (temporary): link test OFF to isolate suites.
-    // Round 1 showed the process dies while the link test (post-"start
-    // called", no callback) AND shmHelloRoundTrip are both in flight, with
-    // suites running in parallel — so round 1 could not attribute the death
-    // to one suite. If transport tests pass alone here, the link path is
-    // implicated; if they still die, the transport/peer path is. Revert
-    // once the culprit suite is known.
-    @Test(.disabled()) func linkStartWithNonJSONPeerFailsCleanlyAndReportsTermination() throws {
+    // DIAGNOSTIC round 3 (temporary): mirror of round 2. Round 2 proved
+    // transport tests pass alone on Windows (4/4 green, link skipped), so
+    // the death REQUIRES the link test's presence. This round runs the link
+    // test ALONE: if it dies alone, the link path itself is broken; if it
+    // passes alone, the death was the parallel-suite interaction. Revert
+    // once determined.
+    @Test func linkStartWithNonJSONPeerFailsCleanlyAndReportsTermination() throws {
         diagLink("link test started")
         try #require(
             FileManager.default.isExecutableFile(atPath: peer.path),

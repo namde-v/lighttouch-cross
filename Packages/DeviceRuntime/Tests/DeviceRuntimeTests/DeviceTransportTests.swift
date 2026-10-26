@@ -38,6 +38,7 @@ private func diagTransport(_ message: String) {
     }
 }
 
+// DIAGNOSTIC round 3 (temporary): transport tests OFF, link test alone.
 @Suite(.serialized) struct DeviceTransportTests {
     /// RendezvousTestPeer, built beside this test bundle.
     #if os(Windows)
@@ -214,7 +215,7 @@ private func diagTransport(_ message: String) {
 
     /// shm create (peer) -> pass -> map -> read status block (app): SCM_RIGHTS
     /// on POSIX, named mappings re-opened by name on Windows.
-    @Test func shmHelloRoundTrip() throws {
+    @Test(.disabled()) func shmHelloRoundTrip() throws {
         diagTransport("shmHelloRoundTrip started")
         let token = "test-token-\(UInt32.random(in: 0...UInt32.max))"
         let spawned = try spawnPeer(token: token, mode: "exit")
@@ -242,7 +243,7 @@ private func diagTransport(_ message: String) {
     }
 
     /// A hello with the wrong token is rejected, and the received fds are not leaked.
-    @Test func wrongTokenIsRejected() throws {
+    @Test(.disabled()) func wrongTokenIsRejected() throws {
         diagTransport("wrongTokenIsRejected started")
         let spawned = try spawnPeer(token: "right-token", mode: "exit")
         defer { reap(spawned) }
@@ -262,7 +263,7 @@ private func diagTransport(_ message: String) {
     /// segments are pagefile-backed file mappings there (ShmSurface), and
     /// the spawn-based tests above now run on Windows as well (loopback
     /// socket + hello transport).
-    @Test func statusBlockAndFrameRingInProcess() {
+    @Test(.disabled()) func statusBlockAndFrameRingInProcess() {
         diagTransport("statusBlockAndFrameRingInProcess started")
         let status = StatusBlock.create()
         #expect(status.isValid)
@@ -312,7 +313,7 @@ private func diagTransport(_ message: String) {
 
     /// WebProxyCA: create the CA files, reload them, mint a leaf for a host,
     /// and verify the leaf's RSA/SHA-1 signature against the CA public key.
-    @Test func webProxyCAIssuesVerifiableLeaf() throws {
+    @Test(.disabled()) func webProxyCAIssuesVerifiableLeaf() throws {
         diagTransport("webProxyCAIssuesVerifiableLeaf started")
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ltm-ca-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
