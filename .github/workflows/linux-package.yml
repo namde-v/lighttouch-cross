@@ -1,0 +1,335 @@
+# Linux package: builds the Qt UI + the real libLTAppCore.so from source,
+# assembles a Linux AppDir, and ships a portable AppImage + a .deb.
+#
+# What is bundled (from the Linux packaging attempt #1, main 884225b):
+#   - Qt UI binary, built from the lighttouch-ui repo (@ main, living ref)
+#   - real libLTAppCore.so, built here from Packages/LTAppCore (NOT the dev
+#     mock core: LTAppCore is not in the linux-ci matrix, so this workflow
+#     builds it from source instead of downloading a CI artifact)
+#   - Qt runtime: ldd closure of the binary + Qt plugins (platforms,
+#     imageformats) + QML modules + plugin-closure pass (plugins dlopen
+#     deps that are NOT in the binary's ldd closure)
+#   - Swift runtime: full ldd closure of libLTAppCore.so
+#
+# Verification (gating, same rule as the Linux attempt #1): each bundle is
+# launched offscreen with `timeout 20`; exit 124 (killed by timeout, i.e.
+# still running) + "Bridge ready" in the log + no "Cannot start" = pass.
+#
+# Triggers: workflow_dispatch + a push self-validation run ONLY when this
+# file itself changes (same pattern as windows-package.yml: the merge
+# commit touches this file, so merging runs it on main automatically).
+#
+# NOT bundled (open items, same as attempt #1): qemu-system-arm, firmware
+# catalog (empty-catalog path only). .deb version is a 0.1.0 placeholder
+# until a versioning scheme is decided. UI ref is main (living); the
+# checked-out SHA is logged so a run is reproducible from its log.
+
+name: Linux package
+
+on:
+  push:
+    branches: [main, linux/**]
+    paths: [.github/workflows/linux-package.yml]
+  workflow_dispatch:
+
+env:
+  SWIFT_VERSION: "6.4.1"
+
+jobs:
+  build:
+    name: Build Linux packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out port repo
+        uses: actions/checkout@v4
+
+      - name: Check out Qt UI repo
+        uses: actions/checkout@v4
+        with:
+          repository: namde-v/lighttouch-ui
+          ref: main
+          path: lighttouch-ui
+
+      - name: Show UI checkout SHA
+        run: |
+          cd lighttouch-ui && git rev-parse HEAD && git log -1 --oneline
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libsqlite3-dev zlib1g-dev pkg-config ffmpeg \
+            qt6-base-dev qt6-base-dev-tools qt6-declarative-dev qt6-declarative-dev-tools \
+            qt6-tools-dev qt6-tools-dev-tools
+
+      - name: Install Swift
+        run: |
+          curl -fsSL -o /tmp/swift.tar.gz \
+            "https://download.swift.org/swift-${SWIFT_VERSION}-release/ubuntu2404/swift-${SWIFT_VERSION}-RELEASE/swift-${SWIFT_VERSION}-RELEASE-ubuntu24.04.tar.gz"
+          sudo tar xzf /tmp/swift.tar.gz --directory / --strip-components=1
+          rm /tmp/swift.tar.gz
+
+      - name: Show toolchain
+        run: swift --version
+
+      - name: Build real libLTAppCore.so
+        run: |
+          cd Packages/LTAppCore
+          swift build --configuration release
+          ls -la .build/release/libLTAppCore.so
+
+      - name: Build Qt UI
+        run: |
+          cmake -S lighttouch-ui -B build-qt
+          cmake --build build-qt -j"$(nproc)"
+          ls -la build-qt/lighttouch
+
+      - name: Assemble AppDir
+        run: |
+          set -eu
+          UI="$GITHUB_WORKSPACE/lighttouch-ui"
+          BIN="$GITHUB_WORKSPACE/build-qt/lighttouch"
+          CORE="$GITHUB_WORKSPACE/Packages/LTAppCore/.build/release/libLTAppCore.so"
+          APPDIR="$GITHUB_WORKSPACE/LightTouch.AppDir"
+          QT_LIBDIR=/usr/lib/x86_64-linux-gnu
+          QT_QMLDIR="$QT_LIBDIR/qt6/qml"
+          QT_PLUGINDIR="$QT_LIBDIR/qt6/plugins"
+          SWIFT_LIBDIR=/usr/lib/swift/linux
+          IMPORTS="$RUNNER_TEMP/qml-imports.txt"
+          echo "== inputs =="
+          ls -la "$BIN" "$CORE"
+          echo "== real core .so deps =="
+          ldd "$CORE" || true
+          echo "== clean AppDir =="
+          rm -rf "$APPDIR"
+          mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib"
+          echo "== binary + core =="
+          cp "$BIN" "$APPDIR/usr/bin/lighttouch"
+          cp "$CORE" "$APPDIR/usr/lib/libLTAppCore.so"
+          echo "== Qt libs from ldd (excluding ONLY base C/C++ runtime + loader + NSS) =="
+          # ldd resolves to /lib/x86_64-linux-gnu (== /usr/lib/x86_64-linux-gnu
+          # via symlink): match both spellings or every Qt lib is missed.
+          ldd "$BIN" | awk '/=>/ {print $3}' | grep -E '^/(usr/)?lib/x86_64-linux-gnu' | sort -u | while read -r lib; do
+            base=$(basename "$lib")
+            case "$base" in
+              libc.so*|libm.so*|libstdc++.so*|libgcc_s.so*|libpthread.so*|libdl.so*|librt.so*|ld-linux*|libresolv.so*|libnss_*)
+                echo "  skip (base system): $base" ;;
+              *) echo "  copy: $base"; cp -L "$lib" "$APPDIR/usr/lib/" ;;
+            esac
+          done
+          echo "== Swift runtime libs (FULL ldd closure of the core .so) =="
+          # Copying only DIRECT NEEDEDs is WRONG: transitive deps like
+          # libswift_Builtin_float.so (needed by libswiftCore, not by the
+          # core directly) break dlopen. ldd is recursive: use its closure.
+          ldd "$CORE" | awk '/=>/ {print $3}' | grep "^$SWIFT_LIBDIR" | sort -u | while read -r lib; do
+            echo "  copy swift: $(basename "$lib")"; cp -L "$lib" "$APPDIR/usr/lib/"
+          done
+          echo "  (closure check, HARD FAIL on missing deps)"
+          if LD_LIBRARY_PATH="$APPDIR/usr/lib" ldd "$APPDIR/usr/lib/libLTAppCore.so" 2>/dev/null | grep -q 'not found'; then
+            echo "  MISSING Swift deps in bundle:"; LD_LIBRARY_PATH="$APPDIR/usr/lib" ldd "$APPDIR/usr/lib/libLTAppCore.so" | grep 'not found'; exit 1
+          fi
+          echo "  no missing swift deps reported"
+          echo "== Qt plugins (platforms + imageformats) =="
+          mkdir -p "$APPDIR/usr/lib/qt6"
+          for p in platforms imageformats; do
+            if [ -d "$QT_PLUGINDIR/$p" ]; then cp -r "$QT_PLUGINDIR/$p" "$APPDIR/usr/lib/qt6/"; echo "  copied $p"; fi
+          done
+          echo "== QML modules (from imports in ui/qml; QtQuick tree + QtQml always) =="
+          mkdir -p "$APPDIR/usr/lib/qt6/qml"
+          grep -rh '^import ' "$UI/qml" 2>/dev/null | awk '{print $2}' | sort -u | tee "$IMPORTS" || true
+          cp -r "$QT_QMLDIR/QtQuick" "$APPDIR/usr/lib/qt6/qml/" 2>/dev/null || echo "  QtQuick copy FAILED"
+          cp -r "$QT_QMLDIR/QtQml" "$APPDIR/usr/lib/qt6/qml/" 2>/dev/null || echo "  QtQml copy FAILED"
+          for mod in QtMultimedia QtWebChannel QtWebSockets QtSql QtNetwork QtDBus; do
+            if grep -q "^$mod" "$IMPORTS" 2>/dev/null && [ -d "$QT_QMLDIR/$mod" ]; then
+              cp -r "$QT_QMLDIR/$mod" "$APPDIR/usr/lib/qt6/qml/"; echo "  copied $mod"
+            fi
+          done
+          echo "== plugin closure: ldd on every bundled qt6 .so, copy missing system libs =="
+          # QML/platform plugins are dlopened at runtime; their deps (e.g.
+          # libQt6MultimediaQuick for QtMultimedia's plugin) are NOT in the
+          # binary's ldd closure. Without this step the app fails at main.qml
+          # load even though the bridge itself loads fine.
+          find "$APPDIR/usr/lib/qt6" -name '*.so*' -type f | sort -u | while read -r plug; do
+            ldd "$plug" 2>/dev/null | awk '/=>/ {print $3}' | grep -E '^/(usr/)?lib/x86_64-linux-gnu' | sort -u | while read -r lib; do
+              base=$(basename "$lib")
+              if [ ! -e "$APPDIR/usr/lib/$base" ]; then
+                case "$base" in
+                  libc.so*|libm.so*|libstdc++.so*|libgcc_s.so*|libpthread.so*|libdl.so*|librt.so*|ld-linux*|libresolv.so*|libnss_*) ;;
+                  *) echo "  copy plugin-dep: $base (for $(basename "$plug"))"; cp -L "$lib" "$APPDIR/usr/lib/" ;;
+                esac
+              fi
+            done
+          done
+          echo "  (plugin closure check, HARD FAIL on missing deps)"
+          MISS=0
+          for so in $(find "$APPDIR/usr/lib/qt6" -name '*.so*' -type f); do
+            if LD_LIBRARY_PATH="$APPDIR/usr/lib" ldd "$so" 2>/dev/null | grep -q 'not found'; then echo "  STILL MISSING dep for $so:"; LD_LIBRARY_PATH="$APPDIR/usr/lib" ldd "$so" 2>/dev/null | grep 'not found'; MISS=1; fi
+          done
+          [ "$MISS" -eq 0 ] || { echo "PLUGIN CLOSURE INCOMPLETE"; exit 1; }
+          echo "  plugin closure clean"
+          echo "== icon =="
+          ICON_SRC=$(find "$UI" -maxdepth 2 \( -iname '*icon*.png' -o -iname '*logo*.png' -o -iname 'lighttouch*.png' \) -not -path '*/build/*' 2>/dev/null | head -1 || true)
+          if [ -n "${ICON_SRC:-}" ]; then
+            echo "  using real icon: $ICON_SRC"; cp "$ICON_SRC" "$APPDIR/lighttouch.png"
+          else
+            echo "  no icon found in ui/ — generating placeholder PNG (labeled placeholder)"
+            python3 - "$APPDIR/lighttouch.png" << 'PYEOF'
+          import struct, sys, zlib
+          def chunk(t, data):
+              c = struct.pack('>I', len(data)) + t + data
+              return c + struct.pack('>I', zlib.crc32(t + data) & 0xffffffff)
+          w = h = 64
+          raw = b''.join(b'\x00' + b'\x20\x80\xc0' * w for _ in range(h))
+          png = b'\x89PNG\r\n\x1a\n'
+          png += chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0))
+          png += chunk(b'IDAT', zlib.compress(raw))
+          png += chunk(b'IEND', b'')
+          open(sys.argv[1], 'wb').write(png)
+          print("  placeholder PNG written")
+          PYEOF
+          fi
+          ln -sf lighttouch.png "$APPDIR/.DirIcon"
+          echo "== .desktop =="
+          cat > "$APPDIR/lighttouch.desktop" << 'DESKEOF'
+          [Desktop Entry]
+          Name=LightTouch
+          Comment=LightTouchMac cross-platform port (Linux build)
+          Exec=lighttouch
+          Icon=lighttouch
+          Type=Application
+          Categories=Utility;
+          Terminal=false
+          DESKEOF
+          echo "== AppRun =="
+          cat > "$APPDIR/AppRun" << 'RUNEOF'
+          #!/bin/bash
+          HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+          export LD_LIBRARY_PATH="$HERE/usr/lib:${LD_LIBRARY_PATH:-}"
+          export QT_PLUGIN_PATH="$HERE/usr/lib/qt6"
+          export QML2_IMPORT_PATH="$HERE/usr/lib/qt6/qml"
+          export QML_IMPORT_PATH="$HERE/usr/lib/qt6/qml"
+          exec "$HERE/usr/bin/lighttouch" "$@"
+          RUNEOF
+          chmod +x "$APPDIR/AppRun"
+          echo "== AppDir tree (top levels + sizes) =="
+          du -sh "$APPDIR"
+          echo "== lib count in usr/lib: $(ls "$APPDIR/usr/lib"/*.so* 2>/dev/null | wc -l)"
+          echo "ASSEMBLE-DONE"
+
+      - name: Build AppImage
+        run: |
+          curl -fsSL -o appimagetool.AppImage \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool.AppImage
+          # No FUSE on the runner: --appimage-extract-and-run is the
+          # documented no-FUSE path (same as the local attempt #1).
+          ARCH=x86_64 ./appimagetool.AppImage --appimage-extract-and-run \
+            LightTouch.AppDir LightTouch-x86_64.AppImage
+          ls -la LightTouch-x86_64.AppImage
+
+      - name: Verify AppImage (extracted offscreen launch)
+        run: |
+          # Verdict rule (same as attempt #1): exit 124 = still running at
+          # 20s = pass; "Bridge ready" present + no "Cannot start" = pass.
+          ./appimagetool.AppImage --appimage-extract-and-run --appimage-extract \
+            LightTouch-x86_64.AppImage
+          set +e
+          QT_QPA_PLATFORM=offscreen timeout 20 ./squashfs-root/AppRun > appimage-launch.log 2>&1
+          rc=$?
+          set -e
+          cat appimage-launch.log
+          echo "AppImage launch exit: $rc (124 = alive at 20s)"
+          [ "$rc" -eq 124 ] || { echo "APPIMAGE LAUNCH FAILED (expected 124)"; exit 1; }
+          grep -q "Bridge ready" appimage-launch.log || { echo "APPIMAGE: no Bridge ready in log"; exit 1; }
+          grep -q "Cannot start" appimage-launch.log && { echo "APPIMAGE: bridge failed to start"; exit 1; } || true
+          echo "APPIMAGE-VERIFY-OK"
+
+      - name: Build .deb
+        run: |
+          set -eu
+          APPDIR="$GITHUB_WORKSPACE/LightTouch.AppDir"
+          DEBROOT="$GITHUB_WORKSPACE/lighttouch-deb"
+          DEB="$GITHUB_WORKSPACE/lighttouch_0.1.0_amd64.deb"
+          rm -rf "$DEBROOT"
+          mkdir -p "$DEBROOT/opt/lighttouch" "$DEBROOT/usr/bin"
+          mkdir -p "$DEBROOT/usr/share/applications" "$DEBROOT/usr/share/icons/hicolor/64x64/apps"
+          mkdir -p "$DEBROOT/DEBIAN"
+          cp "$APPDIR/usr/bin/lighttouch" "$DEBROOT/opt/lighttouch/lighttouch"
+          cp -r "$APPDIR/usr/lib" "$DEBROOT/opt/lighttouch/lib"
+          cp "$APPDIR/lighttouch.png" "$DEBROOT/usr/share/icons/hicolor/64x64/apps/lighttouch.png"
+          cat > "$DEBROOT/usr/bin/lighttouch" << 'WRAPEOF'
+          #!/bin/bash
+          HERE=/opt/lighttouch
+          export LD_LIBRARY_PATH="$HERE/lib:${LD_LIBRARY_PATH:-}"
+          export QT_PLUGIN_PATH="$HERE/lib/qt6"
+          export QML2_IMPORT_PATH="$HERE/lib/qt6/qml"
+          export QML_IMPORT_PATH="$HERE/lib/qt6/qml"
+          exec "$HERE/lighttouch" "$@"
+          WRAPEOF
+          chmod 755 "$DEBROOT/usr/bin/lighttouch"
+          cat > "$DEBROOT/usr/share/applications/lighttouch.desktop" << 'DESKEOF'
+          [Desktop Entry]
+          Name=LightTouch
+          Comment=LightTouchMac cross-platform port (Linux build)
+          Exec=lighttouch
+          Icon=lighttouch
+          Type=Application
+          Categories=Utility;
+          Terminal=false
+          DESKEOF
+          cat > "$DEBROOT/DEBIAN/control" << 'CTRLEOF'
+          Package: lighttouch
+          Version: 0.1.0
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: LightTouchMac cross-platform port
+          Depends: libc6, libstdc++6, libgcc-s1
+          Description: LightTouchMac cross-platform port (Linux build)
+           Qt 6 UI shell for the LightTouchMac iOS emulator port, packaged with the
+           real Swift library libLTAppCore.so built from main. CI build;
+           qemu/firmware not bundled.
+          CTRLEOF
+          # Normalize perms: parent dirs carry setgid (2770), which dpkg-deb
+          # rejects for DEBIAN and which would ship odd modes otherwise.
+          find "$DEBROOT" -type d -exec chmod 755 {} +
+          find "$DEBROOT" -type f -exec chmod 644 {} +
+          chmod 755 "$DEBROOT/opt/lighttouch/lighttouch" "$DEBROOT/usr/bin/lighttouch"
+          dpkg-deb --root-owner-group --build "$DEBROOT" "$DEB"
+          echo "DEB-BUILD-DONE"
+          ls -la "$DEB"
+          dpkg-deb --info "$DEB"
+          echo "== contents count =="
+          dpkg-deb --contents "$DEB" | wc -l
+
+      - name: Verify .deb (extracted offscreen launch)
+        run: |
+          # Extract test (not a real install: the runner is ephemeral and
+          # extract + launch proves the same payload; the local attempt #1
+          # already proved a real dpkg -i install works).
+          rm -rf verify-deb
+          dpkg-deb -x lighttouch_0.1.0_amd64.deb verify-deb
+          ls -la verify-deb/opt/lighttouch/lib/libLTAppCore.so
+          set +e
+          QT_QPA_PLATFORM=offscreen \
+            LD_LIBRARY_PATH="$GITHUB_WORKSPACE/verify-deb/opt/lighttouch/lib" \
+            QT_PLUGIN_PATH="$GITHUB_WORKSPACE/verify-deb/opt/lighttouch/lib/qt6" \
+            QML2_IMPORT_PATH="$GITHUB_WORKSPACE/verify-deb/opt/lighttouch/lib/qt6/qml" \
+            QML_IMPORT_PATH="$GITHUB_WORKSPACE/verify-deb/opt/lighttouch/lib/qt6/qml" \
+            timeout 20 "$GITHUB_WORKSPACE/verify-deb/opt/lighttouch/lighttouch" > deb-launch.log 2>&1
+          rc=$?
+          set -e
+          cat deb-launch.log
+          echo "deb launch exit: $rc (124 = alive at 20s)"
+          [ "$rc" -eq 124 ] || { echo "DEB LAUNCH FAILED (expected 124)"; exit 1; }
+          grep -q "Bridge ready" deb-launch.log || { echo "DEB: no Bridge ready in log"; exit 1; }
+          grep -q "Cannot start" deb-launch.log && { echo "DEB: bridge failed to start"; exit 1; } || true
+          echo "DEB-VERIFY-OK"
+
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttouch-linux-x86_64
+          path: |
+            LightTouch-x86_64.AppImage
+            lighttouch_0.1.0_amd64.deb
