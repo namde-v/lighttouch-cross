@@ -231,8 +231,11 @@ jobs:
         run: |
           # Verdict rule (same as attempt #1): exit 124 = still running at
           # 20s = pass; "Bridge ready" present + no "Cannot start" = pass.
-          ./appimagetool.AppImage --appimage-extract-and-run --appimage-extract \
-            LightTouch-x86_64.AppImage
+          # Extract the TARGET AppImage with its own runtime flag:
+          # appimagetool rejects --appimage-extract (run 40332800849 failed
+          # on "Option parsing failed: Unknown option --appimage-extract").
+          # Extraction needs no FUSE.
+          ./LightTouch-x86_64.AppImage --appimage-extract
           set +e
           QT_QPA_PLATFORM=offscreen timeout 20 ./squashfs-root/AppRun > appimage-launch.log 2>&1
           rc=$?
