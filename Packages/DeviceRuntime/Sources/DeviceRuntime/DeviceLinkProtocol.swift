@@ -212,6 +212,7 @@ nonisolated public final class LinkChannel<
         setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &size, socklen_t(MemoryLayout<Int32>.size))
         setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, socklen_t(MemoryLayout<Int32>.size))
         #endif
+        diagLinkChan("setsockopt done")
         // macOS suppresses SIGPIPE per descriptor; Linux has no SO_NOSIGPIPE,
         // so writes below use MSG_NOSIGNAL instead (Windows has no SIGPIPE).
         #if canImport(Darwin)
@@ -219,6 +220,7 @@ nonisolated public final class LinkChannel<
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
         #endif
         source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
+        diagLinkChan("source created")
         source.setEventHandler { [unowned self] in
             var chunk = [UInt8](repeating: 0, count: 65536)
             #if os(Windows)
@@ -248,7 +250,9 @@ nonisolated public final class LinkChannel<
         // The fd is a link socket on every platform: closesocket on Windows
         // (WinSDK.close would leak it and never signal EOF to the peer).
         source.setCancelHandler { ltmCloseSocket(fd) }
+        diagLinkChan("cancel handler set")
         source.resume()
+        diagLinkChan("resumed")
     }
 
     private var onCloseHandler: ((Error?) -> Void)?
@@ -444,5 +448,14 @@ nonisolated public struct VirtualInputEvent: Codable, Sendable, Equatable {
             }
         }
         return !touch && !buttons.contains(true)
+    }
+}
+
+// DIAGNOSTIC (temporary, round 5): LinkChannel init stage markers. Same
+// channel as the other DIAG markers (surfaces in test.log on Windows CI).
+// Removed once the init step that kills the link test is found.
+private func diagLinkChan(_ message: String) {
+    if let data = ("DIAG-LINKCHAN \(message)\n").data(using: .utf8) {
+        FileHandle.standardError.write(data)
     }
 }
