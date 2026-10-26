@@ -62,7 +62,8 @@ jobs:
             qt6-base-dev qt6-base-dev-tools qt6-declarative-dev qt6-declarative-dev-tools \
             qt6-tools-dev qt6-tools-dev-tools \
             qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts \
-            qml6-module-qtqml qml6-module-qtqml-workerscript qml6-module-qtmultimedia
+            qml6-module-qtqml qml6-module-qtqml-workerscript qml6-module-qtmultimedia \
+            qml6-module-qtquick-templates
 
       - name: Install Swift
         run: |
@@ -97,7 +98,6 @@ jobs:
           QT_QMLDIR="$QT_LIBDIR/qt6/qml"
           QT_PLUGINDIR="$QT_LIBDIR/qt6/plugins"
           SWIFT_LIBDIR=/usr/lib/swift/linux
-          IMPORTS="$RUNNER_TEMP/qml-imports.txt"
           echo "== inputs =="
           ls -la "$BIN" "$CORE"
           echo "== real core .so deps =="
@@ -136,20 +136,14 @@ jobs:
           for p in platforms imageformats; do
             if [ -d "$QT_PLUGINDIR/$p" ]; then cp -r "$QT_PLUGINDIR/$p" "$APPDIR/usr/lib/qt6/"; echo "  copied $p"; fi
           done
-          echo "== QML modules (from imports in ui/qml; QtQuick tree + QtQml always) =="
+          echo "== QML modules: full qml-tree copy =="
           mkdir -p "$APPDIR/usr/lib/qt6/qml"
-          grep -rh '^import ' "$UI/qml" 2>/dev/null | awk '{print $2}' | sort -u | tee "$IMPORTS" || true
-          # Fail hard here: run 40342719668 shipped an empty qml/ dir because
-          # these copies silently failed (only -dev packages were installed),
-          # and the breakage only surfaced later at the verify step.
-          [ -d "$QT_QMLDIR/QtQuick" ] && [ -d "$QT_QMLDIR/QtQml" ] || { echo "QML SOURCE MISSING under $QT_QMLDIR (install qml6-module-* first)"; exit 1; }
-          cp -r "$QT_QMLDIR/QtQuick" "$APPDIR/usr/lib/qt6/qml/"
-          cp -r "$QT_QMLDIR/QtQml" "$APPDIR/usr/lib/qt6/qml/"
-          for mod in QtMultimedia QtWebChannel QtWebSockets QtSql QtNetwork QtDBus; do
-            if grep -q "^$mod" "$IMPORTS" 2>/dev/null && [ -d "$QT_QMLDIR/$mod" ]; then
-              cp -r "$QT_QMLDIR/$mod" "$APPDIR/usr/lib/qt6/qml/"; echo "  copied $mod"
-            fi
-          done
+          # Selective copy missed transitive deps twice (empty trees in
+          # 40342719668, Templates plugin in 40348044334): copy the whole
+          # installed qml tree instead of guessing which modules QML needs.
+          [ -d "$QT_QMLDIR" ] && [ -n "$(ls -A "$QT_QMLDIR")" ] || { echo "QML SOURCE MISSING under $QT_QMLDIR (install qml6-module-* first)"; exit 1; }
+          cp -r "$QT_QMLDIR/." "$APPDIR/usr/lib/qt6/qml/"
+          echo "  qml modules copied: $(ls "$APPDIR/usr/lib/qt6/qml" | tr '\n' ' ')"
           echo "== plugin closure: ldd on every bundled qt6 .so, copy missing system libs =="
           # QML/platform plugins are dlopened at runtime; their deps (e.g.
           # libQt6MultimediaQuick for QtMultimedia's plugin) are NOT in the
