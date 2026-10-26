@@ -295,6 +295,7 @@ nonisolated public final class DeviceLink: @unchecked Sendable {
         let connectTimeout = configuration.connectTimeout
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { ltmCloseSocket(appSocket); return }
+            diagLinkPath("recv start")
             do {
                 let hello = try DeviceRendezvous.receiveHello(
                     socket: appSocket,
@@ -302,8 +303,10 @@ nonisolated public final class DeviceLink: @unchecked Sendable {
                     pid: pid,
                     timeout: connectTimeout
                 )
+                diagLinkPath("recv ok")
                 self.queue.async { self.helloArrived(hello, socket: appSocket) }
             } catch {
+                diagLinkPath("recv err: \(error)")
                 ltmCloseSocket(appSocket)
                 self.queue.async { self.helloFailed(error, pid: pid) }
             }
@@ -341,6 +344,7 @@ nonisolated public final class DeviceLink: @unchecked Sendable {
             // @Sendable closure, which may not capture the var `code`
             // (Swift 6 error, caught by Windows CI on c44246d).
             let termination: DeviceTermination = ok ? .exited(Int32(bitPattern: code)) : .unknown
+            diagLinkPath("wait done: \(termination)")
             self.queue.async { self.finishTermination(termination) }
         }
         #else
@@ -359,6 +363,7 @@ nonisolated public final class DeviceLink: @unchecked Sendable {
     }
 
     private func helloArrived(_ hello: DeviceRendezvous.Hello, socket: Int32) {
+        diagLinkPath("helloArrived")
         guard lock.withLock({ startCompletion != nil }) else {
             // Start already finished another way (timeout, exit); the mapped
             // segments die with `hello`, but the socket still needs closing.
@@ -386,6 +391,7 @@ nonisolated public final class DeviceLink: @unchecked Sendable {
             }
         )
         lock.withLock { self.channel = channel }
+        diagLinkPath("channel created")
 
         request(
             .hello(protocolVersion: DeviceLinkWire.protocolVersion, board: configuration.board),
@@ -407,6 +413,7 @@ nonisolated public final class DeviceLink: @unchecked Sendable {
     }
 
     private func helloFailed(_ error: Error, pid: pid_t) {
+        diagLinkPath("helloFailed: \(error)")
         guard lock.withLock({ startCompletion != nil }) else { return }
         let description = (error as? DeviceRendezvousError)?.description ?? "\(error)"
         // Don't leave a hello-less helper running.
@@ -529,6 +536,7 @@ nonisolated public final class DeviceLink: @unchecked Sendable {
     /// zero the pid, drain last messages, invalidate, report. Runs on `queue`
     /// (drainIncoming requires it).
     private func finishTermination(_ termination: DeviceTermination) {
+        diagLinkPath("finishTermination: \(termination)")
         // Zero the pid now: a late terminate() or kill() must not signal a reused one.
         lock.withLock { _pid = 0 }
         // Its last messages (qemuExited) may still be unread: deliver them before the close.
@@ -548,5 +556,15 @@ nonisolated private func withCStrings<R>(
     return pointers.withUnsafeBufferPointer {
         guard let base = $0.baseAddress else { preconditionFailure("The array holds at least its nil terminator") }
         return body(base)
+    }
+}
+
+// DIAGNOSTIC (temporary, round 4): link-path stage markers. Same channel as
+// the test DIAG markers: FileHandle.standardError writes surface in
+// test.log on Windows CI (proven in round 1). Removed once the link-path
+// death is found.
+private func diagLinkPath(_ message: String) {
+    if let data = ("DIAG-LINKPATH \(message)\n").data(using: .utf8) {
+        FileHandle.standardError.write(data)
     }
 }
