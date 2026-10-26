@@ -330,7 +330,10 @@ nonisolated public final class DeviceLink: @unchecked Sendable {
         // in which case GetExitCodeProcess failing reports .unknown below.
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
-            guard let process = OpenProcess(DWORD(SYNCHRONIZE), false, DWORD(pid)) else {
+            // GetExitCodeProcess needs query access, not just synchronize:
+            // with SYNCHRONIZE alone it fails and termination reports
+            // .unknown (caught by the link test: expected .exited(0)).
+            guard let process = OpenProcess(DWORD(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION), false, DWORD(pid)) else {
                 // Already gone (its process object vanished with no handle
                 // held): report unknown, same as a lost reap.
                 self.queue.async { self.finishTermination(.unknown) }
