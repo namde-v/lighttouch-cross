@@ -46,10 +46,17 @@ final class EventPump: @unchecked Sendable {
 
     // MARK: - Posting
 
-    /// Posts one event. Assigns the per-kind monotonic `seq`, invokes the
-    /// callback synchronously from the caller's thread, then frees the
-    /// event's strings. When no callback is registered the event is dropped
-    /// and the §2.4 diagnostics counter is bumped.
+    /// Posts one event. Assigns the per-kind monotonic `seq` and invokes the
+    /// callback synchronously from the caller's thread. OWNERSHIP: the
+    /// callback owns the event's strings and must release them with
+    /// lt_free_event_strings() before returning (lt_bridge.h §4: the
+    /// trampoline deep-copies including strings, then releases the
+    /// original). post() does NOT free after the callback returns —
+    /// freeing here as well double-frees (Linux package abort, run
+    /// 40392845708: glibc double-free in ltFreeEventStrings called from
+    /// post, after the trampoline already freed via lt_free_event_strings).
+    /// When no callback is registered the event is dropped and the §2.4
+    /// diagnostics counter is bumped.
     func post(kind: Int32, device: lt_device_t = 0, build: (inout LTEvent) -> Void = { _ in }) {
         let (cb, c): (lt_event_fn?, UnsafeMutableRawPointer?) = lock.withLock { (callback, ctx) }
         guard let cb else {
@@ -66,8 +73,10 @@ final class EventPump: @unchecked Sendable {
         }
         build(&event)
         // The callback may override seq (e.g. frameAvailable carries frameSeq).
+        // NOTE: do NOT free the event's strings here — the callback owns
+        // them (lt_bridge.h §4) and releases them via lt_free_event_strings()
+        // before returning. Freeing here as well double-frees.
         withUnsafePointer(to: &event) { cb($0, c) }
-        ltFreeEventStrings(&event)
     }
 
     // MARK: - Coalesced posts (ui/ABI.md §2.3)
