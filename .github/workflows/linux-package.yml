@@ -97,7 +97,6 @@ jobs:
           QT_LIBDIR=/usr/lib/x86_64-linux-gnu
           QT_QMLDIR="$QT_LIBDIR/qt6/qml"
           QT_PLUGINDIR="$QT_LIBDIR/qt6/plugins"
-          SWIFT_LIBDIR=/usr/lib/swift/linux
           echo "== inputs =="
           ls -la "$BIN" "$CORE"
           echo "== real core .so deps =="
@@ -123,14 +122,37 @@ jobs:
           # Copying only DIRECT NEEDEDs is WRONG: transitive deps like
           # libswift_Builtin_float.so (needed by libswiftCore, not by the
           # core directly) break dlopen. ldd is recursive: use its closure.
-          ldd "$CORE" | awk '/=>/ {print $3}' | grep "^$SWIFT_LIBDIR" | sort -u | while read -r lib; do
-            echo "  copy swift: $(basename "$lib")"; cp -L "$lib" "$APPDIR/usr/lib/"
+          # Do NOT grep for a hardcoded Swift lib dir: ldd resolves Swift
+          # libs via the core's RUNPATH (preinstalled runner Swift at
+          # /usr/share/swift/usr/lib/swift/linux), NOT via the
+          # workflow-installed /usr/lib/swift/linux — the old grep matched
+          # nothing and shipped artifact 12670978555 with ZERO Swift libs,
+          # which failed clean-room launch (libswiftCore.so not found).
+          # Copy every ldd-resolved dep of the core except base C/C++
+          # runtime (same exclusion list as the Qt step). This covers
+          # Swift, Foundation, dispatch, BlocksRuntime, and any other
+          # non-base dep (e.g. ICU used by FoundationInternationalization).
+          ldd "$CORE" | awk '/=>/ {print $3}' | sort -u | while read -r lib; do
+            base=$(basename "$lib")
+            case "$base" in
+              libc.so*|libm.so*|libstdc++.so*|libgcc_s.so*|libpthread.so*|libdl.so*|librt.so*|ld-linux*|libresolv.so*|libnss_*)
+                echo "  skip (base system): $base" ;;
+              *) echo "  copy core dep: $base"; cp -L "$lib" "$APPDIR/usr/lib/" ;;
+            esac
           done
-          echo "  (closure check, HARD FAIL on missing deps)"
-          if LD_LIBRARY_PATH="$APPDIR/usr/lib" ldd "$APPDIR/usr/lib/libLTAppCore.so" 2>/dev/null | grep -q 'not found'; then
-            echo "  MISSING Swift deps in bundle:"; LD_LIBRARY_PATH="$APPDIR/usr/lib" ldd "$APPDIR/usr/lib/libLTAppCore.so" | grep 'not found'; exit 1
-          fi
-          echo "  no missing swift deps reported"
+          echo "  (closure check, HARD FAIL on any Swift/Foundation dep missing from bundle)"
+          # NOTE: an ldd 'not found' check here is VACUOUS on the build
+          # runner — system Swift resolves via RUNPATH even when the bundle
+          # lacks the libs. Assert physical presence in the bundle instead.
+          MISS=0
+          for dep in $(ldd "$CORE" | awk '/=>/ {print $1}' | sort -u); do
+            case "$dep" in
+              libswift*|libFoundation*|libdispatch*|libBlocksRuntime*)
+                [ -e "$APPDIR/usr/lib/$dep" ] || { echo "  MISSING in bundle: $dep"; MISS=1; } ;;
+            esac
+          done
+          [ "$MISS" -eq 0 ] || { echo "SWIFT CLOSURE INCOMPLETE"; exit 1; }
+          echo "  swift closure clean: $(ls "$APPDIR/usr/lib"/libswift* "$APPDIR/usr/lib"/libFoundation* "$APPDIR/usr/lib"/libdispatch* "$APPDIR/usr/lib"/libBlocksRuntime* 2>/dev/null | wc -l) swift/foundation/dispatch libs bundled"
           echo "== Qt plugins (platforms + imageformats) =="
           mkdir -p "$APPDIR/usr/lib/qt6"
           for p in platforms imageformats; do
