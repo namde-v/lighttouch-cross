@@ -112,11 +112,11 @@ jobs:
         run: |
           # Explicit id (dispatch only): validate it is a windows-ci run.
           # Empty or 'latest' (push runs carry no inputs): pick the newest
-          # COMPLETED windows-ci run on main that uploaded ALL SEVEN
+          # COMPLETED windows-ci run on main that uploaded ALL EIGHT
           # swift-<pkg>-windows-x86_64 build artifacts. Test failures do
           # NOT disqualify a run — build artifacts upload with if: always()
           # — but a run whose builds failed (missing artifacts) is skipped.
-          # WHY ALL SEVEN + COMPLETED (post-merge run 40197207503 failed):
+          # WHY ALL EIGHT + COMPLETED (post-merge run 40197207503 failed):
           # the old filter `select(.conclusion != null)` does NOT exclude
           # in-progress runs — gh emits an EMPTY-STRING conclusion, not
           # JSON null, for unfinished runs (log: "Skipping run 40197207466
@@ -124,7 +124,7 @@ jobs:
           # one build artifact" bar let the still-running run 40196082917
           # (5/7 artifacts uploaded, LTC + FirmwareKit jobs unfinished)
           # through. Packaging from a partial run then failed at download.
-          # --status completed is server-side; the all-seven check is the
+          # --status completed is server-side; the all-eight check is the
           # belt-and-braces guard against partial-artifact runs.
           $inputId = "$env:INPUT_RUN_ID".Trim()
           if ($inputId -and $inputId -ne 'latest') {
@@ -141,7 +141,7 @@ jobs:
           } else {
             $lines = @(gh run list --workflow windows-ci.yml --branch main --status completed --limit 20 --json databaseId,conclusion,headSha,headBranch --jq '.[] | "\(.databaseId) \(.headSha) \(.conclusion) \(.headBranch)"')
             $id = $null; $headSha = $null; $headBranch = $null
-            $pkgs = @('HostRuntime','DeviceServices','ReleaseChecks','BuildTools','FirmwareKit','DeviceRuntime','LightTouchCore')
+            $pkgs = @('HostRuntime','DeviceServices','ReleaseChecks','BuildTools','FirmwareKit','DeviceRuntime','LightTouchCore','LTAppCore')
             foreach ($line in $lines) {
               $parts = $line -split '\s+'
               $candId = $parts[0]; $candSha = $parts[1]; $candConcl = $parts[2]
@@ -212,9 +212,9 @@ jobs:
           # DLLs were staged at all. NOTE: the trailing `$LASTEXITCODE = 0`
           # is load-bearing, not cosmetic — pwsh propagates the final
           # native exit code, so without it a failed LAST download
-          # (LightTouchCore, last in the list) failed the whole step in
+          # (LightTouchCore, then last in the list) failed the whole step in
           # post-merge run 40197207503 despite the warn-only intent.
-          foreach ($pkg in @('HostRuntime','DeviceServices','ReleaseChecks','BuildTools','FirmwareKit','DeviceRuntime','LightTouchCore')) {
+          foreach ($pkg in @('HostRuntime','DeviceServices','ReleaseChecks','BuildTools','FirmwareKit','DeviceRuntime','LightTouchCore','LTAppCore')) {
             gh run download ${{ steps.run-id.outputs.run_id }} --name "swift-$pkg-windows-x86_64" --dir "swift-artifacts/swift-$pkg-windows-x86_64"
             if ($LASTEXITCODE -eq 0) { Write-Host "artifact: swift-$pkg-windows-x86_64" } else { Write-Warning "build artifact missing for $pkg" }
           }
@@ -351,7 +351,7 @@ jobs:
             ''
             'Swift package DLLs by artifact:'
           )
-          foreach ($pkg in @('HostRuntime','DeviceServices','ReleaseChecks','BuildTools','FirmwareKit','DeviceRuntime','LightTouchCore')) {
+          foreach ($pkg in @('HostRuntime','DeviceServices','ReleaseChecks','BuildTools','FirmwareKit','DeviceRuntime','LightTouchCore','LTAppCore')) {
             $dir = "swift-artifacts/swift-$pkg-windows-x86_64"
             if (Test-Path $dir) {
               $n = @(Get-ChildItem $dir -Recurse -Filter *.dll).Count
