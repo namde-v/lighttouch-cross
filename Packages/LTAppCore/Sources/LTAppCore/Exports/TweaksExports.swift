@@ -287,10 +287,20 @@ public func lt_storage_set(
                 return
             }
             do {
+                // On Windows the FirmwareCommand inits are unavailable (Swift 6.2.4
+                // SIL crash on @Option/@Flag setters); call sites pass prebuilt
+                // arguments instead — precedent: FirmwareTool admitBoot/trustAnchor.
+                #if os(Windows)
+                _ = try await FirmwareTool.run(
+                    FirmwareCommand.CachePrune.arguments(root: IPSWStore.cachesDirectory.appendingPathComponent("Decrypted", isDirectory: true)),
+                    executable: executable
+                )
+                #else
                 _ = try await FirmwareTool.run(
                     FirmwareCommand.CachePrune(root: IPSWStore.cachesDirectory.appendingPathComponent("Decrypted", isDirectory: true)),
                     executable: executable
                 )
+                #endif
                 logEvent("storage: cleared unused decrypt cache")
             } catch {
                 postToast(title: "Couldn’t clear caches", body: error.localizedDescription, category: "storage")
