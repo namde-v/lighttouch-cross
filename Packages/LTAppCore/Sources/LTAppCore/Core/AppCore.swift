@@ -117,7 +117,7 @@ final class AppCore {
     /// session without a @MainActor hop — off-actor the session is only ever
     /// touched through its thread-safe injection entry points.
     private let sessionsLock = NSLock()
-    nonisolated(unsafe) var sessions: [UUID: DeviceSession] = [:]
+    nonisolated(unsafe) var sessions: [Foundation.UUID: DeviceSession] = [:]
 
     /// All sessions (a copy, for @MainActor iteration). Lock-guarded, so
     /// nonisolated: log-source enumeration reads it off-actor.
@@ -126,7 +126,7 @@ final class AppCore {
     }
 
     /// Nonisolated session lookup for the input fast path (ui/ABI.md §4).
-    nonisolated func fastSession(for uuid: UUID) -> DeviceSession? {
+    nonisolated func fastSession(for uuid: Foundation.UUID) -> DeviceSession? {
         sessionsLock.withLock { sessions[uuid] }
     }
 
@@ -164,7 +164,13 @@ final class AppCore {
         // LTM_STATE_DIR is the port's designed override (Bundled.layout): the
         // app log and friends resolve into the Qt-owned state dir. Set before
         // any core code reads Bundled (the first logEvent below).
+        // setenv is POSIX-only; on Windows the CRT _putenv_s is the equivalent
+        // (precedent: FirmwareKit FitCheckTests setenv shim).
+        #if os(Windows)
+        stateDir.path.withCString { ptr in _ = _putenv_s("LTM_STATE_DIR", ptr) }
+        #else
         stateDir.path.withCString { ptr in _ = setenv("LTM_STATE_DIR", ptr, 1) }
+        #endif
         let directories = LTAppDirectories(
             stateDir: stateDir,
             logDir: logDir,
@@ -224,12 +230,12 @@ final class AppCore {
 
     /// The handle for a library device, or nil when unknown. Nonisolated: the
     /// handle registry is thread-safe; background witnesses resolve handles.
-    nonisolated func handle(for uuid: UUID) -> lt_device_t? {
+    nonisolated func handle(for uuid: Foundation.UUID) -> lt_device_t? {
         HandleRegistry.shared.handle(for: uuid)
     }
 
     /// The session for a device, creating it on first use.
-    func session(for uuid: UUID) -> DeviceSession? {
+    func session(for uuid: Foundation.UUID) -> DeviceSession? {
         if let existing = sessionsLock.withLock({ sessions[uuid] }) { return existing }
         guard let instance = library.instance(id: uuid),
             let profile = instance.profile
@@ -246,7 +252,7 @@ final class AppCore {
     }
 
     /// Drops a session (device deleted). The session releases its resources.
-    func dropSession(for uuid: UUID) {
+    func dropSession(for uuid: Foundation.UUID) {
         sessionsLock.withLock {
             sessions[uuid]?.release()
             sessions.removeValue(forKey: uuid)

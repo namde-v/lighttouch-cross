@@ -190,6 +190,6 @@ func ltFreeEventStrings(_ event: inout LTEvent) {
 }
 
 /// Resolves a device handle to its UUID (nil: unknown handle).
-func ltResolveDevice(_ device: lt_device_t) -> UUID? {
+func ltResolveDevice(_ device: lt_device_t) -> Foundation.UUID? {
     HandleRegistry.shared.uuid(for: device)
 }
