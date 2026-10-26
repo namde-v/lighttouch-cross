@@ -288,7 +288,7 @@ public func lt_storage_set(
             }
             do {
                 _ = try await FirmwareTool.run(
-                    FirmwareCommand.CachePrune(root: IPSWStore.cachesDirectory.appendingPathComponent("Decrypted")),
+                    FirmwareCommand.CachePrune(root: IPSWStore.cachesDirectory.appendingPathComponent("Decrypted", isDirectory: true)),
                     executable: executable
                 )
                 logEvent("storage: cleared unused decrypt cache")
