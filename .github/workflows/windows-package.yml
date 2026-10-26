@@ -329,6 +329,18 @@ jobs:
           if (-not (Test-Path LightTouch/platforms/qwindows.dll)) { Write-Error 'platforms/qwindows.dll missing after windeployqt'; exit 1 }
           $qtDlls = @(Get-ChildItem LightTouch -Filter Qt6*.dll).Count
           Write-Host "Qt runtime staged: $qtDlls Qt6 DLLs + plugins (platforms/qwindows.dll present)"
+          # windeployqt ships only qwindows.dll into platforms/; the
+          # headless launch (smoke test) needs qoffscreen.dll too, and
+          # qminimal.dll is the fallback platform. Copy both from the
+          # Qt install when present (warn, don't fail, if absent — the
+          # smoke workflow's preflight is where their absence fails).
+          $qtDir = (Get-Item $windeployqt).Directory.Parent.FullName
+          $platSrc = Join-Path $qtDir 'plugins\platforms'
+          foreach ($plug in @('qoffscreen.dll', 'qminimal.dll')) {
+            $src = Join-Path $platSrc $plug
+            if (Test-Path $src) { Copy-Item $src LightTouch/platforms/ -Force; Write-Host "Staged extra platform plugin: $plug" }
+            else { Write-Warning "Platform plugin not in Qt install: $src" }
+          }
 
       - name: Create portable ZIP
         run: |

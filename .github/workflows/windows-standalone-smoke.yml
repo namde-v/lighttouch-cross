@@ -72,6 +72,7 @@ jobs:
           if (-not (Test-Path extracted/LightTouch/LightTouch.exe)) { Write-Error 'LightTouch.exe missing from ZIP'; exit 1 }
           if (-not (Test-Path extracted/LightTouch/Qt6Core.dll)) { Write-Error 'Qt6Core.dll missing from ZIP'; exit 1 }
           if (-not (Test-Path extracted/LightTouch/platforms/qwindows.dll)) { Write-Error 'platforms/qwindows.dll missing from ZIP'; exit 1 }
+          if (-not (Test-Path extracted/LightTouch/platforms/qoffscreen.dll)) { Write-Error 'platforms/qoffscreen.dll missing from ZIP (headless launch needs it; Gap 3 stages it from the Qt install)'; exit 1 }
           Write-Host '--- platforms/ in ZIP ---'
           Get-ChildItem extracted/LightTouch/platforms | ForEach-Object { Write-Host "  $($_.Name)" }
           Write-Host "--- Qt6 DLLs: $((Get-ChildItem extracted/LightTouch -Filter Qt6*.dll).Count) ---"
