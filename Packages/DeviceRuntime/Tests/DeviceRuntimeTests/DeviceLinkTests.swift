@@ -55,7 +55,7 @@ private func diagLink(_ message: String) {
     // to one suite. If transport tests pass alone here, the link path is
     // implicated; if they still die, the transport/peer path is. Revert
     // once the culprit suite is known.
-    @Test(.disabled) func linkStartWithNonJSONPeerFailsCleanlyAndReportsTermination() throws {
+    @Test(.disabled()) func linkStartWithNonJSONPeerFailsCleanlyAndReportsTermination() throws {
         diagLink("link test started")
         try #require(
             FileManager.default.isExecutableFile(atPath: peer.path),
