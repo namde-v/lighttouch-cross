@@ -112,11 +112,11 @@ jobs:
         run: |
           # Explicit id (dispatch only): validate it is a windows-ci run.
           # Empty or 'latest' (push runs carry no inputs): pick the newest
-          # COMPLETED windows-ci run on main that uploaded ALL SEVEN
+          # COMPLETED windows-ci run on main that uploaded ALL EIGHT
           # swift-<pkg>-windows-x86_64 build artifacts. Test failures do
           # NOT disqualify a run — build artifacts upload with if: always()
           # — but a run whose builds failed (missing artifacts) is skipped.
-          # WHY ALL SEVEN + COMPLETED (post-merge run 40197207503 failed):
+          # WHY ALL EIGHT + COMPLETED (post-merge run 40197207503 failed):
           # the old filter `select(.conclusion != null)` does NOT exclude
           # in-progress runs — gh emits an EMPTY-STRING conclusion, not
           # JSON null, for unfinished runs (log: "Skipping run 40197207466
@@ -124,7 +124,7 @@ jobs:
           # one build artifact" bar let the still-running run 40196082917
           # (5/7 artifacts uploaded, LTC + FirmwareKit jobs unfinished)
           # through. Packaging from a partial run then failed at download.
-          # --status completed is server-side; the all-seven check is the
+          # --status completed is server-side; the all-eight check is the
           # belt-and-braces guard against partial-artifact runs.
           $inputId = "$env:INPUT_RUN_ID".Trim()
           if ($inputId -and $inputId -ne 'latest') {
@@ -141,7 +141,7 @@ jobs:
           } else {
             $lines = @(gh run list --workflow windows-ci.yml --branch main --status completed --limit 20 --json databaseId,conclusion,headSha,headBranch --jq '.[] | "\(.databaseId) \(.headSha) \(.conclusion) \(.headBranch)"')
             $id = $null; $headSha = $null; $headBranch = $null
-            $pkgs = @('HostRuntime','DeviceServices','ReleaseChecks','BuildTools','FirmwareKit','DeviceRuntime','LightTouchCore')
+            $pkgs = @('HostRuntime','DeviceServices','ReleaseChecks','BuildTools','FirmwareKit','DeviceRuntime','LightTouchCore','LTAppCore')
             foreach ($line in $lines) {
               $parts = $line -split '\s+'
               $candId = $parts[0]; $candSha = $parts[1]; $candConcl = $parts[2]
@@ -212,9 +212,9 @@ jobs:
           # DLLs were staged at all. NOTE: the trailing `$LASTEXITCODE = 0`
           # is load-bearing, not cosmetic — pwsh propagates the final
           # native exit code, so without it a failed LAST download
-          # (LightTouchCore, last in the list) failed the whole step in
+          # (LightTouchCore, then last in the list) failed the whole step in
           # post-merge run 40197207503 despite the warn-only intent.
-          foreach ($pkg in @('HostRuntime','DeviceServices','ReleaseChecks','BuildTools','FirmwareKit','DeviceRuntime','LightTouchCore')) {
+          foreach ($pkg in @('HostRuntime','DeviceServices','ReleaseChecks','BuildTools','FirmwareKit','DeviceRuntime','LightTouchCore','LTAppCore')) {
             gh run download ${{ steps.run-id.outputs.run_id }} --name "swift-$pkg-windows-x86_64" --dir "swift-artifacts/swift-$pkg-windows-x86_64"
             if ($LASTEXITCODE -eq 0) { Write-Host "artifact: swift-$pkg-windows-x86_64" } else { Write-Warning "build artifact missing for $pkg" }
           }
@@ -284,7 +284,10 @@ jobs:
           if (Test-Path $runtimesDir) {
             Get-ChildItem $runtimesDir -Directory -ErrorAction SilentlyContinue | ForEach-Object { $candidates += (Join-Path $_.FullName 'usr\bin') }
           }
-          foreach ($dll in 'swiftCore.dll', 'swift_Concurrency.dll', 'Foundation.dll', 'dispatch.dll', 'BlocksRuntime.dll') {
+          # LTAppCore.dll load-time imports (objdump, no delay-load table): these 10 Swift runtime DLLs must ship
+          # or the bridge dlopen fails -> real-core exit 1. dispatch.dll (C library) does NOT substitute for
+          # swiftDispatch.dll (Swift overlay) - the Windows loader matches exact file names.
+          foreach ($dll in 'swiftCore.dll', 'swift_Concurrency.dll', 'Foundation.dll', 'dispatch.dll', 'BlocksRuntime.dll', 'FoundationEssentials.dll', 'FoundationInternationalization.dll', 'FoundationNetworking.dll', 'swiftCRT.dll', 'swiftDispatch.dll', 'swiftObservation.dll', 'swiftWinSDK.dll', 'swift_StringProcessing.dll', '_FoundationICU.dll', 'swift_RegexParser.dll') {
             $found = $false
             $w = where.exe $dll 2>$null
             if ($LASTEXITCODE -eq 0 -and $w) {
@@ -299,6 +302,9 @@ jobs:
             if (-not $found) { Write-Warning "Swift runtime DLL not found: $dll (searched PATH + $($candidates -join ', '))" }
           }
           if (-not (Test-Path (Join-Path $layout 'swiftCore.dll'))) { Write-Error 'swiftCore.dll missing after search — refusing to ship a ZIP that cannot run'; exit 1 }
+          foreach ($dll in 'FoundationEssentials.dll', 'FoundationInternationalization.dll', 'FoundationNetworking.dll', 'swiftCRT.dll', 'swiftDispatch.dll', 'swiftObservation.dll', 'swiftWinSDK.dll', 'swift_StringProcessing.dll', '_FoundationICU.dll', 'swift_RegexParser.dll') {
+            if (-not (Test-Path (Join-Path $layout $dll))) { Write-Error "LTAppCore runtime DLL missing after search: $dll — refusing to ship a ZIP whose real core cannot load"; exit 1 }
+          }
 
           Write-Host '--- layout contents ---'
           Get-ChildItem $layout | Format-Table Name, Length -AutoSize | Out-String | Write-Host
@@ -351,7 +357,7 @@ jobs:
             ''
             'Swift package DLLs by artifact:'
           )
-          foreach ($pkg in @('HostRuntime','DeviceServices','ReleaseChecks','BuildTools','FirmwareKit','DeviceRuntime','LightTouchCore')) {
+          foreach ($pkg in @('HostRuntime','DeviceServices','ReleaseChecks','BuildTools','FirmwareKit','DeviceRuntime','LightTouchCore','LTAppCore')) {
             $dir = "swift-artifacts/swift-$pkg-windows-x86_64"
             if (Test-Path $dir) {
               $n = @(Get-ChildItem $dir -Recurse -Filter *.dll).Count
@@ -365,7 +371,7 @@ jobs:
           $lines += "LightTouch.exe (Qt UI): $(if (Test-Path LightTouch/LightTouch.exe) { 'present' } else { 'MISSING — no windows-qt-ci run with the Qt artifact for this branch (Gap 2)' })"
           $lines += "Qt runtime (Gap 3): $(@(Get-ChildItem LightTouch -Filter Qt6*.dll).Count) Qt6 DLLs; platforms/qwindows.dll: $(if (Test-Path LightTouch/platforms/qwindows.dll) { 'present' } else { 'MISSING' })"
           $lines += 'Swift runtime DLLs:'
-          foreach ($dll in 'swiftCore.dll', 'swift_Concurrency.dll', 'Foundation.dll', 'dispatch.dll', 'BlocksRuntime.dll') {
+          foreach ($dll in 'swiftCore.dll', 'swift_Concurrency.dll', 'Foundation.dll', 'dispatch.dll', 'BlocksRuntime.dll', 'FoundationEssentials.dll', 'FoundationInternationalization.dll', 'FoundationNetworking.dll', 'swiftCRT.dll', 'swiftDispatch.dll', 'swiftObservation.dll', 'swiftWinSDK.dll', 'swift_StringProcessing.dll', '_FoundationICU.dll', 'swift_RegexParser.dll') {
             $lines += "  $dll : $(if (Test-Path LightTouch/$dll) { 'present' } else { 'MISSING' })"
           }
           $lines += "Total DLLs in layout: $(@(Get-ChildItem LightTouch -Filter *.dll).Count)"
