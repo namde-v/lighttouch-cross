@@ -17,14 +17,7 @@ import DeviceRuntime
 // module would fail to compile).
 private final class DeviceLinkTestAnchor {}
 
-// DIAGNOSTIC (temporary): same stderr-timeline rationale as diagTransport.
-private func diagLink(_ message: String) {
-    if let data = ("DIAG-LINK \(message)\n").data(using: .utf8) {
-        FileHandle.standardError.write(data)
-    }
-}
-
-@Suite(.serialized) struct DeviceLinkTests {
+struct DeviceLinkTests {
     /// RendezvousTestPeer, built beside this test bundle (same layout as
     /// DeviceTransportTests.peer).
     #if os(Windows)
@@ -48,19 +41,11 @@ private func diagLink(_ message: String) {
     /// start() must: complete with .failure, never hang, and report the
     /// peer's exit (0) via onTerminated. The link's status block must be set
     /// (the hello was mapped) even though the link then failed.
-    // DIAGNOSTIC round 3 (temporary): mirror of round 2. Round 2 proved
-    // transport tests pass alone on Windows (4/4 green, link skipped), so
-    // the death REQUIRES the link test's presence. This round runs the link
-    // test ALONE: if it dies alone, the link path itself is broken; if it
-    // passes alone, the death was the parallel-suite interaction. Revert
-    // once determined.
     @Test func linkStartWithNonJSONPeerFailsCleanlyAndReportsTermination() throws {
-        diagLink("link test started")
         try #require(
             FileManager.default.isExecutableFile(atPath: peer.path),
             "test peer missing at \(peer.path)"
         )
-        diagLink("peer executable ok")
         // Dedicated queue: never .main — a CLI test process has no pumped
         // main queue on Linux or Windows, so main-queue callbacks would stall.
         let linkQueue = DispatchQueue(label: "test.deviceLink")
@@ -83,21 +68,17 @@ private func diagLink(_ message: String) {
         group.enter()
         group.enter()
         link.onTerminated = { termination in
-            diagLink("terminated fired: \(termination)")
             box.setTermination(termination)
             group.leave()
         }
         link.start { result in
-            diagLink("completion fired: \(result)")
             box.setResult(result)
             group.leave()
         }
-        diagLink("start called")
         // The peer exits on its own (immediately on POSIX, after the 2 s
         // Windows linger), so 30 s is a generous bound: a hang here is a
         // failure, not a slow test.
         let completed = group.wait(timeout: .now() + 30) == .success
-        diagLink("wait done: completed=\(completed) result=\(String(describing: box.result)) termination=\(String(describing: box.termination))")
         #expect(completed, "link start + termination did not complete in 30 s")
         guard let result = box.result else {
             Issue.record("link start never completed")

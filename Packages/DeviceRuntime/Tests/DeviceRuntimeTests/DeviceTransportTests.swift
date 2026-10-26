@@ -28,18 +28,7 @@ private struct WindowsSocketError: Error, CustomStringConvertible {
 /// spawns a real helper (a private link socket — socketpair on POSIX with the
 /// child's end on fd 3, loopback TCP on Windows — plus a one-time token on
 /// argv), and the app takes its hello over the socket.
-// DIAGNOSTIC (temporary): stderr timeline. When the test process dies
-// abnormally, block-buffered stdout can lose "passed" lines, but stderr is
-// unbuffered and survives — so these markers show which test was running
-// when the process died. Removed once the Windows exit-1 cause is found.
-private func diagTransport(_ message: String) {
-    if let data = ("DIAG-TRANSPORT \(message)\n").data(using: .utf8) {
-        FileHandle.standardError.write(data)
-    }
-}
-
-// DIAGNOSTIC round 3 (temporary): transport tests OFF, link test alone.
-@Suite(.serialized) struct DeviceTransportTests {
+struct DeviceTransportTests {
     /// RendezvousTestPeer, built beside this test bundle.
     #if os(Windows)
     // Like Linux: the test runner sits beside the peer executable in the
@@ -215,8 +204,7 @@ private func diagTransport(_ message: String) {
 
     /// shm create (peer) -> pass -> map -> read status block (app): SCM_RIGHTS
     /// on POSIX, named mappings re-opened by name on Windows.
-    @Test(.disabled()) func shmHelloRoundTrip() throws {
-        diagTransport("shmHelloRoundTrip started")
+    @Test func shmHelloRoundTrip() throws {
         let token = "test-token-\(UInt32.random(in: 0...UInt32.max))"
         let spawned = try spawnPeer(token: token, mode: "exit")
         defer { reap(spawned) }
@@ -239,12 +227,10 @@ private func diagTransport(_ message: String) {
         let snapshot = status.snapshot()
         #expect(snapshot.heartbeat == 7)
         #expect(snapshot.helperPID == spawned.pid)
-        diagTransport("shmHelloRoundTrip finished")
     }
 
     /// A hello with the wrong token is rejected, and the received fds are not leaked.
-    @Test(.disabled()) func wrongTokenIsRejected() throws {
-        diagTransport("wrongTokenIsRejected started")
+    @Test func wrongTokenIsRejected() throws {
         let spawned = try spawnPeer(token: "right-token", mode: "exit")
         defer { reap(spawned) }
         #expect(throws: DeviceRendezvousError.tokenMismatch) {
@@ -255,7 +241,6 @@ private func diagTransport(_ message: String) {
                 timeout: 10
             )
         }
-        diagTransport("wrongTokenIsRejected finished")
     }
 
     /// The status block, frame ring writer/reader, and the alpha-opaque blit,
@@ -263,8 +248,7 @@ private func diagTransport(_ message: String) {
     /// segments are pagefile-backed file mappings there (ShmSurface), and
     /// the spawn-based tests above now run on Windows as well (loopback
     /// socket + hello transport).
-    @Test(.disabled()) func statusBlockAndFrameRingInProcess() {
-        diagTransport("statusBlockAndFrameRingInProcess started")
+    @Test func statusBlockAndFrameRingInProcess() {
         let status = StatusBlock.create()
         #expect(status.isValid)
         status[.heartbeat] = 41
@@ -308,13 +292,11 @@ private func diagTransport(_ message: String) {
         #else
         #expect(snapshot.helperPID == getpid())
         #endif
-        diagTransport("statusBlockAndFrameRingInProcess finished")
     }
 
     /// WebProxyCA: create the CA files, reload them, mint a leaf for a host,
     /// and verify the leaf's RSA/SHA-1 signature against the CA public key.
-    @Test(.disabled()) func webProxyCAIssuesVerifiableLeaf() throws {
-        diagTransport("webProxyCAIssuesVerifiableLeaf started")
+    @Test func webProxyCAIssuesVerifiableLeaf() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ltm-ca-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -362,7 +344,6 @@ private func diagTransport(_ message: String) {
             #expect(Data(leafSPKI[1].content.dropFirst()).count > 0)
             #expect(identity.privateKey.publicKey.derRepresentation == Data(tbs[6].whole))
         }
-        diagTransport("webProxyCAIssuesVerifiableLeaf finished")
     }
 }
 
