@@ -156,10 +156,17 @@ public func lt_jobs_list(_ out: UnsafeMutablePointer<UnsafePointer<CChar>?>?) ->
     // 10 s backstop; on timeout the caller keeps its previous state
     // (LTJobsAdapter::refresh checks the result and returns early).
     let deadline = Date().addingTimeInterval(10)
-    while semaphore.wait(timeout: .now()) != .success, Date() < deadline {
+    // Track the wait result instead of re-waiting in the guard: the
+    // loop's wait already consumes the task's single signal, so a
+    // second wait always fails and spuriously reports a timeout even
+    // when the task ran (the Linux package -5s were this bug, not a
+    // MainActor stall: the local repro aborted in 1.5s, not 20s).
+    var waitResult = semaphore.wait(timeout: .now())
+    while waitResult != .success, Date() < deadline {
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        waitResult = semaphore.wait(timeout: .now())
     }
-    guard semaphore.wait(timeout: .now()) == .success else {
+    guard waitResult == .success else {
         LTLastError.set("lt_jobs_list: timed out waiting for @MainActor")
         return kLTFailed
     }
@@ -277,10 +284,14 @@ public func lt_jobs_can_download(_ out: UnsafeMutablePointer<Int32>?) -> LTResul
     // on the UI thread at startup (FirmwareJobsWindow onCompleted calls
     // jobs.refreshCanDownload()), and a bare wait() blocks it forever.
     let deadline = Date().addingTimeInterval(10)
-    while semaphore.wait(timeout: .now()) != .success, Date() < deadline {
+    // Same wait-result tracking as lt_jobs_list above: do NOT re-wait
+    // in the guard — the loop's wait already consumes the signal.
+    var waitResult = semaphore.wait(timeout: .now())
+    while waitResult != .success, Date() < deadline {
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        waitResult = semaphore.wait(timeout: .now())
     }
-    guard semaphore.wait(timeout: .now()) == .success else {
+    guard waitResult == .success else {
         LTLastError.set("lt_jobs_can_download: timed out waiting for @MainActor")
         return kLTFailed
     }
