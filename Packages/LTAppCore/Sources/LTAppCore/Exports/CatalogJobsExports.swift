@@ -146,7 +146,23 @@ public func lt_jobs_list(_ out: UnsafeMutablePointer<UnsafePointer<CChar>?>?) ->
         }
         semaphore.signal()
     }
-    semaphore.wait()
+    // Pump the main runloop while waiting: the @MainActor task above can
+    // only run when the main runloop is pumped (see lt_init), and this
+    // export is called on the UI thread — FirmwareJobsWindow's
+    // Component.onCompleted runs jobs.refresh() at startup. A bare
+    // semaphore.wait() here blocks the UI thread forever: the task never
+    // runs, the semaphore never signals, QML creation never finishes and
+    // the window is never painted (white window, 0% CPU, Not Responding).
+    // 10 s backstop; on timeout the caller keeps its previous state
+    // (LTJobsAdapter::refresh checks the result and returns early).
+    let deadline = Date().addingTimeInterval(10)
+    while semaphore.wait(timeout: .now()) != .success, Date() < deadline {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    }
+    guard semaphore.wait(timeout: .now()) == .success else {
+        LTLastError.set("lt_jobs_list: timed out waiting for @MainActor")
+        return kLTFailed
+    }
     out.pointee = ltCopyCString(jobsJsonBox.get())
     return kLTOk
 }
@@ -257,7 +273,17 @@ public func lt_jobs_can_download(_ out: UnsafeMutablePointer<Int32>?) -> LTResul
         box.set((can: core.jobs.canDownload, reason: core.jobs.unavailableReason))
         semaphore.signal()
     }
-    semaphore.wait()
+    // Same pump+timeout as lt_jobs_list above: this export is also called
+    // on the UI thread at startup (FirmwareJobsWindow onCompleted calls
+    // jobs.refreshCanDownload()), and a bare wait() blocks it forever.
+    let deadline = Date().addingTimeInterval(10)
+    while semaphore.wait(timeout: .now()) != .success, Date() < deadline {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    }
+    guard semaphore.wait(timeout: .now()) == .success else {
+        LTLastError.set("lt_jobs_can_download: timed out waiting for @MainActor")
+        return kLTFailed
+    }
     let result = box.get()
     out.pointee = result.can ? 1 : 0
     if let reason = result.reason {
