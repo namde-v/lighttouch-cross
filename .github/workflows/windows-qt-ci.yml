@@ -52,13 +52,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: namde-v/lighttouch-ui
-          # Pin win/w-ui, NOT main: UI main HEAD (819d571, "17/17 green"
-          # merge) does NOT contain the Windows test fixes — the green
-          # run 38896622632 ran on win/w-ui @ 9536541, which is 6 commits
-          # ahead of main (QSettings org, frame-ring port, 4 test fixes,
-          # dropHighlight window parenting). Checking out main re-fails
-          # all 5 tests that win/w-ui already fixed.
-          ref: win/w-ui
+          # Default branch (main) now contains the Windows test fixes:
+          # UI main merged win/w-ui as 5e96de7 (parents 819d571 +
+          # 9536541), and post-merge windows-ci run 40244451546 on main
+          # is green. The win/w-ui pin (a2c2144) is therefore dropped;
+          # if main ever regresses, re-pin to the known-green branch.
           path: QtUI
 
       # Gate: everything below is skipped (not failed) if the UI checkout
