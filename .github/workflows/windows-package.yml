@@ -30,9 +30,11 @@
 # Gap 2 (implemented): the Qt exe comes from windows-qt-ci runs, resolved
 # by the qt-run-id step (SHA-matched successful run on the same branch,
 # else newest successful run on the branch + warning, else no exe). The
-# installer picks the exe up from the ZIP automatically. Still open
-# (separate follow-ups): Qt runtime DLL/plugin staging (gap 3) and the
-# cross-repo trigger so lighttouch-ui pushes run qt-ci (gap 5).
+# installer picks the exe up from the ZIP automatically. Gap 3 (first
+# commit): windeployqt stages the Qt runtime (DLLs + plugins) next to
+# the exe; the exe's QML is embedded (qrc), so no qml/ staging is needed,
+# and Swift core DLLs were already staged. Still open: the cross-repo
+# trigger so lighttouch-ui pushes run qt-ci (gap 5).
 name: Windows package
 
 on:
@@ -71,6 +73,15 @@ jobs:
       - name: Check out
         uses: actions/checkout@v4
 
+      # QtUI sources are needed only as windeployqt's --qmldir input (the
+      # QML import scan); the exe itself embeds its QML via resources
+      # (qrc:/qml/main.qml), so no qml/ files are staged into the ZIP.
+      - name: Check out Qt UI repo (windeployqt qmldir)
+        uses: actions/checkout@v4
+        with:
+          repository: namde-v/lighttouch-ui
+          path: QtUI
+
       # Only needed as the source of the Swift runtime DLLs (swiftCore.dll,
       # ...); nothing is compiled in this job.
       - name: Install Swift
@@ -78,6 +89,20 @@ jobs:
         with:
           swift-version: swift-6.2.4-release
           swift-build: 6.2.4-RELEASE
+
+      # Qt install for windeployqt: must match the Qt that built the exe
+      # (6.8.3 msvc2022_64, qtmultimedia for CaptureSounds) — same
+      # coordinates as windows-qt-ci.yml. Installed, not downloaded from
+      # artifacts: no workflow publishes the Qt runtime DLLs.
+      - name: Install Qt (windeployqt)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: "qtmultimedia"
+          cache: true
 
       - name: Resolve Windows CI run id
         id: run-id
@@ -278,6 +303,33 @@ jobs:
           Write-Host '--- layout contents ---'
           Get-ChildItem $layout | Format-Table Name, Length -AutoSize | Out-String | Write-Host
 
+      # Gap 3 (first commit): stage the Qt runtime next to the exe so it
+      # runs standalone. windeployqt copies the Qt6 DLLs the exe links
+      # (flat, next to the exe — the loader requires that) and the plugins
+      # (platforms/qwindows.dll, imageformats, QML imports) into their
+      # standard subdirs, which Qt finds relative to the exe dir. No
+      # qt.conf needed for that layout. Skipped (warn, job stays green)
+      # when no exe was staged; a windeployqt failure with an exe present
+      # fails the job loudly — shipping a ZIP whose exe cannot start
+      # must not pass silently. Core DLLs need no new work here: the
+      # Swift package DLLs are already staged above, and the exe's QML
+      # is embedded (qrc:/qml/main.qml), so no qml/ files are staged.
+      - name: Deploy Qt runtime (windeployqt, Gap 3)
+        run: |
+          if (-not (Test-Path LightTouch/LightTouch.exe)) { Write-Warning 'No LightTouch.exe staged; skipping Qt deploy'; exit 0 }
+          $windeployqt = (Get-Command windeployqt -ErrorAction SilentlyContinue).Source
+          if (-not $windeployqt -and $env:QT_ROOT_DIR) {
+            $cand = Join-Path $env:QT_ROOT_DIR 'bin\windeployqt.exe'
+            if (Test-Path $cand) { $windeployqt = $cand }
+          }
+          if (-not $windeployqt) { Write-Error 'windeployqt not found (Qt install step must provide it)'; exit 1 }
+          & $windeployqt --release --compiler-runtime --qmldir QtUI/qml LightTouch/LightTouch.exe
+          if ($LASTEXITCODE -ne 0) { Write-Error "windeployqt failed with exit code $LASTEXITCODE"; exit 1 }
+          if (-not (Test-Path LightTouch/Qt6Core.dll)) { Write-Error 'Qt6Core.dll missing after windeployqt'; exit 1 }
+          if (-not (Test-Path LightTouch/platforms/qwindows.dll)) { Write-Error 'platforms/qwindows.dll missing after windeployqt'; exit 1 }
+          $qtDlls = @(Get-ChildItem LightTouch -Filter Qt6*.dll).Count
+          Write-Host "Qt runtime staged: $qtDlls Qt6 DLLs + plugins (platforms/qwindows.dll present)"
+
       - name: Create portable ZIP
         run: |
           $lines = @(
@@ -298,7 +350,8 @@ jobs:
           }
           $lines += ''
           $lines += "qemu-system-arm.exe: $(if (Test-Path LightTouch/qemu-system-arm.exe) { 'present' } else { 'MISSING — no successful emulator run / artifact expired' })"
-          $lines += "LightTouch.exe (Qt UI): $(if (Test-Path LightTouch/LightTouch.exe) { 'present' } else { 'MISSING — no Qt UI build publishes this artifact yet (Phase 6 gap)' })"
+          $lines += "LightTouch.exe (Qt UI): $(if (Test-Path LightTouch/LightTouch.exe) { 'present' } else { 'MISSING — no windows-qt-ci run with the Qt artifact for this branch (Gap 2)' })"
+          $lines += "Qt runtime (Gap 3): $(@(Get-ChildItem LightTouch -Filter Qt6*.dll).Count) Qt6 DLLs; platforms/qwindows.dll: $(if (Test-Path LightTouch/platforms/qwindows.dll) { 'present' } else { 'MISSING' })"
           $lines += 'Swift runtime DLLs:'
           foreach ($dll in 'swiftCore.dll', 'swift_Concurrency.dll', 'Foundation.dll', 'dispatch.dll', 'BlocksRuntime.dll') {
             $lines += "  $dll : $(if (Test-Path LightTouch/$dll) { 'present' } else { 'MISSING' })"

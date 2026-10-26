@@ -109,6 +109,18 @@ no change: it already picks up the exe from the ZIP automatically.
    head 600128c) for the fallback path (exe from qt-ci run
    40240995447, head a2c2144, + warning).
 3. Stage Qt runtime DLLs + plugins (`qt.conf`) in the package step.
+   **IMPLEMENTED, first commit (win/w-app-wire, 2026-10-26 ~07:15 +07):**
+   package job installs Qt 6.8.3 msvc2022_64 + qtmultimedia, checks
+   out QtUI for `--qmldir`, and runs `windeployqt --release
+   --compiler-runtime --qmldir QtUI/qml` on the staged exe (DLLs flat
+   next to the exe, plugins in standard subdirs; no `qt.conf` needed
+   for that layout). QML needs no staging (embedded via `qrc:/qml/`),
+   Swift core DLLs were already staged. The windeployqt step fails the
+   job loudly if Qt6Core.dll or platforms/qwindows.dll is missing
+   after deploy, and skips (warn) when no exe was staged. Manifest
+   gains a Qt runtime line; the stale Phase-6 exe message is fixed.
+   Pin-drop note: UI main merged win/w-ui as 5e96de7, pin dropped in
+   fe3d0d3, qt-ci 40247528572 17/17 on merged main.
 4. Verify the MSI installs a runnable app (exe + shortcut + DLLs).
 5. Add a cross-repo trigger so lighttouch-ui pushes run qt-ci.
 
