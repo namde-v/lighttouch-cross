@@ -33,6 +33,7 @@ jobs:
           - FirmwareKit
           - DeviceRuntime
           - LightTouchCore
+          - LTAppCore
     defaults:
       run:
         working-directory: Packages/${{ matrix.package }}
