@@ -70,3 +70,16 @@ public func ltmKill(_ pid: Int32, _ signal: Int32) -> Int32 {
     Darwin.kill(pid, signal)
     #endif
 }
+
+/// Close a link socket: a CRT fd on POSIX (close), a SOCKET on Windows
+/// (closesocket — WinSDK.close would be wrong, it closes CRT fds, not
+/// sockets, and a leaked socket never signals EOF to the peer). The link
+/// fd is always a socket on every platform, so this is safe wherever a
+/// link socket is closed; ltmClose stays for real CRT fds.
+public func ltmCloseSocket(_ fd: Int32) {
+    #if os(Windows)
+    closesocket(SOCKET(UInt64(bitPattern: Int64(fd))))
+    #else
+    ltmClose(fd)
+    #endif
+}

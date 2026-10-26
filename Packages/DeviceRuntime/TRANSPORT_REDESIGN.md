@@ -114,15 +114,25 @@ The helper is a separate package, but the contract it must implement is:
 4. `WebProxyLeafIdentity` documents what its WebProxy's TLS termination
    consumes per host (DER certificate + private key).
 
-## Windows shape (C implemented; Swift rendezvous + spawn implemented)
+## Windows shape (transport + link start implemented; real helper outstanding)
 
 The C transport layer (`Sources/LTMShm/ltm_shm.{h,c}`) implements the Windows
 half, and the Swift call sites for the rendezvous path are implemented:
 `DeviceRendezvous.sendHello` / `receiveHello`, `ShmSurface` hello-side naming
 and `open()` of C-recv handles, the `RendezvousTestPeer` link-socket branch,
-and the spawn tests' loopback pair (`DeviceTransportTests`). The remaining
-Swift `#if os(Windows)` stubs (`fatalError`) are the real link path —
-`DeviceLink` / `LinkChannel` — a later wave.
+and the spawn tests' loopback pair (`DeviceTransportTests`). The link path
+is now implemented too: `DeviceLink.start()` builds the loopback pair
+(listener + client + accept, same shape as the spawn tests), spawns via
+`ltm_spawn` (client socket inherited, `LTM_LINK_SOCKET` env), reads the
+hello with `DeviceRendezvous.receiveHello`, then hands the socket to
+`LinkChannel` for JSON framing; `watchForExit` waits on the process handle
+and reports the exit code. `LinkChannel` I/O on Windows uses WinSDK `recv` /
+`send` / `closesocket` and a `select()`-based drain (no `poll(2)`, no UCRT
+`read` on socket values). The remaining gap is NOT the link code: there is
+no real helper package in-repo (only `RendezvousTestPeer`, which speaks
+the hello but not the JSON protocol), so a full app→helper link cannot be
+exercised end to end yet — `DeviceLinkTests` drives `start()` against the
+test peer and asserts clean failure + termination.
 
 - `ShmSurface`: named file mappings (`CreateFileMapping`/`MapViewOfFile`)
   replacing `shm_open`/`mmap`. Each segment is a NAMED mapping

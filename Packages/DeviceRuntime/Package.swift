@@ -21,7 +21,7 @@ let package = Package(
                 .product(name: "_CryptoExtras", package: "swift-crypto"),
             ]
         ),
-        .executableTarget(name: "RendezvousTestPeer", dependencies: ["DeviceRuntime"]),
+        .executableTarget(name: "RendezvousTestPeer", dependencies: ["DeviceRuntime", "HostRuntime"]),  // HostRuntime for HelperLaunch (DeviceLink argv parsing)
         .testTarget(
             name: "DeviceRuntimeTests",
             dependencies: ["DeviceRuntime", "RendezvousTestPeer", "LTMShm"]

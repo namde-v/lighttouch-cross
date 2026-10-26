@@ -176,7 +176,9 @@ nonisolated public enum DeviceLinkWireError: Error, Equatable {
 
 /// One end of the socketpair: framed messages in, framed messages out.
 ///
-/// Reads run on a dispatch read source; writes go through a private serial
+/// Reads run on a dispatch read source (Windows: a dedicated thread with
+/// blocking recv — libdispatch-Windows makeReadSource on a SOCKET fd kills
+/// the process, proven by diagnostic rounds 4-5); writes go through a private serial
 /// queue, so a wedged peer can never block the caller (the app's main thread).
 /// `onClose` fires once: EOF, a read error, or a protocol violation.
 nonisolated public final class LinkChannel<
@@ -184,7 +186,7 @@ nonisolated public final class LinkChannel<
     Outgoing: Encodable & SendableMetatype
 >: @unchecked Sendable {
     public let fd: Int32
-    private let source: DispatchSourceRead
+    private let source: DispatchSourceRead?  // nil on Windows (read thread instead)
     private let writeQueue: DispatchQueue
     private let queue: DispatchQueue
     private var buffer = Data()
@@ -218,15 +220,44 @@ nonisolated public final class LinkChannel<
         var one: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
         #endif
+        #if os(Windows)
+        // PROVEN by diagnostic rounds 4-5: libdispatch-Windows
+        // DispatchSource.makeReadSource on a SOCKET fd kills the process
+        // (death inside makeReadSource, no dump, exit 1). Windows therefore
+        // reads on a dedicated thread with blocking recv. Bytes are handed
+        // to `queue` for framing, preserving the single-queue invariant for
+        // buffer state; the thread exits when recv fails, which finish()
+        // forces by closing the socket (see below).
+        source = nil
+        let readQueue = DispatchQueue(label: "LightTouch.link.read.\(fd)")
+        readQueue.async { [weak self] in
+            guard let self else { return }
+            let sock = SOCKET(UInt64(bitPattern: Int64(fd)))
+            while true {
+                var chunk = [UInt8](repeating: 0, count: 65536)
+                let n = chunk.withUnsafeMutableBufferPointer { buf in
+                    buf.baseAddress!.withMemoryRebound(to: CChar.self, capacity: buf.count) { ptr in
+                        WinSDK.recv(sock, ptr, Int32(buf.count), 0)
+                    }
+                }
+                if n <= 0 {
+                    // EOF (peer closed) or error. The error value is
+                    // diagnostic only here; EOF (the common path) is nil.
+                    self.queue.async { self.finish(n == 0 ? nil : POSIXError(.EIO)) }
+                    return
+                }
+                let data = Data(chunk[0..<Int(n)])
+                self.queue.async {
+                    self.buffer.append(contentsOf: data)
+                    self.deliverFrames()
+                }
+            }
+        }
+        #else
         source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
-        source.setEventHandler { [unowned self] in
+        source?.setEventHandler { [unowned self] in
             var chunk = [UInt8](repeating: 0, count: 65536)
-            #if os(Windows)
-            // UCRT read takes a UInt32 count and returns Int32.
-            let n = read(fd, &chunk, UInt32(chunk.count))
-            #else
             let n = read(fd, &chunk, chunk.count)
-            #endif
             if n < 0, errno == EAGAIN || errno == EINTR { return }
             if n <= 0 {
                 finish(n == 0 ? nil : POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO))
@@ -235,9 +266,10 @@ nonisolated public final class LinkChannel<
             buffer.append(contentsOf: chunk[0..<Int(n)])
             deliverFrames()
         }
+        source?.setCancelHandler { ltmCloseSocket(fd) }
+        source?.resume()
+        #endif
         onCloseHandler = onClose
-        source.setCancelHandler { ltmClose(fd) }
-        source.resume()
     }
 
     private var onCloseHandler: ((Error?) -> Void)?
@@ -256,11 +288,33 @@ nonisolated public final class LinkChannel<
     }
 
     /// The peer is gone: deliver what it wrote before exiting (its last messages may
-    /// still sit in the socket, the read source not yet run) so they land before the
+    /// still sit in the socket, the reader not yet run) so they land before the
     /// channel closes. On `queue`; never blocks (reads only what poll reports ready).
     public func drainIncoming() {
         #if os(Windows)
-        fatalError("LinkChannel: the Windows transport is not implemented yet (see TRANSPORT_REDESIGN.md)")
+        // No poll(2) for sockets on Windows: select() with a zero timeout
+        // reports readability without blocking, then recv() consumes.
+        // (fd_set is a fixed 64-entry array; one socket is all this needs.)
+        let sock = SOCKET(UInt64(bitPattern: Int64(fd)))
+        var chunk = [UInt8](repeating: 0, count: 65536)
+        while !closed {
+            var readfds = fd_set()
+            readfds.fd_count = 1
+            readfds.fd_array.0 = sock
+            var tv = timeval()
+            tv.tv_sec = 0
+            tv.tv_usec = 0
+            let ready = WinSDK.select(0, &readfds, nil, nil, &tv)
+            guard ready > 0 else { return }
+            let n = chunk.withUnsafeMutableBufferPointer { buf in
+                buf.baseAddress!.withMemoryRebound(to: CChar.self, capacity: buf.count) { ptr in
+                    WinSDK.recv(sock, ptr, Int32(buf.count), 0)
+                }
+            }
+            guard n > 0 else { return }
+            buffer.append(contentsOf: chunk[0..<Int(n)])
+            deliverFrames()
+        }
         #else
         var chunk = [UInt8](repeating: 0, count: 65536)
         while !closed {
@@ -277,7 +331,14 @@ nonisolated public final class LinkChannel<
     private func finish(_ error: Error?) {
         guard !closed else { return }
         closed = true
-        source.cancel()
+        #if os(Windows)
+        // No read source on Windows: close the socket directly, which
+        // unblocks the read thread's recv (its redundant finish call is a
+        // no-op via the guard above).
+        ltmCloseSocket(fd)
+        #else
+        source?.cancel()
+        #endif
         let handler = onCloseHandler
         onCloseHandler = nil
         handler?(error)
@@ -331,7 +392,12 @@ nonisolated public final class LinkChannel<
         #if os(Linux)
         Glibc.send(fd, buffer, count, flags)
         #elseif os(Windows)
-        fatalError("LinkChannel: the Windows transport is not implemented yet (see TRANSPORT_REDESIGN.md)")
+        // A link fd is a SOCKET: WinSDK.send on the socket value (flags are
+        // ignored on Windows — there is no MSG_NOSIGNAL, and no SIGPIPE).
+        let sock = SOCKET(UInt64(bitPattern: Int64(fd)))
+        let ptr = buffer?.assumingMemoryBound(to: CChar.self)
+        let sent = WinSDK.send(sock, ptr, Int32(count), 0)
+        return sent == -1 ? -1 : Int(sent)
         #else
         Darwin.send(fd, buffer, count, flags)
         #endif
