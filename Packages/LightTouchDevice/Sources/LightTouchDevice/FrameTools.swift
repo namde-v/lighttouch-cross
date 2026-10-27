@@ -1,5 +1,11 @@
 // Frame helpers for the headless modes and tests/drivers/helper-driver: PNG dumps and a
 // "lit" measure, read straight from a ring surface.
+//
+// macOS-only: IOSurface + CoreGraphics + ImageIO + UniformTypeIdentifiers are all
+// Apple-only. The whole file is guarded out on Linux/Windows; its only callers
+// are main.swift's dump path, which is itself guarded with #if os(macOS), so
+// nothing references FrameTools on non-macOS.
+#if canImport(IOSurface) && canImport(CoreGraphics) && canImport(ImageIO) && canImport(UniformTypeIdentifiers)
 
 import CoreGraphics
 import Foundation
@@ -62,3 +68,5 @@ enum FrameTools {
         return CGImageDestinationFinalize(destination)
     }
 }
+
+#endif

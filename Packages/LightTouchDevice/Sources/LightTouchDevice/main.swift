@@ -1,8 +1,15 @@
 import DeviceRuntime
 import Foundation
 import HostRuntime
+// Apple-only imports: IOSurface (front() screenshots, macOS-only path below)
+// and os (unused by name in this file). Guard both so the file compiles
+// on Linux/Windows.
+#if canImport(IOSurface)
 import IOSurface
+#endif
+#if canImport(os)
 import os
+#endif
 
 // LightTouchDevice: one emulated device per process. Its one argument is its launch (HostRuntime HelperLaunch) as JSON:
 // connect (spawned by the app, DeviceLink), headless, oneshot (firmwarekit's boots) or machines.
@@ -239,7 +246,12 @@ func decodeConfig<T: Decodable>(_ path: String, _: T.Type) -> T {
         exit(75)
     }
 
+    // Screenshots are macOS-only (IOSurface): on Linux/Windows there is no
+    // surface to read, so front() exists only on macOS and the dump path
+    // below is guarded out (lit stays 0 -> honest never-lit after maxSeconds).
+    #if os(macOS)
     @Sendable func front() -> IOSurface? { reader.withLockUnchecked { $0?.front()?.surface } }
+    #endif
     let start = Date()
     Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
         emit(["event": "status", "t": Date().timeIntervalSince(start), "status": describe(status.snapshot())])
@@ -250,14 +262,18 @@ func decodeConfig<T: Decodable>(_ path: String, _: T.Type) -> T {
         while lit < need {
             if Date().timeIntervalSince(start) > (config.maxSeconds ?? 500) {
                 emit(["event": "never-lit", "brightness": lit])
+                #if os(macOS)
                 if let dir = config.dumpDir, let s = front() {
                     FrameTools.writePNG(s, to: URL(fileURLWithPath: "\(dir)/never-lit.png"))
                 }
+                #endif
                 qemu.quit()
                 return
             }
             usleep(250_000)
+            #if os(macOS)
             lit = front().map(FrameTools.brightness) ?? 0
+            #endif
         }
         emit(["event": "lit", "seconds": Date().timeIntervalSince(start), "brightness": lit])
         for action in config.actions ?? [] {
@@ -267,12 +283,16 @@ func decodeConfig<T: Decodable>(_ path: String, _: T.Type) -> T {
             switch p.first ?? "" {
             case "wait": usleep(UInt32((v.first ?? 1) * 1e6))
             case "dump":
+                #if os(macOS)
                 guard let dir = config.dumpDir, let s = front() else { break }
                 let url = URL(fileURLWithPath: "\(dir)/\(p[1]).png")
                 emit([
                     "event": "dump", "path": url.path, "ok": FrameTools.writePNG(s, to: url),
                     "brightness": FrameTools.brightness(s),
                 ])
+                #else
+                break
+                #endif
             case "tap":
                 host.perform(.touch(slot: 0, phase: 0, x: v[0], y: v[1]))
                 usleep(80_000)

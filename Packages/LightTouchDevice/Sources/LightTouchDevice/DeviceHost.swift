@@ -1,7 +1,11 @@
 import DeviceRuntime
 import Foundation
 import HostRuntime
+// IOSurface is Apple-only and this file references no IOSurface symbol by name
+// (import only); guard it so the file compiles on Linux/Windows.
+#if canImport(IOSurface)
 import IOSurface
+#endif
 
 // One VM in this process: QEMU's thread, the frame/status pump, commands,
 // requests, agent RPC, audio capture and the bounded host halt. Mode-agnostic:

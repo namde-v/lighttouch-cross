@@ -7,6 +7,8 @@
 
 #include "GuestTLS.h"
 
+#ifdef __APPLE__
+
 #include <errno.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -107,3 +109,36 @@ void guest_tls_close(GuestTLS *tls) {
 }
 
 #pragma clang diagnostic pop
+
+#else /* not __APPLE__ */
+
+// Non-Apple stubs: SecureTransport unavailable, so TLS toward the guest is
+// unavailable. WebProxy startTLS checks guest_tls_start for NULL and falls
+// back (plain connection); read/write/close are only ever called with a
+// non-NULL tls, which these stubs never produce.
+
+GuestTLS *guest_tls_start(int fd, SecIdentityRef identity) {
+    (void)fd;
+    (void)identity;
+    return NULL;
+}
+
+size_t guest_tls_read(GuestTLS *tls, void *buffer, size_t max) {
+    (void)tls;
+    (void)buffer;
+    (void)max;
+    return 0;
+}
+
+bool guest_tls_write(GuestTLS *tls, const void *bytes, size_t count) {
+    (void)tls;
+    (void)bytes;
+    (void)count;
+    return false;
+}
+
+void guest_tls_close(GuestTLS *tls) {
+    (void)tls;
+}
+
+#endif /* __APPLE__ */

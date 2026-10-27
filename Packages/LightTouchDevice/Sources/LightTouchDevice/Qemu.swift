@@ -1,6 +1,12 @@
 import DeviceRuntime
 import Foundation
 import HostRuntime
+// dlopen/dlsym/dlclose/dladdr live in Darwin on macOS and Glibc on Linux.
+// On Windows there is no dlopen: init/sym are stubbed below (QEMU library
+// decision deferred — see the Windows branches there).
+#if os(Linux)
+import Glibc
+#endif
 
 // libqemu-arm.dylib, dlopen'ed. The helper never links it: which build runs is
 // chosen at launch (LTM_QEMU_DYLIB in a Debug build, else the bundle's
@@ -38,6 +44,12 @@ final class Qemu: @unchecked Sendable {
     }
 
     init(path: String) throws {
+        // Windows: no dlopen and no libqemu-arm.dylib (the QEMU library build
+        // vs subprocess redesign decision is deferred); loading always fails
+        // honestly here rather than pretending a library exists.
+        #if os(Windows)
+        throw HelperError.dylib("no libqemu-arm.dylib on Windows (QEMU library decision deferred)")
+        #else
         // RTLD_NOW: a missing export fails here, not mid-session.
         guard let handle = dlopen(path, RTLD_NOW | RTLD_LOCAL) else {
             throw HelperError.dylib(String(cString: dlerror()))
@@ -61,6 +73,7 @@ final class Qemu: @unchecked Sendable {
         } else {
             self.path = path
         }
+        #endif
     }
 
     static func load() throws -> Qemu {
@@ -73,11 +86,22 @@ final class Qemu: @unchecked Sendable {
     }
 
     private func sym<T>(_ name: String, _: T.Type) -> T {
+        #if os(Windows)
+        // No library ever loads on Windows (init always throws above), so no
+        // lazy symbol is ever evaluated there; this is dead code that must
+        // still compile without dlsym.
+        fatalError("no QEMU library on Windows (QEMU library decision deferred)")
+        #else
         guard let p = dlsym(handle, name) else { fatalError("libqemu-arm.dylib lacks \(name)") }
         return unsafeBitCast(p, to: T.self)
+        #endif
     }
     private func optionalSym<T>(_ name: String, _: T.Type) -> T? {
+        #if os(Windows)
+        nil
+        #else
         dlsym(handle, name).map { unsafeBitCast($0, to: T.self) }
+        #endif
     }
 
     typealias VoidFn = @convention(c) () -> Void

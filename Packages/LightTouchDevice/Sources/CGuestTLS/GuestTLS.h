@@ -1,6 +1,13 @@
 // TLS toward the guest, terminated in the web proxy (WebProxy.swift's Guest). See GuestTLS.c for why it is C.
 
+// SecureTransport is Apple-only. On non-Apple platforms SecIdentityRef is an
+// opaque stand-in (the C stubs below never use it) so the target compiles
+// and links; the web proxy's TLS path is stubbed there (startTLS false).
+#ifdef __APPLE__
 #include <Security/Security.h>
+#else
+typedef void *SecIdentityRef;
+#endif
 #include <stdbool.h>
 #include <stddef.h>
 
