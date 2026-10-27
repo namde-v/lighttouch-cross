@@ -58,11 +58,17 @@
 # First-chance filtered capture (-e 1 -f C0000421): the -t dump on
 # smoke 40445160449 came too late (only 1 parked thread left, no
 # faulting stack), so -t alone cannot name the culprit. -e 1 -f
-# C0000421 dumps at the verifier stop ITSELF, first-chance, with the
-# faulting stack + heap block; -t stays as fallback. Caveat: if -f
-# does not match native codes on this procdump version, the next
-# refinement is unfiltered -e 1 (first first-chance dump, possibly
-# benign — inspect and refine).
+# C0000421 was tried to dump at the verifier stop ITSELF — but smoke
+# 40447989357 produced only the -t terminate dump, so the filter did
+# NOT match native codes on this procdump version. The filter is now
+# REMOVED: unfiltered -e 1 (confirmatory, not diagnostic — the heap
+# bug appears fixed on the new package, ALIVE 2/2 with pageheap
+# active). Unfiltered -e 1 dumps on the FIRST first-chance exception
+# (which may be benign — inspect the earliest dump first, then
+# refine); -t stays as fallback. Per main agent decision (audit
+# 12:32): ALIVE 2/2 on 40430881989 CLOSES smoke re-dispatch for
+# heap-diagnosis — further smokes are replications or confirmatory
+# (like this one), not new diagnostic dispatches.
 #
 # Dispatch-only: gh workflow run windows-standalone-smoke.yml
 #   --ref win/w-app-smoke [-f package_run_id=<id>|latest]
@@ -256,21 +262,25 @@ jobs:
           $p = Start-Process -FilePath extracted/LightTouch/LightTouch.exe -WorkingDirectory extracted/LightTouch -PassThru -NoNewWindow -RedirectStandardOutput smoke-real-stdout.txt -RedirectStandardError smoke-real-stderr.txt
           # Crash-dump capture: attach procdump to the real-core process so a
           # crash writes a full minidump (-ma) to smoke-dumps/ instead of
-          # vanishing with only an exit code. -e 1 -f C0000421 = dump on the
-          # FIRST-CHANCE verifier-stop exception (STATUS_VERIFIER_STOP,
-          # 0xC0000421) — the faulting stack + heap block at the stop
-          # itself. -t = dump on process terminate, whatever the path
-          # (fallback: the -t dump on smoke 40445160449 came too late —
-          # only 1 parked thread left, no faulting stack — so -t alone
-          # cannot name the culprit). Caveat: if -f does not match native
-          # codes on this procdump version, the next refinement is
-          # unfiltered -e 1 (first first-chance dump, possibly benign —
-          # inspect and refine); that fallback is NOT implemented here.
-          # Attach immediately: the crash takes seconds (Qt + core init +
-          # QML load), procdump attaches in <1s. The procdump process
-          # object is kept so the step can wait for the dump write to
-          # finish before reporting/uploading (a full -ma dump takes ~20s
-          # to write; without the wait the upload step could race a
+          # vanishing with only an exit code. -e 1 = dump on FIRST-CHANCE
+          # exceptions, UNFILTERED (the -f C0000421 filter from 4baad59 did
+          # NOT match the verifier stop — smoke 40447989357 produced only
+          # the -t terminate dump, no first-chance capture — so the filter
+          # is removed). -t = dump on process terminate, whatever the
+          # path (fallback). This is CONFIRMATORY, not diagnostic: the heap
+          # bug appears fixed on the new package (ALIVE 2/2 with pageheap
+          # active), so this run targets the OLD package to see what its
+          # first first-chance exception actually is — it may be benign
+          # (inspect the EARLIEST dump first, then refine: re-add a filter
+          # or -n if the first one is noise). Note: unfiltered -e 1 can
+          # produce MULTIPLE dumps (one per first-chance exception, each
+          # ~1GB under pageheap); the upload globs all *.dmp, so a noisy
+          # run uploads several dumps — that is expected, inspect earliest
+          # first. Attach immediately: the crash takes seconds (Qt + core
+          # init + QML load), procdump attaches in <1s. The procdump
+          # process object is kept so the step can wait for the dump write
+          # to finish before reporting/uploading (a full -ma dump takes
+          # ~20s to write; without the wait the upload step could race a
           # partial dump). Note: with -e 1, procdump keeps monitoring
           # after a first-chance dump and exits only when the process
           # terminates (when -t fires), so the wait logic below still
@@ -279,7 +289,7 @@ jobs:
           $pd = $null
           if ('${{ steps.procdump.outputs.available }}' -eq 'true') {
             New-Item -ItemType Directory -Force smoke-dumps | Out-Null
-            $pd = Start-Process procdump -ArgumentList "-accepteula -ma -e 1 -f C0000421 -t $($p.Id) smoke-dumps" -NoNewWindow -PassThru
+            $pd = Start-Process procdump -ArgumentList "-accepteula -ma -e 1 -t $($p.Id) smoke-dumps" -NoNewWindow -PassThru
             $dumpArmed = $true
             Write-Host "procdump attached to real-core PID $($p.Id) (dump dir: smoke-dumps, -e -t)"
           } else {
@@ -315,14 +325,15 @@ jobs:
               if ($wasAlive) {
                 $dumps | ForEach-Object { Write-Host "PROCESS DUMP CAPTURED (healthy-state, expected — process was alive when stopped, NOT a crash): $($_.FullName) ($($_.Length) bytes)" }
               } else {
-                # Exited path: with -e 1 -f C0000421, the EARLIEST dump is
-                # the first-chance verifier-stop capture (the gold — faulting
-                # stack + heap block); any LATER dump is the -t terminate
-                # dump (late, parked thread only, as on 40445160449).
-                $dumps | Sort-Object CreationTime | ForEach-Object { Write-Host "DUMP CAPTURED (exited path — earliest = first-chance verifier-stop capture if present, later = -t terminate dump): $($_.FullName) ($($_.Length) bytes)" }
+                # Exited path, unfiltered -e 1: the EARLIEST dump is the
+                # FIRST first-chance exception (may be benign — inspect
+                # it first; if it is the verifier stop, it is the gold).
+                # Later dumps are subsequent first-chance exceptions
+                # and/or the -t terminate dump (late, parked thread only).
+                $dumps | Sort-Object CreationTime | ForEach-Object { Write-Host "DUMP CAPTURED (exited path — earliest = first first-chance exception, inspect first; later = subsequent first-chance and/or -t terminate dump): $($_.FullName) ($($_.Length) bytes)" }
               }
             } else {
-              Write-Host "No process dump (procdump unavailable, filter did not match, or write did not complete)"
+              Write-Host "No process dump (procdump unavailable, no first-chance exception fired, or write did not complete)"
             }
           }
 
