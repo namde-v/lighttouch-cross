@@ -55,6 +55,15 @@
 # The step waits for the procdump process to finish writing (up to
 # 90s) before the upload step runs, so no partial dump is uploaded.
 #
+# First-chance filtered capture (-e 1 -f C0000421): the -t dump on
+# smoke 40445160449 came too late (only 1 parked thread left, no
+# faulting stack), so -t alone cannot name the culprit. -e 1 -f
+# C0000421 dumps at the verifier stop ITSELF, first-chance, with the
+# faulting stack + heap block; -t stays as fallback. Caveat: if -f
+# does not match native codes on this procdump version, the next
+# refinement is unfiltered -e 1 (first first-chance dump, possibly
+# benign — inspect and refine).
+#
 # Dispatch-only: gh workflow run windows-standalone-smoke.yml
 #   --ref win/w-app-smoke [-f package_run_id=<id>|latest]
 
@@ -247,23 +256,30 @@ jobs:
           $p = Start-Process -FilePath extracted/LightTouch/LightTouch.exe -WorkingDirectory extracted/LightTouch -PassThru -NoNewWindow -RedirectStandardOutput smoke-real-stdout.txt -RedirectStandardError smoke-real-stderr.txt
           # Crash-dump capture: attach procdump to the real-core process so a
           # crash writes a full minidump (-ma) to smoke-dumps/ instead of
-          # vanishing with only an exit code. -e = dump on unhandled
-          # exception; -t = dump on process terminate, whatever the path.
-          # -t is essential: the 0xC0000421 (STATUS_VERIFIER_STOP) exits on
-          # the two pageheap runs produced ZERO dumps with -e alone, because
-          # the process exits without an unhandled exception reaching the
-          # debugger. -t guarantees a terminating-state dump whose thread
-          # stacks are the direct evidence. Attach immediately: the crash
-          # takes seconds (Qt + core init + QML load), procdump attaches
-          # in <1s. The procdump process object is kept so the step can
-          # wait for the dump write to finish before reporting/uploading
-          # (a full -ma dump takes ~20s to write; without the wait the
-          # upload step could race a partial dump).
+          # vanishing with only an exit code. -e 1 -f C0000421 = dump on the
+          # FIRST-CHANCE verifier-stop exception (STATUS_VERIFIER_STOP,
+          # 0xC0000421) — the faulting stack + heap block at the stop
+          # itself. -t = dump on process terminate, whatever the path
+          # (fallback: the -t dump on smoke 40445160449 came too late —
+          # only 1 parked thread left, no faulting stack — so -t alone
+          # cannot name the culprit). Caveat: if -f does not match native
+          # codes on this procdump version, the next refinement is
+          # unfiltered -e 1 (first first-chance dump, possibly benign —
+          # inspect and refine); that fallback is NOT implemented here.
+          # Attach immediately: the crash takes seconds (Qt + core init +
+          # QML load), procdump attaches in <1s. The procdump process
+          # object is kept so the step can wait for the dump write to
+          # finish before reporting/uploading (a full -ma dump takes ~20s
+          # to write; without the wait the upload step could race a
+          # partial dump). Note: with -e 1, procdump keeps monitoring
+          # after a first-chance dump and exits only when the process
+          # terminates (when -t fires), so the wait logic below still
+          # applies unchanged.
           $dumpArmed = $false
           $pd = $null
           if ('${{ steps.procdump.outputs.available }}' -eq 'true') {
             New-Item -ItemType Directory -Force smoke-dumps | Out-Null
-            $pd = Start-Process procdump -ArgumentList "-accepteula -ma -e -t $($p.Id) smoke-dumps" -NoNewWindow -PassThru
+            $pd = Start-Process procdump -ArgumentList "-accepteula -ma -e 1 -f C0000421 -t $($p.Id) smoke-dumps" -NoNewWindow -PassThru
             $dumpArmed = $true
             Write-Host "procdump attached to real-core PID $($p.Id) (dump dir: smoke-dumps, -e -t)"
           } else {
@@ -299,10 +315,14 @@ jobs:
               if ($wasAlive) {
                 $dumps | ForEach-Object { Write-Host "PROCESS DUMP CAPTURED (healthy-state, expected — process was alive when stopped, NOT a crash): $($_.FullName) ($($_.Length) bytes)" }
               } else {
-                $dumps | ForEach-Object { Write-Host "TERMINATING-STATE DUMP CAPTURED (the evidence — process exited early): $($_.FullName) ($($_.Length) bytes)" }
+                # Exited path: with -e 1 -f C0000421, the EARLIEST dump is
+                # the first-chance verifier-stop capture (the gold — faulting
+                # stack + heap block); any LATER dump is the -t terminate
+                # dump (late, parked thread only, as on 40445160449).
+                $dumps | Sort-Object CreationTime | ForEach-Object { Write-Host "DUMP CAPTURED (exited path — earliest = first-chance verifier-stop capture if present, later = -t terminate dump): $($_.FullName) ($($_.Length) bytes)" }
               }
             } else {
-              Write-Host "No process dump (procdump unavailable or write did not complete)"
+              Write-Host "No process dump (procdump unavailable, filter did not match, or write did not complete)"
             }
           }
 
