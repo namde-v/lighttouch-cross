@@ -17,7 +17,8 @@ import HostRuntime
     #if os(Linux)
         // swift-corelibs-libdispatch never ported process sources; the parent's death is polled for instead.
         private var parentPoll: Task<Void, Never>?
-    #else
+    #endif
+    #if !os(Linux) && !os(Windows)
         private var parentWatch: DispatchSourceProcess?
     #endif
     private let output: PipeOutput
@@ -40,6 +41,10 @@ import HostRuntime
             source.resume()
             return source
         }
+        // No parent-death tracking on Windows: libdispatch-Windows has no
+        // process sources and no getppid. Signal handling above still applies,
+        // and wait() joins the operation, so the CLI cannot outlive its work.
+        #if !os(Windows)
         let parent = getppid()
         #if os(Linux)
             parentPoll = Task { @MainActor [weak self] in
@@ -56,6 +61,7 @@ import HostRuntime
             parentWatch = source
         #endif
         if parent == 1 || getppid() != parent { cancel("no parent") }
+        #endif
     }
     private func cancel(_ reason: String) {
         guard cancellation == nil else { return }
