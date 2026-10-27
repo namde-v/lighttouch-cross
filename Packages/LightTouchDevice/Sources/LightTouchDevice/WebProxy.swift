@@ -21,17 +21,51 @@
 
 import DeviceRuntime
 import Foundation
+// Security is Apple-only (SecCertificate/SecKey/SecIdentity/SecTrust do not
+// exist on Linux/Windows); the TLS-toward-guest feature is macOS-only (see
+// the #if os(macOS) guards below). Sockets come from Glibc on Linux and
+// WinSDK on Windows (close/errno for the compiled-but-unreachable paths).
+#if canImport(Security)
 import Security
+#endif
+#if os(Linux)
+import Glibc
+#endif
+#if os(Windows)
+import WinSDK
+#endif
+
+// Per-platform spelling for Guest.read's qualified Darwin.read call
+// (qualified in the original). listen()/connect() are Windows-stubbed whole
+// functions, so their Darwin calls use inline #if at the call site instead.
+// sysRead's Windows branch fails honestly (-1 -> Guest.read returns empty,
+// i.e. end of input); Guest is unreachable on Windows via stubbed listen().
+private func sysRead(_ fd: Int32, _ buffer: UnsafeMutableRawPointer, _ count: Int) -> Int {
+    #if os(Linux)
+    Glibc.read(fd, buffer, count)
+    #elseif os(Windows)
+    -1
+    #else
+    Darwin.read(fd, buffer, count)
+    #endif
+}
 
 final class WebProxy: @unchecked Sendable {
     let config: URL
     let session: URLSession
     let archiveOrigin: String
+    // macOS-only: SecCertificate/SecKey/SecIdentity do not exist on
+    // Linux/Windows. The TLS-toward-guest feature (leaf/startTLS/anchors)
+    // is guarded out on non-macOS; the proxy's plain paths still work.
+    #if os(macOS)
     /// Extra upstream roots (tests: a loopback HTTPS origin); the Mac's trust store otherwise.
     let anchors: [SecCertificate]
+    #endif
     private let lock = NSLock()
+    #if os(macOS)
     private var leafKey: SecKey?
     private var leaves: [String: (identity: SecIdentity, made: Date)] = [:]
+    #endif
     /// One archive fetch at a time, a second apart, none while the archive asked us to wait.
     private let archiveGate = NSLock()
     private var archiveNext = Date.distantPast, cooldownUntil = Date.distantPast
@@ -72,10 +106,27 @@ final class WebProxy: @unchecked Sendable {
     static let trace = ProcessInfo.processInfo.environment["LTM_WEB_PROXY_TRACE"] != nil
     static let headMax = 65536, bodyMax = 8 << 20, archiveBodyMax = 32 << 20
 
+    // Two inits (macOS takes anchors, non-macOS does not) sharing a static
+    // session factory, so `let session` is still assigned in init itself.
+    // The only caller (DeviceHost) passes no anchors, so it compiles on both.
+    #if os(macOS)
     init(config: URL, archiveOrigin: String = "https://web.archive.org", anchors: [SecCertificate] = []) {
         self.config = config
         self.archiveOrigin = archiveOrigin
         self.anchors = anchors
+        self.session = Self.makeSession(config: config)
+        Self.cleanupArchiveCache(config: config)
+    }
+    #else
+    init(config: URL, archiveOrigin: String = "https://web.archive.org") {
+        self.config = config
+        self.archiveOrigin = archiveOrigin
+        self.session = Self.makeSession(config: config)
+        Self.cleanupArchiveCache(config: config)
+    }
+    #endif
+
+    private static func makeSession(config: URL) -> URLSession {
         let configuration = URLSessionConfiguration.default
         configuration.urlCache = URLCache(
             memoryCapacity: 8 << 20,
@@ -88,7 +139,10 @@ final class WebProxy: @unchecked Sendable {
         configuration.timeoutIntervalForRequest = 60
         let queue = OperationQueue()
         queue.maxConcurrentOperationCount = 1
-        session = URLSession(configuration: configuration, delegate: nil, delegateQueue: queue)
+        return URLSession(configuration: configuration, delegate: nil, delegateQueue: queue)
+    }
+
+    private static func cleanupArchiveCache(config: URL) {
         // The C helper's archive cache and gate files (64 slots of up to 2 MiB) are the URLCache's job now.
         let directory = config.deletingLastPathComponent()
         for name in (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
@@ -99,11 +153,19 @@ final class WebProxy: @unchecked Sendable {
 
     /// Serves `path` (a Unix socket, owner-only) on a thread of its own; one thread per connection.
     func listen(socket path: String) throws {
+        #if os(Windows)
+        // Unix-socket-path serving is not portable to Windows (no unlink/
+        // chmod, SOCKET vs Int32 fds, different path namespace); the proxy
+        // cannot listen on Windows, so serve()/handle() are unreachable there.
+        throw Reply(503, "Web proxy listen unavailable on Windows")
+        #else
         var address = sockaddr_un()
         guard path.utf8.count < MemoryLayout.size(ofValue: address.sun_path) else {
             throw Reply(503, "Socket path too long")
         }
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        // ltmSockStream (DeviceRuntime): SOCK_STREAM is __socket_type, not
+        // Int32, in Glibc — the plain constant does not typecheck on Linux.
+        let fd = socket(AF_UNIX, ltmSockStream, 0)
         unlink(path)
         address.sun_family = sa_family_t(AF_UNIX)
         withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: path.utf8) }
@@ -112,7 +174,14 @@ final class WebProxy: @unchecked Sendable {
                 bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
-        guard fd >= 0, bound == 0, chmod(path, 0o600) == 0, Darwin.listen(fd, 64) == 0 else {
+        // Qualified in the original to avoid clashing with this method's own
+        // name; spelled per platform here (a #if cannot sit inside the guard).
+        #if os(Linux)
+        let listened = Glibc.listen(fd, 64)
+        #else
+        let listened = Darwin.listen(fd, 64)
+        #endif
+        guard fd >= 0, bound == 0, chmod(path, 0o600) == 0, listened == 0 else {
             close(fd)
             throw Reply(503, "Can't listen on \(path): \(String(cString: strerror(errno)))")
         }
@@ -125,6 +194,7 @@ final class WebProxy: @unchecked Sendable {
         }
         accepting.name = "web-proxy"
         accepting.start()
+        #endif
     }
 
     // MARK: - One connection
@@ -161,12 +231,19 @@ final class WebProxy: @unchecked Sendable {
     }
 
     func serve(_ fd: Int32) {
+        // Timeouts are a timeval on POSIX; Windows takes a DWORD instead —
+        // skipped there (serve is unreachable via stubbed listen() anyway).
+        // SO_NOSIGPIPE is BSD-only (neither Linux nor Windows has it).
+        #if !os(Windows)
         var timeout = timeval(tv_sec: 60, tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
         timeout.tv_sec = 30
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        #endif
+        #if os(macOS)
         var on: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+        #endif
         let guest = Guest(fd: fd)
         defer { guest.finish() }
         if offline { return }
@@ -207,6 +284,10 @@ final class WebProxy: @unchecked Sendable {
                     throw Reply(410, "This online service has been retired")
                 }
                 if !localNetwork, Self.isLocalNetwork(host: host) { throw Reply(502, "Local network access is off") }
+                // TLS termination is macOS-only (Security + SecureTransport).
+                // On non-macOS this branch is skipped, falling through to the
+                // raw tunnel below — the same path as when no .ca.pem exists.
+                #if os(macOS)
                 if mode != .off, FileManager.default.fileExists(atPath: config.path + ".ca.pem") {
                     guard let identity = try? leaf(host) else { throw Reply(503, "Local TLS certificate unavailable") }
                     guard guest.write("HTTP/1.0 200 Connection established\r\n\r\n"), guest.startTLS(identity) else {
@@ -215,6 +296,7 @@ final class WebProxy: @unchecked Sendable {
                     tunnel = target
                     continue
                 }
+                #endif
                 if case .archive = mode { throw Reply(405, "Dated HTTPS needs the local TLS bridge") }
                 guard let remote = Self.connect(host, port) else { throw Reply(502, "Destination unavailable") }
                 if guest.write("HTTP/1.0 200 Connection established\r\n\r\n") { Self.relay(guest.fd, remote) }
@@ -369,7 +451,11 @@ final class WebProxy: @unchecked Sendable {
     /// The origin's response, streamed as it arrives; its status and headers as they were, less the hop-by-hop
     /// ones and what URLSession consumed (Content-Encoding it decoded, with that length; Set-Cookie re-split).
     private func stream(_ request: URLRequest, store: Bool, to guest: Guest) throws {
+        #if os(macOS)
         let upstream = Upstream(anchors: anchors, store: store)
+        #else
+        let upstream = Upstream(store: store)
+        #endif
         let task = session.dataTask(with: request)
         upstream.task = task
         task.delegate = upstream
@@ -426,7 +512,11 @@ final class WebProxy: @unchecked Sendable {
 
     /// A whole response, at most `limit` bytes (nil past it or on an error).
     private func fetch(_ request: URLRequest, limit: Int) -> (HTTPURLResponse, Data)? {
+        #if os(macOS)
         let upstream = Upstream(anchors: anchors, store: false)
+        #else
+        let upstream = Upstream(store: false)
+        #endif
         let task = session.dataTask(with: request)
         upstream.task = task
         task.delegate = upstream
@@ -562,6 +652,9 @@ final class WebProxy: @unchecked Sendable {
     // MARK: - TLS toward the guest
 
     /// A week-long leaf for `host`, one key for them all; made again after six days.
+    /// macOS-only (SecIdentity + WebProxyCA identity); the only caller is the
+    /// guarded CONNECT TLS branch above.
+    #if os(macOS)
     private func leaf(_ host: String) throws -> SecIdentity {
         lock.lock()
         defer { lock.unlock() }
@@ -572,15 +665,21 @@ final class WebProxy: @unchecked Sendable {
         leaves[host] = (identity, Date())
         return identity
     }
+    #endif
 
     /// A .local name (resolving it would itself be a local-network operation), or a host any of whose
     /// addresses is private, link-local or multicast: the ranges slirp's lan=off refuses.
     static func isLocalNetwork(host: String) -> Bool {
+        #if os(Windows)
+        // WinSDK's in6_addr union differs (__u6_addr absent); the proxy
+        // cannot listen on Windows anyway, so this is unreachable there.
+        return false
+        #else
         let name = host.lowercased()
         if name.hasSuffix(".local") || name.hasSuffix(".local.") { return true }
         var hints = addrinfo()
         var list: UnsafeMutablePointer<addrinfo>?
-        hints.ai_socktype = SOCK_STREAM
+        hints.ai_socktype = ltmSockStream  // Glibc types SOCK_STREAM as __socket_type, not Int32
         guard getaddrinfo(host, nil, &hints, &list) == 0 else { return false }
         defer { freeaddrinfo(list) }
         for entry in sequence(first: list, next: { $0?.pointee.ai_next }) {
@@ -598,14 +697,20 @@ final class WebProxy: @unchecked Sendable {
             }
         }
         return false
+        #endif
     }
 
     // MARK: - Raw tunnel (off, or no CA)
 
     static func connect(_ host: String, _ port: Int) -> Int32? {
+        #if os(Windows)
+        // SOCKET vs Int32 fds + Winsock connect; the raw tunnel is
+        // unreachable on Windows (listen stubbed), so fail honestly.
+        return nil
+        #else
         var hints = addrinfo()
         var list: UnsafeMutablePointer<addrinfo>?
-        hints.ai_socktype = SOCK_STREAM
+        hints.ai_socktype = ltmSockStream  // Glibc types SOCK_STREAM as __socket_type, not Int32
         guard getaddrinfo(host, String(port), &hints, &list) == 0 else { return nil }
         defer { freeaddrinfo(list) }
         var entry = list
@@ -614,17 +719,28 @@ final class WebProxy: @unchecked Sendable {
             let fd = socket(a.ai_family, a.ai_socktype, a.ai_protocol)
             guard fd >= 0 else { continue }
             var timeout = timeval(tv_sec: 10, tv_usec: 0)
-            var on: Int32 = 1
             setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+            #if os(macOS)
+            var on: Int32 = 1
             setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+            #endif
+            #if os(Linux)
+            if Glibc.connect(fd, a.ai_addr, a.ai_addrlen) == 0 { return fd }
+            #else
             if Darwin.connect(fd, a.ai_addr, a.ai_addrlen) == 0 { return fd }
+            #endif
             close(fd)
         }
         return nil
+        #endif
     }
 
     /// Both directions until the remote closes; the guest's end of input is passed on as a half-close.
     static func relay(_ guest: Int32, _ remote: Int32) {
+        #if os(Windows)
+        // WSAPoll + SOCKET types differ; unreachable via stubbed listen().
+        return
+        #else
         var input = true
         var buffer = [UInt8](repeating: 0, count: 16384)
         while true {
@@ -648,6 +764,7 @@ final class WebProxy: @unchecked Sendable {
                 }
             }
         }
+        #endif
     }
 }
 
@@ -660,15 +777,24 @@ final class Upstream: NSObject, URLSessionDataDelegate, @unchecked Sendable {
         case done(Error?)
     }
     weak var task: URLSessionDataTask?
-    private let anchors: [SecCertificate], store: Bool
+    #if os(macOS)
+    private let anchors: [SecCertificate]
+    #endif
+    private let store: Bool
     private let condition = NSCondition()
     private var events: [Event] = [], buffered = 0, suspended = false
     private static let limit = 8 << 20
 
+    #if os(macOS)
     init(anchors: [SecCertificate], store: Bool) {
         self.anchors = anchors
         self.store = store
     }
+    #else
+    init(store: Bool) {
+        self.store = store
+    }
+    #endif
 
     func next() -> Event {
         condition.lock()
@@ -735,6 +861,7 @@ final class Upstream: NSObject, URLSessionDataDelegate, @unchecked Sendable {
         didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
+        #if os(macOS)
         guard !anchors.isEmpty, challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
             let trust = challenge.protectionSpace.serverTrust
         else {
@@ -748,6 +875,10 @@ final class Upstream: NSObject, URLSessionDataDelegate, @unchecked Sendable {
             trusted ? .useCredential : .cancelAuthenticationChallenge,
             trusted ? URLCredential(trust: trust) : nil
         )
+        #else
+        // No Security framework: extra trust roots unavailable, default handling.
+        completionHandler(.performDefaultHandling, nil)
+        #endif
     }
 }
 
@@ -757,17 +888,22 @@ final class Guest {
     private var tls: OpaquePointer?
     init(fd: Int32) { self.fd = fd }
 
+    // macOS-only (SecIdentity); the only caller is the guarded CONNECT TLS
+    // branch. On non-macOS the guest TLS state is never set (C stubs return
+    // NULL), so read/write stay on the plain path.
+    #if os(macOS)
     func startTLS(_ identity: SecIdentity) -> Bool {
         tls = guest_tls_start(fd, identity)
         return tls != nil
     }
+    #endif
 
     /// Up to `max` bytes; empty at the end of input or on an error.
     func read(max: Int) -> Data {
         var buffer = [UInt8](repeating: 0, count: max)
         if let tls { return Data(buffer[..<guest_tls_read(tls, &buffer, max)]) }
         while true {
-            let n = Darwin.read(fd, &buffer, max)
+            let n = sysRead(fd, &buffer, max)
             if n < 0, errno == EINTR { continue }
             return n > 0 ? Data(buffer[..<n]) : Data()
         }
