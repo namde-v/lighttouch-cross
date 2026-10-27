@@ -196,8 +196,17 @@ import HostRuntime
                 return FileManager.default.isExecutableFile(atPath: path) ? URL(fileURLWithPath: path) : nil
             }
         #endif
+        #if os(Windows)
+        // The Windows package stages firmwarekit.exe next to LightTouch.exe;
+        // Bundle.main.executableURL is the app exe, so its directory is the
+        // lookup dir. Note the .exe suffix: the extensionless macOS name
+        // never matches a Windows executable.
+        return Bundle.main.executableURL.map { $0.deletingLastPathComponent().appendingPathComponent("firmwarekit.exe") }
+            .flatMap { FileManager.default.isExecutableFile(atPath: $0.path) ? $0 : nil }
+        #else
         return Bundle.main.executableURL.map { $0.deletingLastPathComponent().appendingPathComponent("firmwarekit") }
             .flatMap { FileManager.default.isExecutableFile(atPath: $0.path) ? $0 : nil }
+        #endif
     }
 
     /// Contents/MacOS/LightTouchDevice, for the preparer's one-shot boots.

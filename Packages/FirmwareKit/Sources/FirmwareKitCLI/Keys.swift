@@ -44,7 +44,12 @@ func verifyKeysCommand(_ command: FirmwareCommand.VerifyKeys) -> Never {
                         "verify-keys-\(getpid()).dmg"
                     )
                     defer { try? FileManager.default.removeItem(at: tmp) }
+                    #if os(Windows)
+                    // VFDecrypt has a Windows-only FileHandle overload: fileDescriptor is unavailable on Windows.
+                    try ipsw.stream(member) { try VFDecrypt.decrypt(from: $0, output: tmp, key: key) }
+                    #else
                     try ipsw.stream(member) { try VFDecrypt.decrypt(from: $0.fileDescriptor, output: tmp, key: key) }
+                    #endif
                     let h = try FileHandle(forReadingFrom: tmp)
                     defer { try? h.close() }
                     let size = try h.seekToEnd()

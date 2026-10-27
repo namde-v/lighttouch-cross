@@ -255,6 +255,13 @@ jobs:
           Write-Host "Swift package DLLs staged: $pkgDllCount"
           if ($pkgDllCount -eq 0) { Write-Error 'No Swift package DLLs staged — refusing to ship an empty ZIP'; exit 1 }
 
+          # firmwarekit.exe (device preparation): staged from the windows-ci
+          # FirmwareKit artifact by the *.exe glob above, once windows-ci
+          # builds it (FirmwareKit/Package.swift includes the executable on
+          # Windows). Warn-only, like qemu below: the app launches without
+          # it; it only gates device preparation (FirmwareJobs.canDownload).
+          if (Test-Path (Join-Path $layout 'firmwarekit.exe')) { Write-Host 'Staged firmwarekit.exe (device preparation)' } else { Write-Warning 'firmwarekit.exe not staged (windows-ci run predates the firmwarekit build or the FirmwareKit job failed)' }
+
           # qemu-system-arm.exe + MinGW runtime DLLs (when the artifact exists)
           if (Test-Path qemu-artifact) {
             Get-ChildItem qemu-artifact -Recurse -Include *.exe,*.dll | Copy-Item -Destination $layout -Force

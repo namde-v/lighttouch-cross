@@ -16,15 +16,18 @@
 // `import SQLite3` -> CZlib / CSQLite3 system-library targets below.
 import PackageDescription
 
-#if os(Windows)
-// The firmwarekit executable is excluded on Windows: it depends on the
-// FirmwareKit library, which would force SwiftPM to build FirmwareKit without
+// The firmwarekit executable is built on all platforms, including Windows:
+// the Windows package stages firmwarekit.exe next to LightTouch.exe, and
+// FirmwareJobs.preparer requires it for device preparation (canDownload).
+// Previously excluded on Windows over a SwiftPM concern that building the
+// executable would force the FirmwareKit library to build without
 // -enable-testing, breaking the @testable imports in FirmwareKitTests
-// (SwiftPM builds each target once per configuration). The library and its
-// tests are what CI exercises.
-let executableTargets: [Target] = []
-let executableProducts: [Product] = []
-#else
+// (SwiftPM builds each target once per configuration). The windows-ci job
+// builds with -Xswiftc -enable-testing for the whole invocation, so the
+// library builds testable throughout, and Linux CI already builds this
+// executable alongside the tests. Branch CI is the validator: if the
+// FirmwareKit job goes red on @testable imports, revisit with an env-gated
+// target instead of a platform exclusion.
 let executableTargets: [Target] = [
     .executableTarget(
         name: "FirmwareKitCLI",
@@ -38,7 +41,6 @@ let executableTargets: [Target] = [
 let executableProducts: [Product] = [
     .executable(name: "firmwarekit", targets: ["FirmwareKitCLI"]),
 ]
-#endif
 
 let package = Package(
     name: "FirmwareKit",
