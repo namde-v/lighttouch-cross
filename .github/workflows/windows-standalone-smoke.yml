@@ -211,10 +211,17 @@ jobs:
             } catch { Write-Host "registry pageheap enable failed (non-fatal): $_" }
           }
           # Verify by reading back (this is the proof the run was instrumented).
+          # Note: gflags /p /enable /full sets PageHeapFlags 0x3 (bit 0 =
+          # enable page heap, bit 1 = collect stack traces), while the
+          # registry fallback sets 1. Both are full page heap — so check
+          # bit 0, not exact equality (an exact `== 1` check falsely
+          # reports "NOT enabled" on a gflags-enabled run, as happened
+          # on smoke 40436685652, where gflags confirmed "page heap
+          # enabled" yet the step warned NOT enabled).
           try {
             $props = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\LightTouch.exe' -ErrorAction Stop
             Write-Host "pageheap read-back: GlobalFlag=$($props.GlobalFlag) PageHeapFlags=$($props.PageHeapFlags)"
-            if ($props.GlobalFlag -ne '0x02000000' -or $props.PageHeapFlags -ne 1) { $enabled = $false }
+            if ($props.GlobalFlag -ne '0x02000000' -or ($props.PageHeapFlags -band 1) -ne 1) { $enabled = $false }
           } catch { Write-Host "pageheap read-back failed (non-fatal): $_"; $enabled = $false }
           if ($enabled) {
             Write-Host "full pageheap ENABLED for LightTouch.exe"
