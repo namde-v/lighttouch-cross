@@ -16,6 +16,60 @@
 # not log lines. A non-mock launch attempt runs second, non-gating,
 # and its outcome is recorded (it exercises the real core-DLL path).
 #
+# Crash-dump capture: the real-core launch runs with procdump
+# attached (-ma -e, immediately after launch), so an unhandled
+# exception in the real core (e.g. the 0xC0000374 heap corruption on
+# smoke 40413923104, which left only an exit code) writes a full
+# minidump to smoke-dumps/, uploaded as the standalone-smoke-dumps
+# artifact (always, warn if none). The mock launch is untouched:
+# its gating proof (alive + Qt6Core from layout) is unchanged.
+# procdump is installed by its own step (choco, Sysinternals
+# fallback — same as windows-ci.yml); if install fails, the run
+# still proves aliveness but logs loudly that no dump was captured.
+#
+# Full page heap: the real-core launch also runs under full page heap
+# (IFEO GlobalFlag 0x02000000 + PageHeapFlags 0x01 — the registry
+# equivalent of `gflags /p /enable LightTouch.exe /full`, used when
+# gflags.exe itself is absent from the runner image). Why: the
+# 0xC0000374 dump from smoke 40427508752 identifies the DETECTING
+# free (C-runtime free from core code on a Swift Task worker), not
+# the corrupting write. Full page heap puts a guard page at the end
+# of every allocation, so the corrupting write faults IMMEDIATELY at
+# the write, and procdump captures the culprit stack instead of a
+# later detecting free. This is FORWARD-overrun detection only
+# (standard full page heap); if a pageheap run still reports
+# corruption at free time, a backward overrun is the next hypothesis
+# (PageHeapFlags 0x10). Page heap is per-image (LightTouch.exe) and
+# read at process start, so the step runs AFTER the mock launch
+# (mock stays uninstrumented) and BEFORE the real launch. The runner
+# is ephemeral, so no cleanup step is needed. Cost: one extra page
+# per allocation — acceptable for a 20s smoke run.
+#
+# Dump on terminate (-t): procdump attaches with -e (unhandled
+# exception) AND -t (process terminate, whatever the path). -t is
+# required because the 0xC0000421 (STATUS_VERIFIER_STOP) exits on the
+# two pageheap runs produced zero dumps with -e alone — the process
+# exits without an unhandled exception reaching the debugger. The
+# -t dump on the alive path is a healthy-state dump (expected, not a
+# crash); on the exited path it is the terminating-state evidence.
+# The step waits for the procdump process to finish writing (up to
+# 90s) before the upload step runs, so no partial dump is uploaded.
+#
+# First-chance filtered capture (-e 1 -f C0000421): the -t dump on
+# smoke 40445160449 came too late (only 1 parked thread left, no
+# faulting stack), so -t alone cannot name the culprit. -e 1 -f
+# C0000421 was tried to dump at the verifier stop ITSELF — but smoke
+# 40447989357 produced only the -t terminate dump, so the filter did
+# NOT match native codes on this procdump version. The filter is now
+# REMOVED: unfiltered -e 1 (confirmatory, not diagnostic — the heap
+# bug appears fixed on the new package, ALIVE 2/2 with pageheap
+# active). Unfiltered -e 1 dumps on the FIRST first-chance exception
+# (which may be benign — inspect the earliest dump first, then
+# refine); -t stays as fallback. Per main agent decision (audit
+# 12:32): ALIVE 2/2 on 40430881989 CLOSES smoke re-dispatch for
+# heap-diagnosis — further smokes are replications or confirmatory
+# (like this one), not new diagnostic dispatches.
+#
 # Dispatch-only: gh workflow run windows-standalone-smoke.yml
 #   --ref win/w-app-smoke [-f package_run_id=<id>|latest]
 
@@ -99,18 +153,197 @@ jobs:
             exit 1
           }
 
+      - name: Install procdump (crash-dump capture for the real-core launch)
+        id: procdump
+        run: |
+          # procdump is NOT preinstalled on the windows-latest runner image.
+          # Same two-method install as windows-ci.yml (choco, then direct
+          # Sysinternals download). Soft-fail by design: the smoke run still
+          # proves mock/real aliveness without it, but the real launch then
+          # runs WITHOUT dump capture and the log says so loudly.
+          $available = $false
+          if (Get-Command procdump -ErrorAction SilentlyContinue) {
+            Write-Host "procdump already on PATH"
+            $available = $true
+          } else {
+            try {
+              choco install procdump -y --no-progress 2>&1 | Select-Object -Last 3 | Write-Host
+              if (Get-Command procdump -ErrorAction SilentlyContinue) { $available = $true }
+            } catch { Write-Host "choco install failed (non-fatal): $_" }
+            if (-not $available) {
+              Write-Host "Falling back to direct Sysinternals download..."
+              try {
+                $zip = Join-Path $env:RUNNER_TEMP "procdump.zip"
+                $dir = Join-Path $env:RUNNER_TEMP "procdump"
+                Invoke-WebRequest -Uri "https://download.sysinternals.com/files/Procdump.zip" -OutFile $zip
+                Expand-Archive -Path $zip -DestinationPath $dir -Force
+                $dir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+                $env:PATH = "$dir;$env:PATH"
+                if (Get-Command procdump -ErrorAction SilentlyContinue) { $available = $true }
+              } catch { Write-Host "Sysinternals download failed (non-fatal): $_" }
+            }
+          }
+          if ($available) {
+            & procdump -accepteula -? 2>&1 | Select-Object -First 2 | Write-Host
+            Write-Host "procdump ready"
+          } else {
+            Write-Host "WARNING: procdump unavailable — real-core launch will run WITHOUT crash-dump capture"
+          }
+          "available=$($available.ToString().ToLower())" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Enable full pageheap for LightTouch.exe
+        id: pageheap
+        run: |
+          # Full page heap for the real-core launch ONLY (this step runs
+          # after the mock launch, so mock stays uninstrumented). Goal: the
+          # corrupting write faults immediately at the write, so procdump
+          # captures the culprit stack — the 0xC0000374 dump only showed
+          # the detecting free, not the corrupting write.
+          # Method: gflags if present, else direct registry (verified
+          # values — GlobalFlag MUST be REG_SZ, a string, not a DWORD):
+          #   HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File
+          #     Execution Options\LightTouch.exe
+          #     GlobalFlag (REG_SZ) = "0x02000000" (FLG_HEAP_PAGE_ALLOCATION)
+          #     PageHeapFlags (REG_DWORD) = 1 (enable page heap)
+          # Equivalent to `gflags /p /enable LightTouch.exe /full`.
+          # Soft-fail by design: without pageheap the run still yields a
+          # procdump dump (as before), but the log says loudly that the
+          # corrupting write will NOT fault immediately.
+          $enabled = $false
+          $gflags = Get-Command gflags -ErrorAction SilentlyContinue
+          if (-not $gflags) {
+            foreach ($cand in @(
+              'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\gflags.exe',
+              'C:\Program Files\Windows Kits\10\Debuggers\x64\gflags.exe')) {
+              if (Test-Path $cand) { $gflags = $cand; break }
+            }
+          }
+          if ($gflags) {
+            Write-Host "gflags found: $gflags"
+            try {
+              & $gflags /p /enable LightTouch.exe /full 2>&1 | Write-Host
+              $enabled = $true
+            } catch { Write-Host "gflags /p /enable failed (non-fatal): $_" }
+          }
+          if (-not $enabled) {
+            Write-Host "gflags unavailable — enabling full pageheap via registry..."
+            try {
+              $key = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\LightTouch.exe'
+              New-Item -Path $key -Force | Out-Null
+              Set-ItemProperty -Path $key -Name 'GlobalFlag' -Value '0x02000000' -Type String -Force
+              Set-ItemProperty -Path $key -Name 'PageHeapFlags' -Value 1 -Type DWord -Force
+              $enabled = $true
+            } catch { Write-Host "registry pageheap enable failed (non-fatal): $_" }
+          }
+          # Verify by reading back (this is the proof the run was instrumented).
+          # Note: gflags /p /enable /full sets PageHeapFlags 0x3 (bit 0 =
+          # enable page heap, bit 1 = collect stack traces), while the
+          # registry fallback sets 1. Both are full page heap — so check
+          # bit 0, not exact equality (an exact `== 1` check falsely
+          # reports "NOT enabled" on a gflags-enabled run, as happened
+          # on smoke 40436685652, where gflags confirmed "page heap
+          # enabled" yet the step warned NOT enabled).
+          try {
+            $props = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\LightTouch.exe' -ErrorAction Stop
+            Write-Host "pageheap read-back: GlobalFlag=$($props.GlobalFlag) PageHeapFlags=$($props.PageHeapFlags)"
+            if ($props.GlobalFlag -ne '0x02000000' -or ($props.PageHeapFlags -band 1) -ne 1) { $enabled = $false }
+          } catch { Write-Host "pageheap read-back failed (non-fatal): $_"; $enabled = $false }
+          if ($enabled) {
+            Write-Host "full pageheap ENABLED for LightTouch.exe"
+          } else {
+            Write-Host "WARNING: full pageheap NOT enabled — real-core launch runs with procdump capture only"
+          }
+          "enabled=$($enabled.ToString().ToLower())" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       - name: Launch (real core path, offscreen) — NON-GATING, recorded
         run: |
           $env:QT_QPA_PLATFORM = 'offscreen'
           Remove-Item Env:LTM_BRIDGE_MOCK -ErrorAction SilentlyContinue
           $p = Start-Process -FilePath extracted/LightTouch/LightTouch.exe -WorkingDirectory extracted/LightTouch -PassThru -NoNewWindow -RedirectStandardOutput smoke-real-stdout.txt -RedirectStandardError smoke-real-stderr.txt
+          # Crash-dump capture: attach procdump to the real-core process so a
+          # crash writes a full minidump (-ma) to smoke-dumps/ instead of
+          # vanishing with only an exit code. -e 1 = dump on FIRST-CHANCE
+          # exceptions, UNFILTERED (the -f C0000421 filter from 4baad59 did
+          # NOT match the verifier stop — smoke 40447989357 produced only
+          # the -t terminate dump, no first-chance capture — so the filter
+          # is removed). -t = dump on process terminate, whatever the
+          # path (fallback). This is CONFIRMATORY, not diagnostic: the heap
+          # bug appears fixed on the new package (ALIVE 2/2 with pageheap
+          # active), so this run targets the OLD package to see what its
+          # first first-chance exception actually is — it may be benign
+          # (inspect the EARLIEST dump first, then refine: re-add a filter
+          # or -n if the first one is noise). Note: unfiltered -e 1 can
+          # produce MULTIPLE dumps (one per first-chance exception, each
+          # ~1GB under pageheap); the upload globs all *.dmp, so a noisy
+          # run uploads several dumps — that is expected, inspect earliest
+          # first. Attach immediately: the crash takes seconds (Qt + core
+          # init + QML load), procdump attaches in <1s. The procdump
+          # process object is kept so the step can wait for the dump write
+          # to finish before reporting/uploading (a full -ma dump takes
+          # ~20s to write; without the wait the upload step could race a
+          # partial dump). Note: with -e 1, procdump keeps monitoring
+          # after a first-chance dump and exits only when the process
+          # terminates (when -t fires), so the wait logic below still
+          # applies unchanged.
+          $dumpArmed = $false
+          $pd = $null
+          if ('${{ steps.procdump.outputs.available }}' -eq 'true') {
+            New-Item -ItemType Directory -Force smoke-dumps | Out-Null
+            $pd = Start-Process procdump -ArgumentList "-accepteula -ma -e 1 -t $($p.Id) smoke-dumps" -NoNewWindow -PassThru
+            $dumpArmed = $true
+            Write-Host "procdump attached to real-core PID $($p.Id) (dump dir: smoke-dumps, -e -t)"
+          } else {
+            Write-Host "WARNING: procdump unavailable — real-core launch runs WITHOUT crash-dump capture"
+          }
+          if ('${{ steps.pageheap.outputs.enabled }}' -eq 'true') {
+            Write-Host "full pageheap ENABLED for this launch (corrupting write will fault immediately; procdump captures the culprit stack)"
+          } else {
+            Write-Host "WARNING: full pageheap NOT enabled for this launch (heap corruption, if any, will surface as a later detecting free, as before)"
+          }
           Start-Sleep -Seconds 20
-          if (-not $p.HasExited) {
+          $wasAlive = -not $p.HasExited
+          if ($wasAlive) {
             Write-Host "REAL LAUNCH: process $($p.Id) ALIVE after 20s (core path works standalone)"
             Stop-Process -Id $p.Id -Force
           } else {
             Write-Host "REAL LAUNCH: process EXITED early, exit code $($p.ExitCode) — recorded, not gating (mock launch is the Qt-runtime proof)"
           }
+          if ($dumpArmed) {
+            # Wait for procdump to finish writing before reporting/uploading.
+            # On the alive path, -t starts writing only after the stop above;
+            # on the exited path the write may still be in progress if death
+            # was recent. Without this wait the upload step can race a
+            # partial dump (the 2s sleep it replaced was not enough for a
+            # ~340MB full dump).
+            if ($pd) {
+              try { Wait-Process -Id $pd.Id -Timeout 90 -ErrorAction Stop } catch { Write-Host "procdump still writing after 90s (upload proceeds with whatever exists)" }
+            } else {
+              Start-Sleep -Seconds 2
+            }
+            $dumps = @(Get-ChildItem smoke-dumps -Filter *.dmp -ErrorAction SilentlyContinue)
+            if ($dumps.Count -gt 0) {
+              if ($wasAlive) {
+                $dumps | ForEach-Object { Write-Host "PROCESS DUMP CAPTURED (healthy-state, expected — process was alive when stopped, NOT a crash): $($_.FullName) ($($_.Length) bytes)" }
+              } else {
+                # Exited path, unfiltered -e 1: the EARLIEST dump is the
+                # FIRST first-chance exception (may be benign — inspect
+                # it first; if it is the verifier stop, it is the gold).
+                # Later dumps are subsequent first-chance exceptions
+                # and/or the -t terminate dump (late, parked thread only).
+                $dumps | Sort-Object CreationTime | ForEach-Object { Write-Host "DUMP CAPTURED (exited path — earliest = first first-chance exception, inspect first; later = subsequent first-chance and/or -t terminate dump): $($_.FullName) ($($_.Length) bytes)" }
+              }
+            } else {
+              Write-Host "No process dump (procdump unavailable, no first-chance exception fired, or write did not complete)"
+            }
+          }
+
+      - name: Upload crash dumps
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: standalone-smoke-dumps
+          path: smoke-dumps/*.dmp
+          if-no-files-found: warn
 
       - name: Upload smoke logs
         if: always()
