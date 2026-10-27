@@ -45,6 +45,16 @@
 # is ephemeral, so no cleanup step is needed. Cost: one extra page
 # per allocation — acceptable for a 20s smoke run.
 #
+# Dump on terminate (-t): procdump attaches with -e (unhandled
+# exception) AND -t (process terminate, whatever the path). -t is
+# required because the 0xC0000421 (STATUS_VERIFIER_STOP) exits on the
+# two pageheap runs produced zero dumps with -e alone — the process
+# exits without an unhandled exception reaching the debugger. The
+# -t dump on the alive path is a healthy-state dump (expected, not a
+# crash); on the exited path it is the terminating-state evidence.
+# The step waits for the procdump process to finish writing (up to
+# 90s) before the upload step runs, so no partial dump is uploaded.
+#
 # Dispatch-only: gh workflow run windows-standalone-smoke.yml
 #   --ref win/w-app-smoke [-f package_run_id=<id>|latest]
 
@@ -235,17 +245,27 @@ jobs:
           $env:QT_QPA_PLATFORM = 'offscreen'
           Remove-Item Env:LTM_BRIDGE_MOCK -ErrorAction SilentlyContinue
           $p = Start-Process -FilePath extracted/LightTouch/LightTouch.exe -WorkingDirectory extracted/LightTouch -PassThru -NoNewWindow -RedirectStandardOutput smoke-real-stdout.txt -RedirectStandardError smoke-real-stderr.txt
-          # Crash-dump capture: attach procdump to the real-core process so an
-          # unhandled exception (e.g. 0xC0000374 heap corruption) writes a
-          # full minidump (-ma) to smoke-dumps/ instead of vanishing with
-          # only an exit code. Attach immediately: the crash takes seconds
-          # (Qt + core init + QML load), procdump attaches in <1s.
+          # Crash-dump capture: attach procdump to the real-core process so a
+          # crash writes a full minidump (-ma) to smoke-dumps/ instead of
+          # vanishing with only an exit code. -e = dump on unhandled
+          # exception; -t = dump on process terminate, whatever the path.
+          # -t is essential: the 0xC0000421 (STATUS_VERIFIER_STOP) exits on
+          # the two pageheap runs produced ZERO dumps with -e alone, because
+          # the process exits without an unhandled exception reaching the
+          # debugger. -t guarantees a terminating-state dump whose thread
+          # stacks are the direct evidence. Attach immediately: the crash
+          # takes seconds (Qt + core init + QML load), procdump attaches
+          # in <1s. The procdump process object is kept so the step can
+          # wait for the dump write to finish before reporting/uploading
+          # (a full -ma dump takes ~20s to write; without the wait the
+          # upload step could race a partial dump).
           $dumpArmed = $false
+          $pd = $null
           if ('${{ steps.procdump.outputs.available }}' -eq 'true') {
             New-Item -ItemType Directory -Force smoke-dumps | Out-Null
-            Start-Process procdump -ArgumentList "-accepteula -ma -e $($p.Id) smoke-dumps" -NoNewWindow -PassThru | Out-Null
+            $pd = Start-Process procdump -ArgumentList "-accepteula -ma -e -t $($p.Id) smoke-dumps" -NoNewWindow -PassThru
             $dumpArmed = $true
-            Write-Host "procdump attached to real-core PID $($p.Id) (dump dir: smoke-dumps)"
+            Write-Host "procdump attached to real-core PID $($p.Id) (dump dir: smoke-dumps, -e -t)"
           } else {
             Write-Host "WARNING: procdump unavailable — real-core launch runs WITHOUT crash-dump capture"
           }
@@ -255,19 +275,34 @@ jobs:
             Write-Host "WARNING: full pageheap NOT enabled for this launch (heap corruption, if any, will surface as a later detecting free, as before)"
           }
           Start-Sleep -Seconds 20
-          if (-not $p.HasExited) {
+          $wasAlive = -not $p.HasExited
+          if ($wasAlive) {
             Write-Host "REAL LAUNCH: process $($p.Id) ALIVE after 20s (core path works standalone)"
             Stop-Process -Id $p.Id -Force
           } else {
             Write-Host "REAL LAUNCH: process EXITED early, exit code $($p.ExitCode) — recorded, not gating (mock launch is the Qt-runtime proof)"
           }
           if ($dumpArmed) {
-            Start-Sleep -Seconds 2
+            # Wait for procdump to finish writing before reporting/uploading.
+            # On the alive path, -t starts writing only after the stop above;
+            # on the exited path the write may still be in progress if death
+            # was recent. Without this wait the upload step can race a
+            # partial dump (the 2s sleep it replaced was not enough for a
+            # ~340MB full dump).
+            if ($pd) {
+              try { Wait-Process -Id $pd.Id -Timeout 90 -ErrorAction Stop } catch { Write-Host "procdump still writing after 90s (upload proceeds with whatever exists)" }
+            } else {
+              Start-Sleep -Seconds 2
+            }
             $dumps = @(Get-ChildItem smoke-dumps -Filter *.dmp -ErrorAction SilentlyContinue)
             if ($dumps.Count -gt 0) {
-              $dumps | ForEach-Object { Write-Host "CRASH DUMP CAPTURED: $($_.FullName) ($($_.Length) bytes)" }
+              if ($wasAlive) {
+                $dumps | ForEach-Object { Write-Host "PROCESS DUMP CAPTURED (healthy-state, expected — process was alive when stopped, NOT a crash): $($_.FullName) ($($_.Length) bytes)" }
+              } else {
+                $dumps | ForEach-Object { Write-Host "TERMINATING-STATE DUMP CAPTURED (the evidence — process exited early): $($_.FullName) ($($_.Length) bytes)" }
+              }
             } else {
-              Write-Host "No crash dump (process alive-and-stopped, or exit without unhandled exception)"
+              Write-Host "No process dump (procdump unavailable or write did not complete)"
             }
           }
 
