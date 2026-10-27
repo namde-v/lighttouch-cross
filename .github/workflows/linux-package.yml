@@ -107,6 +107,16 @@ jobs:
           echo "== binary + core =="
           cp "$BIN" "$APPDIR/usr/bin/lighttouch"
           cp "$CORE" "$APPDIR/usr/lib/libLTAppCore.so"
+          echo "== resources/ (firmware catalog; appDir + /resources) =="
+          # Bridge.cpp sets resourceDir = appDir + "/resources", where appDir
+          # is the exe dir. AppImage exe = usr/bin/lighttouch, so resources
+          # go to usr/bin/resources. CAVEAT (not a run-1 fix): run-1 is still
+          # under W1 diagnosis; this only fills the known missing-resources/
+          # gap (packages shipped no resources/, catalog always empty).
+          [ -f "$GITHUB_WORKSPACE/LightTouchMac/Resources/firmware-catalog.json" ] || { echo "resources source missing: LightTouchMac/Resources/firmware-catalog.json"; exit 1; }
+          mkdir -p "$APPDIR/usr/bin/resources"
+          cp -r "$GITHUB_WORKSPACE/LightTouchMac/Resources/." "$APPDIR/usr/bin/resources/"
+          echo "  resources staged: $(ls "$APPDIR/usr/bin/resources" | tr '\n' ' ')"
           echo "== Qt libs from ldd (excluding ONLY base C/C++ runtime + loader + NSS) =="
           # ldd resolves to /lib/x86_64-linux-gnu (== /usr/lib/x86_64-linux-gnu
           # via symlink): match both spellings or every Qt lib is missed.
@@ -267,6 +277,7 @@ jobs:
           [ "$rc" -eq 124 ] || { echo "APPIMAGE LAUNCH FAILED (expected 124)"; exit 1; }
           grep -q "Bridge ready" appimage-launch.log || { echo "APPIMAGE: no Bridge ready in log"; exit 1; }
           grep -q "Cannot start" appimage-launch.log && { echo "APPIMAGE: bridge failed to start"; exit 1; } || true
+          grep -q "no firmware-catalog.json" appimage-launch.log && { echo "APPIMAGE: resources/ not bundled (catalog empty)"; exit 1; } || true
           echo "APPIMAGE-VERIFY-OK"
 
       - name: Build .deb
@@ -281,6 +292,8 @@ jobs:
           mkdir -p "$DEBROOT/DEBIAN"
           cp "$APPDIR/usr/bin/lighttouch" "$DEBROOT/opt/lighttouch/lighttouch"
           cp -r "$APPDIR/usr/lib" "$DEBROOT/opt/lighttouch/lib"
+          # .deb exe = /opt/lighttouch/lighttouch -> resourceDir = /opt/lighttouch/resources
+          cp -r "$APPDIR/usr/bin/resources" "$DEBROOT/opt/lighttouch/resources"
           cp "$APPDIR/lighttouch.png" "$DEBROOT/usr/share/icons/hicolor/64x64/apps/lighttouch.png"
           cat > "$DEBROOT/usr/bin/lighttouch" << 'WRAPEOF'
           #!/bin/bash
@@ -349,6 +362,7 @@ jobs:
           [ "$rc" -eq 124 ] || { echo "DEB LAUNCH FAILED (expected 124)"; exit 1; }
           grep -q "Bridge ready" deb-launch.log || { echo "DEB: no Bridge ready in log"; exit 1; }
           grep -q "Cannot start" deb-launch.log && { echo "DEB: bridge failed to start"; exit 1; } || true
+          grep -q "no firmware-catalog.json" deb-launch.log && { echo "DEB: resources/ not bundled (catalog empty)"; exit 1; } || true
           echo "DEB-VERIFY-OK"
 
       - name: Upload Linux packages
