@@ -35,6 +35,7 @@ jobs:
           - DeviceRuntime
           - LightTouchCore
           - LTAppCore
+          - LightTouchDevice
     defaults:
       run:
         working-directory: Packages/${{ matrix.package }}
