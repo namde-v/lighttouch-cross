@@ -27,6 +27,24 @@
 # fallback — same as windows-ci.yml); if install fails, the run
 # still proves aliveness but logs loudly that no dump was captured.
 #
+# Full page heap: the real-core launch also runs under full page heap
+# (IFEO GlobalFlag 0x02000000 + PageHeapFlags 0x01 — the registry
+# equivalent of `gflags /p /enable LightTouch.exe /full`, used when
+# gflags.exe itself is absent from the runner image). Why: the
+# 0xC0000374 dump from smoke 40427508752 identifies the DETECTING
+# free (C-runtime free from core code on a Swift Task worker), not
+# the corrupting write. Full page heap puts a guard page at the end
+# of every allocation, so the corrupting write faults IMMEDIATELY at
+# the write, and procdump captures the culprit stack instead of a
+# later detecting free. This is FORWARD-overrun detection only
+# (standard full page heap); if a pageheap run still reports
+# corruption at free time, a backward overrun is the next hypothesis
+# (PageHeapFlags 0x10). Page heap is per-image (LightTouch.exe) and
+# read at process start, so the step runs AFTER the mock launch
+# (mock stays uninstrumented) and BEFORE the real launch. The runner
+# is ephemeral, so no cleanup step is needed. Cost: one extra page
+# per allocation — acceptable for a 20s smoke run.
+#
 # Dispatch-only: gh workflow run windows-standalone-smoke.yml
 #   --ref win/w-app-smoke [-f package_run_id=<id>|latest]
 
@@ -148,6 +166,63 @@ jobs:
           }
           "available=$($available.ToString().ToLower())" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
+      - name: Enable full pageheap for LightTouch.exe
+        id: pageheap
+        run: |
+          # Full page heap for the real-core launch ONLY (this step runs
+          # after the mock launch, so mock stays uninstrumented). Goal: the
+          # corrupting write faults immediately at the write, so procdump
+          # captures the culprit stack — the 0xC0000374 dump only showed
+          # the detecting free, not the corrupting write.
+          # Method: gflags if present, else direct registry (verified
+          # values — GlobalFlag MUST be REG_SZ, a string, not a DWORD):
+          #   HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File
+          #     Execution Options\LightTouch.exe
+          #     GlobalFlag (REG_SZ) = "0x02000000" (FLG_HEAP_PAGE_ALLOCATION)
+          #     PageHeapFlags (REG_DWORD) = 1 (enable page heap)
+          # Equivalent to `gflags /p /enable LightTouch.exe /full`.
+          # Soft-fail by design: without pageheap the run still yields a
+          # procdump dump (as before), but the log says loudly that the
+          # corrupting write will NOT fault immediately.
+          $enabled = $false
+          $gflags = Get-Command gflags -ErrorAction SilentlyContinue
+          if (-not $gflags) {
+            foreach ($cand in @(
+              'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\gflags.exe',
+              'C:\Program Files\Windows Kits\10\Debuggers\x64\gflags.exe')) {
+              if (Test-Path $cand) { $gflags = $cand; break }
+            }
+          }
+          if ($gflags) {
+            Write-Host "gflags found: $gflags"
+            try {
+              & $gflags /p /enable LightTouch.exe /full 2>&1 | Write-Host
+              $enabled = $true
+            } catch { Write-Host "gflags /p /enable failed (non-fatal): $_" }
+          }
+          if (-not $enabled) {
+            Write-Host "gflags unavailable — enabling full pageheap via registry..."
+            try {
+              $key = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\LightTouch.exe'
+              New-Item -Path $key -Force | Out-Null
+              Set-ItemProperty -Path $key -Name 'GlobalFlag' -Value '0x02000000' -Type String -Force
+              Set-ItemProperty -Path $key -Name 'PageHeapFlags' -Value 1 -Type DWord -Force
+              $enabled = $true
+            } catch { Write-Host "registry pageheap enable failed (non-fatal): $_" }
+          }
+          # Verify by reading back (this is the proof the run was instrumented).
+          try {
+            $props = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\LightTouch.exe' -ErrorAction Stop
+            Write-Host "pageheap read-back: GlobalFlag=$($props.GlobalFlag) PageHeapFlags=$($props.PageHeapFlags)"
+            if ($props.GlobalFlag -ne '0x02000000' -or $props.PageHeapFlags -ne 1) { $enabled = $false }
+          } catch { Write-Host "pageheap read-back failed (non-fatal): $_"; $enabled = $false }
+          if ($enabled) {
+            Write-Host "full pageheap ENABLED for LightTouch.exe"
+          } else {
+            Write-Host "WARNING: full pageheap NOT enabled — real-core launch runs with procdump capture only"
+          }
+          "enabled=$($enabled.ToString().ToLower())" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       - name: Launch (real core path, offscreen) — NON-GATING, recorded
         run: |
           $env:QT_QPA_PLATFORM = 'offscreen'
@@ -166,6 +241,11 @@ jobs:
             Write-Host "procdump attached to real-core PID $($p.Id) (dump dir: smoke-dumps)"
           } else {
             Write-Host "WARNING: procdump unavailable — real-core launch runs WITHOUT crash-dump capture"
+          }
+          if ('${{ steps.pageheap.outputs.enabled }}' -eq 'true') {
+            Write-Host "full pageheap ENABLED for this launch (corrupting write will fault immediately; procdump captures the culprit stack)"
+          } else {
+            Write-Host "WARNING: full pageheap NOT enabled for this launch (heap corruption, if any, will surface as a later detecting free, as before)"
           }
           Start-Sleep -Seconds 20
           if (-not $p.HasExited) {
