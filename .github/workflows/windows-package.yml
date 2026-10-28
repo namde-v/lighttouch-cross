@@ -212,9 +212,9 @@ jobs:
           # DLLs were staged at all. NOTE: the trailing `$LASTEXITCODE = 0`
           # is load-bearing, not cosmetic — pwsh propagates the final
           # native exit code, so without it a failed LAST download
-          # (LightTouchCore, then last in the list) failed the whole step in
+          # (LightTouchDevice, now last in the list) failed the whole step in
           # post-merge run 40197207503 despite the warn-only intent.
-          foreach ($pkg in @('HostRuntime','DeviceServices','ReleaseChecks','BuildTools','FirmwareKit','DeviceRuntime','LightTouchCore','LTAppCore')) {
+          foreach ($pkg in @('HostRuntime','DeviceServices','ReleaseChecks','BuildTools','FirmwareKit','DeviceRuntime','LightTouchCore','LTAppCore','LightTouchDevice')) {
             gh run download ${{ steps.run-id.outputs.run_id }} --name "swift-$pkg-windows-x86_64" --dir "swift-artifacts/swift-$pkg-windows-x86_64"
             if ($LASTEXITCODE -eq 0) { Write-Host "artifact: swift-$pkg-windows-x86_64" } else { Write-Warning "build artifact missing for $pkg" }
           }
@@ -261,6 +261,14 @@ jobs:
           # Windows). Warn-only, like qemu below: the app launches without
           # it; it only gates device preparation (FirmwareJobs.canDownload).
           if (Test-Path (Join-Path $layout 'firmwarekit.exe')) { Write-Host 'Staged firmwarekit.exe (device preparation)' } else { Write-Warning 'firmwarekit.exe not staged (windows-ci run predates the firmwarekit build or the FirmwareKit job failed)' }
+
+          # LightTouchDevice.exe (device helper): staged from the windows-ci
+          # LightTouchDevice artifact by the *.exe glob above, once windows-ci
+          # builds it. Warn-only, like firmwarekit above: the app launches
+          # without it; it only gates device-helper functions. Staging the
+          # exe alone does not make the helper usable end-to-end (app helper
+          # path + guestTools work are separate and still pending).
+          if (Test-Path (Join-Path $layout 'LightTouchDevice.exe')) { Write-Host 'Staged LightTouchDevice.exe (device helper)' } else { Write-Warning 'LightTouchDevice.exe not staged (windows-ci run predates the helper build or the LightTouchDevice job failed)' }
 
           # qemu-system-arm.exe + MinGW runtime DLLs (when the artifact exists)
           if (Test-Path qemu-artifact) {
@@ -374,7 +382,7 @@ jobs:
             ''
             'Swift package DLLs by artifact:'
           )
-          foreach ($pkg in @('HostRuntime','DeviceServices','ReleaseChecks','BuildTools','FirmwareKit','DeviceRuntime','LightTouchCore','LTAppCore')) {
+          foreach ($pkg in @('HostRuntime','DeviceServices','ReleaseChecks','BuildTools','FirmwareKit','DeviceRuntime','LightTouchCore','LTAppCore','LightTouchDevice')) {
             $dir = "swift-artifacts/swift-$pkg-windows-x86_64"
             if (Test-Path $dir) {
               $n = @(Get-ChildItem $dir -Recurse -Filter *.dll).Count
