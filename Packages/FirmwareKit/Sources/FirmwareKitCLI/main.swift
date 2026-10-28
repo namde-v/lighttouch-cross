@@ -117,7 +117,15 @@ default:  // the root alone, or help
             throw FirmwareError(.internal, "cannot locate the firmwarekit executable")
         }
         let directory = executable.resolvingSymlinksInPath().deletingLastPathComponent()
+#if os(Windows)
+        // Windows package layout: resources/ sits beside firmwarekit.exe (LightTouch/resources/),
+        // not in a parent Resources/ dir as in a macOS bundle (Contents/MacOS -> ../Resources).
+        // The CLI resolves guestTools to resources/guest-tools/; only a pre-unpacked directory
+        // works on Windows — guest.aar extraction needs AppleArchive (macOS-only) and throws.
+        let resources = directory.appendingPathComponent("resources")
+#else
         let resources = directory.appendingPathComponent("../Resources").standardizedFileURL
+#endif
         // The helper beside this executable (the app bundle's MacOS/, a build's products) unless --helper names one.
         let sibling = directory.appendingPathComponent("LightTouchDevice")
         let helper =
