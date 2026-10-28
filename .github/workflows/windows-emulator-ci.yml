@@ -36,7 +36,7 @@ jobs:
   build:
     name: Build qemu-system-arm (Windows x86-64)
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     defaults:
       run:
         shell: msys2 {0}
