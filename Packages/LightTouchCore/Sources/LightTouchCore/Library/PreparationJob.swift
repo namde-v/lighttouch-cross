@@ -28,7 +28,7 @@ public nonisolated final class PreparationJob: @unchecked Sendable {
             sibling: (entry: FirmwareCatalog.Entry, ipsw: URL)? = nil,
             state: URL,
             preparer: URL,
-            helper: URL,
+            helper: URL?,
             cache: URL,
             log: URL,
             blob: URL? = nil,
@@ -55,7 +55,7 @@ public nonisolated final class PreparationJob: @unchecked Sendable {
         /// The state directory (Preparing/ and Devices/ are under it).
         public var state: URL
         public var preparer: URL
-        public var helper: URL
+        public var helper: URL?
         /// Decrypted components by IPSW sha1; this IPSW's are deleted when the job ends, however it ends.
         public var cache: URL
         /// The preparer's stderr.
