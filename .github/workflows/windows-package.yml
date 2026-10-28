@@ -331,6 +331,21 @@ jobs:
           New-Item -ItemType Directory -Force -Path LightTouch/resources | Out-Null
           Copy-Item LightTouchMac/Resources/* LightTouch/resources -Force
 
+          # Pre-unpacked guest-tools/ (device creation; the firmwarekit CLI resolves
+          # guestTools to <exe-dir>/resources/guest-tools/ on Windows).
+          # guest.aar is NOT staged: GuestArchive extraction needs AppleArchive
+          # (macOS-only) and throws on Windows, so only a pre-unpacked directory
+          # works. Source is the repo's vendor resources dir (populated when guest
+          # tools are provisioned from macOS); warn-only until then — failing here
+          # would break every package build while tools are absent, and an absent
+          # dir fails honestly later (Recipe lock step) instead.
+          if (Test-Path LightTouchMac/Resources/Guest/guest-tools) {
+            Copy-Item LightTouchMac/Resources/Guest/guest-tools LightTouch/resources/guest-tools -Recurse -Force
+            Write-Host 'Staged pre-unpacked guest-tools (device creation)'
+          } else {
+            Write-Warning 'pre-unpacked guest-tools not staged (LightTouchMac/Resources/Guest/guest-tools absent); device creation will fail at the lock step until tools are provisioned'
+          }
+
           Write-Host '--- layout contents ---'
           Get-ChildItem $layout | Format-Table Name, Length -AutoSize | Out-String | Write-Host
 
