@@ -72,7 +72,16 @@ nonisolated public final class DeviceLink: @unchecked Sendable {
             guard let executable = Bundle.main.executableURL else {
                 preconditionFailure("A running process has an executable")
             }
+            #if os(Windows)
+            // Windows executables carry the .exe suffix: the extensionless
+            // macOS name never matches the staged LightTouchDevice.exe beside
+            // the running executable (LightTouch/), so boot lookup missed
+            // exactly like the app-helper path and CLI sibling fallback did
+            // before their fixes.
+            return executable.deletingLastPathComponent().appendingPathComponent("LightTouchDevice.exe")
+            #else
             return executable.deletingLastPathComponent().appendingPathComponent("LightTouchDevice")
+            #endif
         }()
         public var helper: URL = bundledHelper
         public var instance: Foundation.UUID
