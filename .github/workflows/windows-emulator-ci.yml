@@ -743,7 +743,7 @@ jobs:
 
       - name: Build Windows QEMU DLL + smoke (Phase 1 proof)
         env:
-          DLL_PIN: b7b274467e61986c095528877777bdebb0992ea7
+          DLL_PIN: 8e09ad825f1879e5ecb3bcd2a255fc0b9d19c25c
         run: |
           # Phase 1 proof for the Windows QEMU DLL (Option A): link qemu-arm.dll
           # from the qemu-system-arm objects and smoke it (LoadLibrary +
@@ -767,6 +767,11 @@ jobs:
           cd qemu-src
           git apply --check ../emu-dll/windows-dll/qemu-windows-extras.patch
           git apply ../emu-dll/windows-dll/qemu-windows-extras.patch
+          # Same treatment for the ui.c resource patch (run 40751776861 step 14):
+          # the exe build never compiles qemu-ios-ui.c either, so patching here
+          # is safe and sufficient for the same reason as the extras patch.
+          git apply --check ../emu-dll/windows-dll/qemu-windows-ui-resource.patch
+          git apply ../emu-dll/windows-dll/qemu-windows-ui-resource.patch
           cd ..
           bash emu-dll/windows-dll/make-dll-windows.sh qemu-src qemu-src/build emu-dll/windows-dll/qemu-arm.def
           cc emu-dll/windows-dll/qemu-dll-smoke.c -o qemu-src/build/qemu-dll-smoke.exe
