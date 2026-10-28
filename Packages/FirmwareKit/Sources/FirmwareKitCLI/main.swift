@@ -127,7 +127,15 @@ default:  // the root alone, or help
         let resources = directory.appendingPathComponent("../Resources").standardizedFileURL
 #endif
         // The helper beside this executable (the app bundle's MacOS/, a build's products) unless --helper names one.
+#if os(Windows)
+        // Windows executables carry the .exe suffix: the extensionless macOS
+        // name never matches the staged LightTouchDevice.exe beside
+        // firmwarekit.exe (LightTouch/), so this fallback never fired on
+        // Windows. The isExecutableFile check below is unchanged.
+        let sibling = directory.appendingPathComponent("LightTouchDevice.exe")
+#else
         let sibling = directory.appendingPathComponent("LightTouchDevice")
+#endif
         let helper =
             command.helper.map(fileURL)
             ?? (FileManager.default.isExecutableFile(atPath: sibling.path) ? sibling : nil)
