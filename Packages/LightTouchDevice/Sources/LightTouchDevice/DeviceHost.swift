@@ -80,6 +80,7 @@ final class DeviceHost: @unchecked Sendable {
         let timer = DispatchSource.makeTimerSource(queue: pumpQueue)
         timer.setEventHandler { [weak self] in self?.tick() }
         pump = timer
+        #if os(macOS)
         for name in [ProcessInfo.thermalStateDidChangeNotification, Notification.Name.NSProcessInfoPowerStateDidChange]
         {
             powerObservers.append(
@@ -92,15 +93,21 @@ final class DeviceHost: @unchecked Sendable {
                 }
             )
         }
+        #endif
         pumpQueue.sync { pace(force: true) }
         timer.resume()
     }
 
     /// LTM_HOST_CONSTRAINED=1 stands in for either (tests).
     static func hostConstrained() -> Bool {
-        ProcessInfo.processInfo.environment["LTM_HOST_CONSTRAINED"] == "1"
-            || ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue
+        if ProcessInfo.processInfo.environment["LTM_HOST_CONSTRAINED"] == "1" { return true }
+        #if os(macOS)
+        return ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue
             || ProcessInfo.processInfo.isLowPowerModeEnabled
+        #else
+        // No thermal/power API on Linux/Windows; only the env override constrains.
+        return false
+        #endif
     }
 
     /// The app shows (or stopped showing) this device's screen.
@@ -136,6 +143,11 @@ final class DeviceHost: @unchecked Sendable {
     /// pumpQueue. A booted VM keeps App Nap off for good (its timers are the guest's clock); only while
     /// live does it also keep the Mac from idle sleep and turn off timer coalescing.
     private func holdActivity(live: Bool) {
+        #if !os(macOS)
+        // ProcessInfo.beginActivity/endActivity are Apple-only; a booted VM
+        // cannot run on Linux/Windows (no dylib), so this is a no-op there.
+        return
+        #endif
         guard let machine = stateLock.withLock({ exited ? nil : bootConfig?.machine }) else { return }
         guard activity == nil || live != activityLive else { return }
         let next = ProcessInfo.processInfo.beginActivity(
@@ -219,7 +231,10 @@ final class DeviceHost: @unchecked Sendable {
             return true
         }
         guard first else { return false }
+        #if !os(Windows)
+        // No setenv on Windows; QEMU does not load there, so the env vars are moot.
         for (k, v) in config.environment { setenv(k, v, 1) }
+        #endif
         if let endpoint = config.webProxy {
             let proxy = WebProxy(config: URL(fileURLWithPath: endpoint.config))
             proxy.offline = config.wifiRestricted  // Setup offline: the PAC's proxy too, not just slirp
@@ -244,7 +259,9 @@ final class DeviceHost: @unchecked Sendable {
             stateLock.withLock { exited = true }
             pumpQueue.async { [self] in
                 if let activity {
+                    #if os(macOS)
                     ProcessInfo.processInfo.endActivity(activity)
+                    #endif
                     self.activity = nil
                 }
             }
@@ -254,7 +271,9 @@ final class DeviceHost: @unchecked Sendable {
         }
         thread.name = "qemu-main"
         thread.stackSize = 16 << 20
+        #if os(macOS)
         thread.qualityOfService = .userInteractive
+        #endif
         thread.start()
         helperLog("booting \(config.machine): \(argv.joined(separator: " "))")
         return true

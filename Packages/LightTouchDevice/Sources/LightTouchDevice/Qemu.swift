@@ -67,12 +67,18 @@ final class Qemu: @unchecked Sendable {
             )
         }
         self.handle = handle
+        #if os(Linux)
+        // Swift's Glibc module does not expose dladdr/Dl_info; the candidate
+        // path is the path that loaded, so it serves as the resolved path.
+        self.path = path
+        #else
         var info = Dl_info()
         if let p = dlsym(handle, "qemu_ios_main"), dladdr(p, &info) != 0, let name = info.dli_fname {
             self.path = String(cString: name)
         } else {
             self.path = path
         }
+        #endif
         #endif
     }
 

@@ -8,10 +8,10 @@ func writeStandardError(_ text: String, to handle: FileHandle = .standardError) 
 }
 
 func helperLog(_ message: String, to handle: FileHandle = .standardError) {
-    var tv = timeval()
-    gettimeofday(&tv, nil)
+    // gettimeofday(3) does not exist on Windows; Date() is the portable clock
+    // (same epoch seconds, same %.3f millisecond rendering).
     let line =
-        String(format: "[LightTouchDevice %d %.3f] ", getpid(), Double(tv.tv_sec) + Double(tv.tv_usec) / 1e6) + message
+        String(format: "[LightTouchDevice %d %.3f] ", getpid(), Date().timeIntervalSince1970) + message
         + "\n"
     writeStandardError(line, to: handle)
 }

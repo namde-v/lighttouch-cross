@@ -21,6 +21,15 @@
 
 import DeviceRuntime
 import Foundation
+#if canImport(FoundationNetworking)
+// URLSession/URLRequest/HTTPURLResponse live in FoundationNetworking, not
+// Foundation, on Linux/Windows (Swift's Foundation split).
+import FoundationNetworking
+#endif
+// CGuestTLS: the C TLS helper. Upstream's Xcode bridging header made it
+// visible without an import; SwiftPM needs the explicit import on every
+// platform (the header itself is already platform-neutral).
+import CGuestTLS
 // Security is Apple-only (SecCertificate/SecKey/SecIdentity/SecTrust do not
 // exist on Linux/Windows); the TLS-toward-guest feature is macOS-only (see
 // the #if os(macOS) guards below). Sockets come from Glibc on Linux and
@@ -692,7 +701,12 @@ final class WebProxy: @unchecked Sendable {
                     return true
                 }
             } else if a.pointee.sa_family == AF_INET6 {
+                #if os(Linux)
+                // glibc names the in6_addr union __in6_u, not __u6_addr (Darwin).
+                let b = UnsafeRawPointer(a).load(as: sockaddr_in6.self).sin6_addr.__in6_u.__u6_addr8
+                #else
                 let b = UnsafeRawPointer(a).load(as: sockaddr_in6.self).sin6_addr.__u6_addr.__u6_addr8
+                #endif
                 if b.0 & 0xfe == 0xfc || (b.0 == 0xfe && b.1 & 0xc0 == 0x80) || b.0 == 0xff { return true }
             }
         }
@@ -755,7 +769,7 @@ final class WebProxy: @unchecked Sendable {
                 if n <= 0 {
                     if i == 0 {
                         input = false
-                        shutdown(remote, SHUT_WR)
+                        shutdown(remote, Int32(SHUT_WR))
                     } else {
                         return
                     }

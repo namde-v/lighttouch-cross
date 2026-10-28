@@ -4,6 +4,16 @@
 // rewrites between URLSession's view of a response and the guest's.
 
 import Foundation
+#if canImport(FoundationNetworking)
+// URLSession/HTTPURLResponse/HTTPCookie live in FoundationNetworking, not
+// Foundation, on Linux/Windows.
+import FoundationNetworking
+#endif
+#if canImport(FoundationXML)
+// XMLDocument/XMLElement/XMLNode live in FoundationXML, not Foundation,
+// on Linux/Windows.
+import FoundationXML
+#endif
 
 enum WebProxyAdapters {
     // MARK: - Retired services
@@ -271,7 +281,10 @@ enum WebProxyAdapters {
     }
 
     static func number(_ value: Any?, _ low: Double, _ high: Double) -> Double? {
-        guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(), n.doubleValue.isFinite,
+        // A JSON boolean must not count as a number: on Darwin it arrives as
+        // an NSNumber wrapping CFBoolean (CFGetTypeID is Apple-only), on
+        // Linux as a Swift Bool. `value is Bool` rejects both, portably.
+        guard !(value is Bool), let n = value as? NSNumber, n.doubleValue.isFinite,
             n.doubleValue >= low, n.doubleValue <= high
         else { return nil }
         return n.doubleValue

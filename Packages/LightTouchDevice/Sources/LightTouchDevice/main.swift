@@ -17,8 +17,13 @@ import os
 // libqemu-arm.dylib: $LTM_QEMU_DYLIB, else ../Frameworks, else the build rpath.
 // Exit codes: QEMU's, or 64 usage, 70 no dylib, 72 rendezvous failed, 124 one-shot timeout.
 
+#if !os(Windows)
+// No SIGPIPE on Windows (no POSIX broken-pipe signal).
 signal(SIGPIPE, SIG_IGN)
-setvbuf(stdout, nil, _IOLBF, 0)
+#endif
+// Top-level code is not @MainActor-isolated, and Swift 6 rejects the C
+// global `stdout` there; assumeIsolated is safe (program entry, main thread).
+MainActor.assumeIsolated { setvbuf(stdout, nil, _IOLBF, 0) }
 
 /// The launch, read once; read from the link, boot and main threads.
 let launch: HelperLaunch = {
@@ -34,8 +39,43 @@ let launch: HelperLaunch = {
 /// qemu_init: SIGSEGVs, "unknown migration protocol: (null)", restores that
 /// never paint). Keep it in a run loop.
 func parkMainThread() -> Never {
+    #if os(macOS)
     while true { CFRunLoopRun() }
+    #else
+    // No dylib loads on Linux/Windows (Qemu.init throws), so the RCU-TLS
+    // reason to avoid dispatchMain() does not apply; dispatchMain() pumps
+    // the main queue (signal sources, @MainActor work) while parking.
+    dispatchMain()
+    #endif
 }
+
+/// Portable replacement for OSAllocatedUnfairLock (Darwin-only, `os` module):
+/// an NSLock-guarded value. withLock/withLockUnchecked are identical here
+/// (NSLock does not distinguish Sendable from unchecked state); both are kept
+/// so the call sites below do not change.
+final class Locked<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Value
+    init(_ value: Value) { self.value = value }
+    init(initialState value: Value) { self.value = value }
+    init(uncheckedState value: Value) { self.value = value }
+    func withLock<T>(_ body: (inout Value) throws -> T) rethrows -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return try body(&value)
+    }
+    func withLockUnchecked<T>(_ body: (inout Value) throws -> T) rethrows -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return try body(&value)
+    }
+}
+
+#if os(Windows)
+/// usleep(3) does not exist on Windows; Thread.sleep is the portable equivalent.
+/// (main.swift + DeviceHost.swift share this module, so one shim covers both.)
+func usleep(_ microseconds: UInt32) { Thread.sleep(forTimeInterval: Double(microseconds) / 1_000_000) }
+#endif
 
 /// SIGTERM / SIGINT run the same halt as a vanished parent. Main thread only.
 var signalSources: [DispatchSourceSignal] = []
@@ -109,17 +149,28 @@ case .machines:
 // MARK: - Linked (spawned by the app)
 
 @MainActor func runLinked(service: String, token: String) -> Never {
+    #if os(Windows)
+    // The Windows app does not pass a link on fd 3 (DeviceLink on Windows
+    // uses loopback TCP, not fd passing); connect mode is not functional on
+    // Windows until the helper link is reworked (downstream task). Fail
+    // honestly instead of opening a LinkChannel on a nonexistent fd.
+    helperLog("connect mode: fd-3 link not available on Windows")
+    exit(64)
+    #endif
+    #if !os(Windows)
     guard fcntl(3, F_GETFD) != -1 else {
         helperLog("no link on fd 3: not spawned by DeviceLink")
         exit(64)
     }
-    let parent = getppid()
+    #endif
     let qemu = loadQemu()
     let status = StatusBlock.create()
     let host = qemu.map { DeviceHost(qemu: $0, status: status) }
     if let host { installBootStorageAuthority(host) }
 
-    let kr = DeviceRendezvous.sendHello(service: service, token: token, generation: 0, surfaces: [status.surface])
+    // The link socket is fd 3 (see LinkChannel below); the transport redesign
+    // replaced the service-name hello with a socket hello (TRANSPORT_REDESIGN).
+    let kr = DeviceRendezvous.sendHello(socket: 3, token: token, generation: 0, segments: [status.surface])
     guard kr == 0 else {
         helperLog("rendezvous with \(service) failed: \(kr)")
         exit(72)
@@ -173,10 +224,10 @@ case .machines:
 
     host?.onRingChanged = { ring in
         let kr = DeviceRendezvous.sendHello(
-            service: service,
+            socket: 3,
             token: token,
             generation: ring.generation,
-            surfaces: [status.surface] + ring.surfaces
+            segments: [status.surface] + ring.surfaces
         )
         if kr != 0 { helperLog("ring hello failed: \(kr)") }
     }
@@ -189,6 +240,11 @@ case .machines:
     host?.startPump()
 
     // Parent death: a process-exit source on the parent, plus EOF on the link.
+    // makeProcessSource is Darwin-only: Linux polls getppid (firmwarekit's
+    // CommandLifetime pattern), Windows skips (runLinked exits early above,
+    // and link-close covers parent death there).
+    #if os(macOS)
+    let parent = getppid()
     let parentWatch = DispatchSource.makeProcessSource(identifier: parent, eventMask: .exit, queue: .main)
     parentWatch.setEventHandler {
         helperLog("parent \(parent) exited")
@@ -198,6 +254,20 @@ case .machines:
     if getppid() != parent || parent == 1 { shutdown("parent already gone") }
     onTerminationSignals { shutdown($0) }
     withExtendedLifetime(parentWatch) { parkMainThread() }
+    #elseif os(Linux)
+    let parent = getppid()
+    Thread.detachNewThread {
+        while getppid() == parent { Thread.sleep(forTimeInterval: 0.5) }
+        helperLog("parent \(parent) exited")
+        if let host { host.halt(reason: "parent exited") } else { exit(0) }
+    }
+    if getppid() != parent || parent == 1 { shutdown("parent already gone") }
+    onTerminationSignals { shutdown($0) }
+    parkMainThread()
+    #else
+    onTerminationSignals { shutdown($0) }
+    parkMainThread()
+    #endif
 }
 
 // MARK: - Headless (tests)
@@ -222,13 +292,16 @@ func decodeConfig<T: Decodable>(_ path: String, _: T.Type) -> T {
 
 @MainActor func runHeadless(configPath: String) -> Never {
     let config = decodeConfig(configPath, HeadlessConfig.self)
+    // No setenv on Windows; QEMU does not load there, so the override is moot.
+    #if !os(Windows)
     if let dylib = config.dylib { setenv("LTM_QEMU_DYLIB", dylib, 1) }
+    #endif
     guard let qemu = loadQemu() else { exit(70) }
     let status = StatusBlock.create()
     let host = DeviceHost(qemu: qemu, status: status)
     guard takeLease(launch.lease) else { exit(75) }
     installBootStorageAuthority(host)
-    let reader = OSAllocatedUnfairLock<FrameRingReader?>(uncheckedState: nil)
+    let reader = Locked<FrameRingReader?>(uncheckedState: nil)
     host.onRingChanged = { ring in
         reader.withLockUnchecked {
             $0 = FrameRingReader(status: status, generation: ring.generation, surfaces: ring.surfaces)
@@ -318,7 +391,7 @@ func decodeConfig<T: Decodable>(_ path: String, _: T.Type) -> T {
             case "snapshot":
                 let t0 = Date()
                 host.perform(.snapshotSave(path: p[1]))
-                let result = OSAllocatedUnfairLock<(code: Int, error: String?)>(initialState: (1, nil))
+                let result = Locked<(code: Int, error: String?)>(initialState: (1, nil))
                 while Date().timeIntervalSince(t0) < 60 {
                     usleep(100_000)
                     let done = DispatchSemaphore(value: 0)
@@ -372,7 +445,10 @@ struct OneShotConfig: Decodable {
 
 @MainActor func runOneShot(configPath: String) -> Never {
     let config = decodeConfig(configPath, OneShotConfig.self)
+    // No setenv on Windows; QEMU does not load there, so the override is moot.
+    #if !os(Windows)
     if let dylib = config.dylib { setenv("LTM_QEMU_DYLIB", dylib, 1) }
+    #endif
     guard let qemu = loadQemu() else { exit(70) }
     let host = DeviceHost(qemu: qemu, status: StatusBlock.create())
     guard takeLease(launch.lease) else { exit(75) }
@@ -381,7 +457,7 @@ struct OneShotConfig: Decodable {
     /// Whether the serial log showed the stop marker, and whether we asked QEMU to stop: set on the watch thread and
     /// the main queue, read wherever QEMU's exit lands.
     struct Flags { var marker = false, stopping = false }
-    let flags = OSAllocatedUnfairLock(initialState: Flags())
+    let flags = Locked(initialState: Flags())
     /// exited: QEMU returned by itself (the guest halted), not because we quit it.
     @Sendable func finish(exited: Bool, code: Int32) -> Never {
         let marker = flags.withLock { $0.marker }
@@ -394,6 +470,9 @@ struct OneShotConfig: Decodable {
     host.onExit = { rc in finish(exited: !flags.withLock { $0.stopping }, code: rc) }
     onTerminationSignals { _ in qemu.quit() }
     // The preparer (firmwarekit) died: nobody will read this boot's result.
+    // makeProcessSource is Darwin-only; Linux polls, Windows skips (bounded
+    // by the oneshot timeout below).
+    #if os(macOS)
     let parent = getppid()
     let parentWatch = DispatchSource.makeProcessSource(identifier: parent, eventMask: .exit, queue: .main)
     parentWatch.setEventHandler {
@@ -402,14 +481,25 @@ struct OneShotConfig: Decodable {
         qemu.quit()
     }
     parentWatch.resume()
+    #elseif os(Linux)
+    let parent = getppid()
+    Thread.detachNewThread {
+        while getppid() == parent { Thread.sleep(forTimeInterval: 0.5) }
+        helperLog("parent \(parent) exited")
+        flags.withLock { $0.stopping = true }
+        qemu.quit()
+    }
+    #endif
     do { _ = try host.boot(config.boot) } catch {
         helperLog("boot storage admission: \(error)")
         exit(75)
     }
+    #if !os(Windows)
     if getppid() != parent || parent == 1 {
         flags.withLock { $0.stopping = true }
         qemu.quit()
     }
+    #endif
     Thread.detachNewThread {
         while !host.hasExited {
             usleep(500_000)
