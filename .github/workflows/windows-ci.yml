@@ -53,6 +53,7 @@ jobs:
           - DeviceRuntime
           - LightTouchCore
           - LTAppCore
+          - LightTouchDevice
     defaults:
       run:
         working-directory: Packages/${{ matrix.package }}
@@ -222,6 +223,7 @@ jobs:
           }
 
       - name: Test
+        if: matrix.package != 'LightTouchDevice'
         timeout-minutes: 240
         run: |
           # Headless CI: a crashing test binary must surface as an exit code,

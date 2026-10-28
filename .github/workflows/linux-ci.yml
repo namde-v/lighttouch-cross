@@ -35,6 +35,7 @@ jobs:
           - DeviceRuntime
           - LightTouchCore
           - LTAppCore
+          - LightTouchDevice
     defaults:
       run:
         working-directory: Packages/${{ matrix.package }}
@@ -65,4 +66,5 @@ jobs:
       # fails with "module was not compiled for testing". A plain `swift test`
       # builds everything correctly (incrementally reusing the Build step).
       - name: Test
+        if: matrix.package != 'LightTouchDevice'
         run: swift test --configuration release
