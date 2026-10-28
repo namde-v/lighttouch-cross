@@ -140,7 +140,10 @@ final class WebProxy: @unchecked Sendable {
         configuration.urlCache = URLCache(
             memoryCapacity: 8 << 20,
             diskCapacity: 128 << 20,
-            directory: URL(fileURLWithPath: config.path + ".cache")
+            // FoundationNetworking's URLCache takes diskPath (String), not
+            // the directory: URL overload; diskPath is also the classic
+            // Darwin spelling, so this is portable, not a Linux-only branch.
+            diskPath: config.path + ".cache"
         )
         configuration.httpCookieStorage = nil
         configuration.httpShouldSetCookies = false

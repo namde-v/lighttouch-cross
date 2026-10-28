@@ -21,9 +21,13 @@ import os
 // No SIGPIPE on Windows (no POSIX broken-pipe signal).
 signal(SIGPIPE, SIG_IGN)
 #endif
-// Top-level code is not @MainActor-isolated, and Swift 6 rejects the C
-// global `stdout` there; assumeIsolated is safe (program entry, main thread).
-MainActor.assumeIsolated { setvbuf(stdout, nil, _IOLBF, 0) }
+#if os(macOS)
+// Line-buffer C stdio stdout (QEMU's printf output). On Linux, Swift 6
+// rejects the C global `stdout` even inside MainActor.assumeIsolated
+// (verified: 65f0554 still failed on it); on Linux/Windows there is no
+// C stdio stdout user anyway (no dylib, no QEMU printf), so macOS-only.
+setvbuf(stdout, nil, _IOLBF, 0)
+#endif
 
 /// The launch, read once; read from the link, boot and main threads.
 let launch: HelperLaunch = {
@@ -523,5 +527,10 @@ struct OneShotConfig: Decodable {
             }
         }
     }
+    #if os(macOS)
     withExtendedLifetime(parentWatch) { parkMainThread() }
+    #else
+    // No parentWatch to keep alive off macOS (the Linux poll thread is detached).
+    parkMainThread()
+    #endif
 }

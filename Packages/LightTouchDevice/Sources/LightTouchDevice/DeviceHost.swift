@@ -143,19 +143,20 @@ final class DeviceHost: @unchecked Sendable {
     /// pumpQueue. A booted VM keeps App Nap off for good (its timers are the guest's clock); only while
     /// live does it also keep the Mac from idle sleep and turn off timer coalescing.
     private func holdActivity(live: Bool) {
-        #if !os(macOS)
-        // ProcessInfo.beginActivity/endActivity are Apple-only; a booted VM
-        // cannot run on Linux/Windows (no dylib), so this is a no-op there.
-        return
-        #endif
         guard let machine = stateLock.withLock({ exited ? nil : bootConfig?.machine }) else { return }
         guard activity == nil || live != activityLive else { return }
+        // beginActivity/endActivity are Apple-only; a runtime early return
+        // does NOT exclude code from compilation, so the calls themselves
+        // are compile-guarded (a booted VM cannot run on Linux/Windows
+        // anyway, no dylib there, so this is a no-op there).
+        #if os(macOS)
         let next = ProcessInfo.processInfo.beginActivity(
             options: live ? [.userInitiated, .latencyCritical] : .userInitiatedAllowingIdleSystemSleep,
             reason: "Running an emulated device (\(machine))"
         )
         if let activity { ProcessInfo.processInfo.endActivity(activity) }
         activity = next
+        #endif
         activityLive = live
     }
 
