@@ -797,8 +797,14 @@ jobs:
             exit 1
           fi
           echo "Using objdump: $OBJDUMP"
-          for dll in $("$OBJDUMP" -p build/qemu-system-arm.exe | awk '/DLL Name:/{print $3}'); do
+          # Phase 2 fix (libgcc_s_seh-1.dll closure gap, run 40855117839):
+          # the DLL link (-shared) pulls shared libgcc while the exe uses
+          # static libgcc, so the DLL's MinGW deps are NOT a subset of the
+          # exe's — copy both binaries' imports, same /mingw64/bin rule.
+          for bin in build/qemu-system-arm.exe build/qemu-arm.dll; do
+          for dll in $("$OBJDUMP" -p "$bin" | awk '/DLL Name:/{print $3}'); do
             if [ -f "/mingw64/bin/$dll" ]; then cp "/mingw64/bin/$dll" dist/; fi
+          done
           done
           ls -la dist/
 
