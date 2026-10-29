@@ -441,7 +441,7 @@ jobs:
           $machine = ($machinesOut | ConvertFrom-Json).machines[0].machine
           if ([string]::IsNullOrEmpty($machine)) { Write-Error "no machine from machines pre-step"; exit 1 }
           Write-Host "oneshot machine: $machine"
-          $cfg = @{ boot = @{ argv = @("LightTouchDevice", "-M", $machine, "-display", "none", "-serial", "file:oneshot-serial.log"); machine = $machine }; serialLog = "oneshot-serial.log"; timeout = 60 } | ConvertTo-Json -Depth 5
+          $cfg = @{ boot = @{ argv = @("LightTouchDevice", "-M", "$machine,amc-mode=registers", "-display", "none", "-serial", "file:oneshot-serial.log"); machine = $machine }; serialLog = "oneshot-serial.log"; timeout = 60 } | ConvertTo-Json -Depth 5
           [System.IO.File]::WriteAllText("oneshot.json", $cfg, (New-Object System.Text.UTF8Encoding($false)))
           $launch = '{"mode":{"oneshot":{"config":"oneshot.json"}}}'
           # Start-Process passes -ArgumentList verbatim to CreateProcess, so the CRT
