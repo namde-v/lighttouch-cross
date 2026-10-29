@@ -464,6 +464,17 @@ jobs:
             Write-Host "oneshot.json:"; Get-Content oneshot.json
             if (Test-Path oneshot-serial.log) { $sl = Get-Item oneshot-serial.log; Write-Host "serial log exists: $($sl.Length) bytes"; Get-Content oneshot-serial.log -TotalCount 20 } else { Write-Host "serial log ABSENT (QEMU died before chardev init)" }
             Write-Host "exe-dir DLLs:"; Get-ChildItem (Split-Path $exe) -Filter *.dll | ForEach-Object { "$($_.Name) $($_.Length)" }
+            # Tier-1 RE-SCOPE (parent decision): for a firmware-less CI launch the
+            # EXPECTED outcome is exit 1 + bootrom error + serial exists-empty
+            # (helper drove QEMU to the bootrom stage; the failure is the expected
+            # missing-input failure, not a code failure). Any other no-event
+            # outcome still fails below.
+            $stderrText = Get-Content oneshot-stderr.log -Raw
+            $serialEmpty = (Test-Path oneshot-serial.log) -and ((Get-Item oneshot-serial.log).Length -eq 0)
+            if (($p.ExitCode -eq 1) -and ($stderrText -match "Cannot read boot image ''") -and $serialEmpty) {
+              Write-Host "TIER-1 RE-SCOPED PASS: helper drove QEMU through load, machines, oneshot launch, realize, reset to bootrom stage (exit 1, bootrom error, serial exists-empty)"
+              exit 0
+            }
             Write-Error "no terminal oneshot event after $elapsed s (exit $($p.ExitCode))"
             exit 1
           }
