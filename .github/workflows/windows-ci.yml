@@ -342,6 +342,32 @@ jobs:
             if ($p.ExitCode -ne 0) { exit $p.ExitCode }
           }
 
+      # Phase 2 proof (LightTouchDevice leg only): load-path test against a
+      # SAME-BRANCH emulator artifact. NOT the matrix Test step (the batch-5
+      # skip above stays): this step resolves the latest successful
+      # windows-emulator-ci run on this branch, downloads
+      # qemu-system-arm-windows-x86_64, and runs the load test in DEBUG
+      # (the LTM_QEMU_DLL override is DEBUG-only; the matrix Test step runs
+      # release). FAILS LOUDLY if no same-branch emulator run exists or the
+      # artifact lacks qemu-arm.dll — no best-effort weakening. Post-merge,
+      # main emulator runs carry the DLL once the Bundle copy merges, so the
+      # same step keeps working.
+      - name: QEMU DLL load-path proof
+        if: matrix.package == 'LightTouchDevice'
+        run: |
+          $runId = gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/windows-emulator-ci.yml/runs?branch=$env:GITHUB_REF_NAME&status=completed&per_page=10" --jq '.workflow_runs[] | select(.conclusion=="success") | .id' | Select-Object -First 1
+          if (-not $runId) { Write-Error "No successful windows-emulator-ci run on branch $env:GITHUB_REF_NAME yet — dispatch it first (its workflow carries the Phase 2 Bundle copy)"; exit 1 }
+          Write-Host "Using emulator run $runId"
+          gh run download $runId --name qemu-system-arm-windows-x86_64 --dir emu-artifact
+          $dll = Get-ChildItem emu-artifact -Recurse -Filter qemu-arm.dll | Select-Object -First 1
+          if (-not $dll) { Write-Error "Emulator artifact from run $runId lacks qemu-arm.dll — the DLL step failed or the run predates the Phase 2 Bundle copy"; exit 1 }
+          Write-Host "qemu-arm.dll: $($dll.FullName)"
+          # The DLL's MinGW deps ride in the same artifact dir; prepend it so
+          # LoadLibraryW resolves them exactly as LightTouch/ does on disk.
+          $env:PATH = "$($dll.DirectoryName);$env:PATH"
+          $env:LTM_QEMU_DLL = $dll.FullName
+          swift test --filter QemuLoadTests
+
       # if: always() — binaries AND logs upload on every run, pass or fail.
       # if-no-files-found: warn (not error): a failed build legitimately has
       # no binaries, and a build-step failure means there is no test.log yet.
