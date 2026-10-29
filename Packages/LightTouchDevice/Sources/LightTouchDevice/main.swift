@@ -14,7 +14,8 @@ import os
 // LightTouchDevice: one emulated device per process. Its one argument is its launch (HostRuntime HelperLaunch) as JSON:
 // connect (spawned by the app, DeviceLink), headless, oneshot (firmwarekit's boots) or machines.
 //
-// libqemu-arm.dylib: $LTM_QEMU_DYLIB, else ../Frameworks, else the build rpath.
+// Emulator library: libqemu-arm.dylib ($LTM_QEMU_DYLIB, else ../Frameworks, else the build rpath) on macOS/Linux;
+// qemu-arm.dll ($LTM_QEMU_DLL in DEBUG, else exe-dir) on Windows.
 // Exit codes: QEMU's, or 64 usage, 70 no dylib, 72 rendezvous failed, 124 one-shot timeout.
 
 #if !os(Windows)
@@ -46,8 +47,12 @@ func parkMainThread() -> Never {
     #if os(macOS)
     while true { CFRunLoopRun() }
     #else
-    // No dylib loads on Linux/Windows (Qemu.init throws), so the RCU-TLS
-    // reason to avoid dispatchMain() does not apply; dispatchMain() pumps
+    // Linux loads no dylib (Qemu.init throws), so the RCU-TLS reason to avoid
+    // dispatchMain() does not apply there. Windows DOES load the DLL since
+    // Phase 2, so whether dispatchMain() exits the main thread (and trips
+    // the RCU-TLS hazard above) is UNVERIFIED on Windows — resolve before
+    // headless/oneshot/connect land (they park here); machines exits without
+    // parking, so this does not block machines mode. dispatchMain() pumps
     // the main queue (signal sources, @MainActor work) while parking.
     dispatchMain()
     #endif
