@@ -426,8 +426,11 @@ jobs:
           $runId = gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/windows-emulator-ci.yml/runs?branch=$env:GITHUB_REF_NAME&status=completed&per_page=10" --jq '.workflow_runs[] | select(.conclusion=="success") | .id' | Select-Object -First 1
           if (-not $runId) { Write-Error "No successful windows-emulator-ci run on branch $env:GITHUB_REF_NAME yet — dispatch it first (its workflow carries the Phase 2 Bundle copy)"; exit 1 }
           Write-Host "Using emulator run $runId"
-          gh run download $runId --name qemu-system-arm-windows-x86_64 --dir emu-artifact
-          $dll = Get-ChildItem emu-artifact -Recurse -Filter qemu-arm.dll | Select-Object -First 1
+          # Fresh dir: steps 11/12 already extracted into emu-artifact, and re-extracting
+          # there fails on the existing libbz2-1.dll (attempt-3 log) instead of overwriting.
+          gh run download $runId --name qemu-system-arm-windows-x86_64 --dir oneshot-emu-artifact
+          if ($LASTEXITCODE -ne 0) { Write-Error "emulator artifact download failed for run $runId"; exit 1 }
+          $dll = Get-ChildItem oneshot-emu-artifact -Recurse -Filter qemu-arm.dll | Select-Object -First 1
           if (-not $dll) { Write-Error "Emulator artifact from run $runId lacks qemu-arm.dll — the DLL step failed or the run predates the Phase 2 Bundle copy"; exit 1 }
           $exe = ".build/release/LightTouchDevice.exe"
           if (-not (Test-Path $exe)) { Write-Error "Release helper exe missing: $exe (the Build step must run first)"; exit 1 }
@@ -441,14 +444,19 @@ jobs:
           $cfg = @{ boot = @{ argv = @("LightTouchDevice", "-M", $machine, "-display", "none", "-serial", "file:oneshot-serial.log"); machine = $machine }; serialLog = "oneshot-serial.log"; timeout = 60 } | ConvertTo-Json -Depth 5
           [System.IO.File]::WriteAllText("oneshot.json", $cfg, (New-Object System.Text.UTF8Encoding($false)))
           $launch = '{"mode":{"oneshot":{"config":"oneshot.json"}}}'
+          # Start-Process passes -ArgumentList verbatim to CreateProcess, so the CRT
+          # strips the launch JSON's inner quotes (invalid JSON -> helper exit 64);
+          # backslash-escape them so argv restores the exact JSON. The call-operator
+          # machines pre-step above quotes implicitly, which is why it works.
+          $launchArg = $launch.Replace([string]'"', [string]'\"')
           $t0 = Get-Date
-          $p = Start-Process -FilePath $exe -ArgumentList $launch -RedirectStandardOutput oneshot-stdout.log -RedirectStandardError oneshot-stderr.log -NoNewWindow -PassThru
-          if (-not $p.WaitForExit(180000)) { $p.Kill(); Write-Error "WATCHDOG: helper did not terminate in 180 s — no terminal oneshot event is the pre-registered parkMainThread/dispatchMain hang signature, not a QEMU failure"; Get-Content oneshot-stderr.log; exit 1 }
+          $p = Start-Process -FilePath $exe -ArgumentList $launchArg -RedirectStandardOutput oneshot-stdout.log -RedirectStandardError oneshot-stderr.log -NoNewWindow -PassThru
+          if (-not $p.WaitForExit(180000)) { $p.Kill(); Write-Error "WATCHDOG: helper did not terminate in 180 s — no terminal oneshot event is the pre-registered parkMainThread/dispatchMain hang signature, not a QEMU failure"; Get-Content oneshot-stdout.log; Get-Content oneshot-stderr.log; exit 1 }
           $elapsed = ((Get-Date) - $t0).TotalSeconds
           $event = Get-Content oneshot-stdout.log | Where-Object { $_ -match '"oneshot"' } | Select-Object -Last 1 | ConvertFrom-Json
-          if (-not $event) { Write-Error "no terminal oneshot event after $elapsed s (exit $($p.ExitCode))"; Get-Content oneshot-stderr.log; exit 1 }
+          if (-not $event) { Write-Error "no terminal oneshot event after $elapsed s (exit $($p.ExitCode))"; Get-Content oneshot-stdout.log; Get-Content oneshot-stderr.log; exit 1 }
           Write-Host "oneshot event: exited=$($event.exited) marker=$($event.marker) exitCode=$($event.exitCode) seconds=$($event.seconds) elapsed=$elapsed"
-          if ($p.ExitCode -in @(64, 70, 75)) { Write-Error "helper never reached QEMU (exit $($p.ExitCode): 64 usage / 70 no dylib / 75 lease)"; Get-Content oneshot-stderr.log; exit 1 }
+          if ($p.ExitCode -in @(64, 70, 75)) { Write-Error "helper never reached QEMU (exit $($p.ExitCode): 64 usage / 70 no dylib / 75 lease)"; Get-Content oneshot-stdout.log; Get-Content oneshot-stderr.log; exit 1 }
           if (Test-Path oneshot-serial.log) { Write-Host "serial log created" } else { Write-Host "NOTE: serial log not created" }
           if ($elapsed -lt 50) { Write-Host "NOTE: fast exit ($elapsed s) — Tier 2 (VM ran to timeout) NOT met; Tier 1 holds, report QEMU stderr as next diagnostic"; Get-Content oneshot-stderr.log }
 
