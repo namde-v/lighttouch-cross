@@ -277,6 +277,13 @@ jobs:
             Write-Warning 'qemu-system-arm.exe not staged (no emulator artifact)'
           }
 
+          # qemu-arm.dll (QEMU library for the device helper, Phase 2): staged
+          # from the emulator artifact by the glob above, once the emulator
+          # workflow's Bundle step copies it into dist/. Warn-only, like
+          # firmwarekit/helper above: the app launches without it; it only
+          # gates helper QEMU loading (Qemu.swift candidates).
+          if (Test-Path (Join-Path $layout 'qemu-arm.dll')) { Write-Host 'Staged qemu-arm.dll (QEMU library)' } else { Write-Warning 'qemu-arm.dll not staged (emulator run predates the Phase 2 Bundle copy or the DLL step failed)' }
+
           # Qt UI executable (when the artifact exists)
           if (Test-Path qt-artifact/LightTouch.exe) {
             Copy-Item qt-artifact/LightTouch.exe $layout -Force

@@ -783,6 +783,10 @@ jobs:
           cd qemu-src
           mkdir -p dist
           cp build/qemu-system-arm.exe dist/
+          # Phase 2 staging: qemu-arm.dll (built by the DLL step above) rides
+          # the same dist/ upload; the package's qemu-artifact glob stages it
+          # into LightTouch/ beside the helper, with zero package changes.
+          cp build/qemu-arm.dll dist/
           # Locate objdump robustly and FAIL LOUDLY if it is missing: a
           # missing objdump used to fail silently, producing DLL-less,
           # unrunnable bundles (the for loop just iterated over nothing).
