@@ -743,7 +743,7 @@ jobs:
 
       - name: Build Windows QEMU DLL + smoke (Phase 1 proof)
         env:
-          DLL_PIN: aed03fbfae311e990e241aa393ecf146be669c2f
+          DLL_PIN: c791f1c5e1313cee8bceaa5d8f6aa66a449a03ea
         run: |
           # Phase 1 proof for the Windows QEMU DLL (Option A): link qemu-arm.dll
           # from the qemu-system-arm objects and smoke it (LoadLibrary +
