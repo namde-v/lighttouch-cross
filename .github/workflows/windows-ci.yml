@@ -454,7 +454,14 @@ jobs:
           if (-not $p.WaitForExit(180000)) { $p.Kill(); Write-Error "WATCHDOG: helper did not terminate in 180 s — no terminal oneshot event is the pre-registered parkMainThread/dispatchMain hang signature, not a QEMU failure"; Get-Content oneshot-stdout.log; Get-Content oneshot-stderr.log; exit 1 }
           $elapsed = ((Get-Date) - $t0).TotalSeconds
           $event = Get-Content oneshot-stdout.log | Where-Object { $_ -match '"oneshot"' } | Select-Object -Last 1 | ConvertFrom-Json
-          if (-not $event) { Write-Error "no terminal oneshot event after $elapsed s (exit $($p.ExitCode))"; Get-Content oneshot-stdout.log; Get-Content oneshot-stderr.log; exit 1 }
+          if (-not $event) {
+            Write-Error "no terminal oneshot event after $elapsed s (exit $($p.ExitCode))"
+            Get-Content oneshot-stdout.log; Get-Content oneshot-stderr.log
+            Write-Host "oneshot.json:"; Get-Content oneshot.json
+            if (Test-Path oneshot-serial.log) { $sl = Get-Item oneshot-serial.log; Write-Host "serial log exists: $($sl.Length) bytes"; Get-Content oneshot-serial.log -TotalCount 20 } else { Write-Host "serial log ABSENT (QEMU died before chardev init)" }
+            Write-Host "exe-dir DLLs:"; Get-ChildItem (Split-Path $exe) -Filter *.dll | ForEach-Object { "$($_.Name) $($_.Length)" }
+            exit 1
+          }
           Write-Host "oneshot event: exited=$($event.exited) marker=$($event.marker) exitCode=$($event.exitCode) seconds=$($event.seconds) elapsed=$elapsed"
           if ($p.ExitCode -in @(64, 70, 75)) { Write-Error "helper never reached QEMU (exit $($p.ExitCode): 64 usage / 70 no dylib / 75 lease)"; Get-Content oneshot-stdout.log; Get-Content oneshot-stderr.log; exit 1 }
           if (Test-Path oneshot-serial.log) { Write-Host "serial log created" } else { Write-Host "NOTE: serial log not created" }
