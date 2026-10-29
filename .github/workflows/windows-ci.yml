@@ -367,6 +367,7 @@ jobs:
           $env:PATH = "$($dll.DirectoryName);$env:PATH"
           $env:LTM_QEMU_DLL = $dll.FullName
           swift test --filter QemuLoadTests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # if: always() — binaries AND logs upload on every run, pass or fail.
       # if-no-files-found: warn (not error): a failed build legitimately has
