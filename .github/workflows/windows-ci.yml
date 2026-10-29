@@ -455,11 +455,16 @@ jobs:
           $elapsed = ((Get-Date) - $t0).TotalSeconds
           $event = Get-Content oneshot-stdout.log | Where-Object { $_ -match '"oneshot"' } | Select-Object -Last 1 | ConvertFrom-Json
           if (-not $event) {
-            Write-Error "no terminal oneshot event after $elapsed s (exit $($p.ExitCode))"
-            Get-Content oneshot-stdout.log; Get-Content oneshot-stderr.log
+            # v2: diagnostics FIRST — Write-Error is terminating under the runner's
+            # Stop preference, so anything after it never runs (v1's artifacts never
+            # printed on run 40946093089). Write-Host/Get-Content never terminate.
+            Write-Host "helper exited $($p.ExitCode) after $elapsed s with no terminal oneshot event"
+            Write-Host "oneshot-stdout.log:"; Get-Content oneshot-stdout.log
+            Write-Host "oneshot-stderr.log:"; Get-Content oneshot-stderr.log
             Write-Host "oneshot.json:"; Get-Content oneshot.json
             if (Test-Path oneshot-serial.log) { $sl = Get-Item oneshot-serial.log; Write-Host "serial log exists: $($sl.Length) bytes"; Get-Content oneshot-serial.log -TotalCount 20 } else { Write-Host "serial log ABSENT (QEMU died before chardev init)" }
             Write-Host "exe-dir DLLs:"; Get-ChildItem (Split-Path $exe) -Filter *.dll | ForEach-Object { "$($_.Name) $($_.Length)" }
+            Write-Error "no terminal oneshot event after $elapsed s (exit $($p.ExitCode))"
             exit 1
           }
           Write-Host "oneshot event: exited=$($event.exited) marker=$($event.marker) exitCode=$($event.exitCode) seconds=$($event.seconds) elapsed=$elapsed"
