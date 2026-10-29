@@ -29,5 +29,14 @@ let package = Package(
             ]
         ),
         .target(name: "CGuestTLS", publicHeadersPath: "."),
+        // Phase 2 proof: load-path-only test (see Tests/LightTouchDeviceTests).
+        // The matrix Test step still skips LightTouchDevice (batch-5); this
+        // target runs only via the dedicated proof step in windows-ci.yml.
+        .testTarget(
+            name: "LightTouchDeviceTests",
+            dependencies: [
+                .target(name: "LightTouchDevice"),
+            ]
+        ),
     ]
 )

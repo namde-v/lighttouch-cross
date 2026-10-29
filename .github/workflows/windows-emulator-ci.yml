@@ -783,6 +783,10 @@ jobs:
           cd qemu-src
           mkdir -p dist
           cp build/qemu-system-arm.exe dist/
+          # Phase 2 staging: qemu-arm.dll (built by the DLL step above) rides
+          # the same dist/ upload; the package's qemu-artifact glob stages it
+          # into LightTouch/ beside the helper, with zero package changes.
+          cp build/qemu-arm.dll dist/
           # Locate objdump robustly and FAIL LOUDLY if it is missing: a
           # missing objdump used to fail silently, producing DLL-less,
           # unrunnable bundles (the for loop just iterated over nothing).
@@ -793,14 +797,22 @@ jobs:
             exit 1
           fi
           echo "Using objdump: $OBJDUMP"
-          for dll in $("$OBJDUMP" -p build/qemu-system-arm.exe | awk '/DLL Name:/{print $3}'); do
+          # Phase 2 fix (libgcc_s_seh-1.dll closure gap, run 40855117839):
+          # the DLL link (-shared) pulls shared libgcc while the exe uses
+          # static libgcc, so the DLL's MinGW deps are NOT a subset of the
+          # exe's — copy both binaries' imports, same /mingw64/bin rule.
+          for bin in build/qemu-system-arm.exe build/qemu-arm.dll; do
+          for dll in $("$OBJDUMP" -p "$bin" | awk '/DLL Name:/{print $3}'); do
             if [ -f "/mingw64/bin/$dll" ]; then cp "/mingw64/bin/$dll" dist/; fi
+          done
           done
           ls -la dist/
 
       # The artifact must be runnable from dist/ alone: every DLL the exe
       # imports has to be either bundled in dist/ or a Windows system DLL.
       # Anything else (e.g. a MinGW DLL the copy loop missed) fails the run.
+      # Phase 2: the same rule covers qemu-arm.dll (Bundle copy above) — its
+      # MinGW closure must be complete in dist/ for the helper to load it.
       - name: Verify bundled DLLs are complete
         run: |
           cd qemu-src
@@ -808,12 +820,15 @@ jobs:
           if [ -z "$OBJDUMP" ]; then echo "ERROR: no objdump found"; exit 1; fi
           sys='kernel32\.dll|user32\.dll|gdi32\.dll|advapi32\.dll|shell32\.dll|ole32\.dll|oleaut32\.dll|uuid\.dll|msvcrt\.dll|ucrtbase\.dll|vcruntime140\.dll|ws2_32\.dll|winmm\.dll|version\.dll|secur32\.dll|crypt32\.dll|bcrypt\.dll|iphlpapi\.dll|dnsapi\.dll|imm32\.dll|comdlg32\.dll|comctl32\.dll|shlwapi\.dll|setupapi\.dll|wtsapi32\.dll|powrprof\.dll|dwmapi\.dll|uxtheme\.dll|ntdll\.dll|msimg32\.dll|gdiplus\.dll|opengl32\.dll|hid\.dll|api-ms-win-[a-z0-9-]+\.dll'
           fail=0
-          for dll in $("$OBJDUMP" -p dist/qemu-system-arm.exe | awk '/DLL Name:/{print $3}'); do
+          if [ ! -f "dist/qemu-arm.dll" ]; then echo "ERROR: dist/qemu-arm.dll missing (Bundle copy failed?)"; exit 1; fi
+          for bin in dist/qemu-system-arm.exe dist/qemu-arm.dll; do
+          for dll in $("$OBJDUMP" -p "$bin" | awk '/DLL Name:/{print $3}'); do
             lc=$(printf '%s' "$dll" | tr 'A-Z' 'a-z')
             if [ -f "dist/$dll" ]; then continue; fi
             if printf '%s' "$lc" | grep -Eq "^($sys)$"; then continue; fi
-            echo "NOT BUNDLED and not a system DLL: $dll"
+            echo "NOT BUNDLED and not a system DLL: $dll (imported by $bin)"
             fail=1
+          done
           done
           exit $fail
 

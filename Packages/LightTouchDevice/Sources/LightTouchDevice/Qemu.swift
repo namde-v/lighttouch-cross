@@ -2,15 +2,20 @@ import DeviceRuntime
 import Foundation
 import HostRuntime
 // dlopen/dlsym/dlclose/dladdr live in Darwin on macOS and Glibc on Linux.
-// On Windows there is no dlopen: init/sym are stubbed below (QEMU library
-// decision deferred — see the Windows branches there).
+// On Windows the same load path goes through LoadLibraryW/GetProcAddress
+// (WinSDK); qemu-arm.dll is staged beside the helper by the package.
 #if os(Linux)
 import Glibc
 #endif
+#if os(Windows)
+import WinSDK
+#endif
 
-// libqemu-arm.dylib, dlopen'ed. The helper never links it: which build runs is
-// chosen at launch (LTM_QEMU_DYLIB in a Debug build, else the bundle's
-// Frameworks, else the build rpath) and reported in the hello.
+// libqemu-arm.dylib, dlopen'ed (qemu-arm.dll via LoadLibraryW on Windows).
+// The helper never links it: which build runs is chosen at launch
+// (LTM_QEMU_DYLIB in a Debug build, LTM_QEMU_DLL on Windows, else the
+// bundle's Frameworks / exe-dir qemu-arm.dll, else the build rpath) and
+// reported in the hello.
 
 /// qemu-ios-ui.h QemuIosDeviceInfo (C API 2.0).
 struct QemuDeviceInfoC {
@@ -32,23 +37,57 @@ final class Qemu: @unchecked Sendable {
     static func candidates() -> [String] {
         var list: [String] = []
         #if DEBUG
+            #if os(Windows)
+            if let override = ProcessInfo.processInfo.environment["LTM_QEMU_DLL"], !override.isEmpty {
+                list.append(override)
+            }
+            #else
             if let override = ProcessInfo.processInfo.environment["LTM_QEMU_DYLIB"], !override.isEmpty {
                 list.append(override)
             }
+            #endif
         #endif
         let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+        #if os(Windows)
+        // The package stages qemu-arm.dll beside the helper executable.
+        list.append(exe.deletingLastPathComponent().appendingPathComponent("qemu-arm.dll").path)
+        return list
+        #else
         let bundled = Bundle.main.executableURL?.deletingLastPathComponent() ?? exe.deletingLastPathComponent()
         list.append(bundled.appendingPathComponent("../Frameworks/libqemu-arm.dylib").standardized.path)
         list.append("@rpath/libqemu-arm.dylib")  // Debug: QEMU_BUILD_DIR is on the helper's rpath
         return list
+        #endif
     }
 
     init(path: String) throws {
-        // Windows: no dlopen and no libqemu-arm.dylib (the QEMU library build
-        // vs subprocess redesign decision is deferred); loading always fails
-        // honestly here rather than pretending a library exists.
         #if os(Windows)
-        throw HelperError.dylib("no libqemu-arm.dylib on Windows (QEMU library decision deferred)")
+        // LoadLibraryW (the W variant takes the UTF-16 path, so non-ASCII
+        // install paths work). A NULL handle fails honestly like dlopen's nil.
+        let module = path.withCString(encodedAs: UTF16.self) { LoadLibraryW($0) }
+        guard let module else {
+            let code = GetLastError()
+            throw HelperError.dylib(
+                "LoadLibraryW failed for \(path) (0x\(String(code, radix: 16, uppercase: true)))")
+        }
+        // The same C API major gate as the dlopen branch (qemu-macos-extras.h
+        // QEMU_IOS_API_VERSION: major << 16 | minor); a DLL from before the
+        // version existed is 0.
+        let version: UInt32 = "qemu_ios_api_version".withCString { namePtr in
+            guard let p = GetProcAddress(module, namePtr) else { return 0 }
+            return unsafeBitCast(p, to: (@convention(c) () -> UInt32).self)()
+        }
+        guard version >> 16 == Self.apiMajor else {
+            throw HelperError.dylib(
+                "\(path) has C API \(version >> 16).\(version & 0xffff); this LightTouchDevice needs "
+                    + "\(Self.apiMajor).x. Build qemu-arm.dll from the qemu-ios commit build-support/sources.json pins."
+            )
+        }
+        // No GetModuleFileNameW resolution: the candidate path is the path
+        // that loaded (same as the Linux dladdr-less precedent below) and is
+        // what hello/listing report plus mtime.
+        self.handle = unsafeBitCast(module, to: UnsafeMutableRawPointer.self)
+        self.path = path
         #else
         // RTLD_NOW: a missing export fails here, not mid-session.
         guard let handle = dlopen(path, RTLD_NOW | RTLD_LOCAL) else {
@@ -93,10 +132,12 @@ final class Qemu: @unchecked Sendable {
 
     private func sym<T>(_ name: String, _: T.Type) -> T {
         #if os(Windows)
-        // No library ever loads on Windows (init always throws above), so no
-        // lazy symbol is ever evaluated there; this is dead code that must
-        // still compile without dlsym.
-        fatalError("no QEMU library on Windows (QEMU library decision deferred)")
+        guard
+            let p = name.withCString({
+                GetProcAddress(unsafeBitCast(handle, to: HMODULE.self), $0)
+            })
+        else { fatalError("qemu-arm.dll lacks \(name)") }
+        return unsafeBitCast(p, to: T.self)
         #else
         guard let p = dlsym(handle, name) else { fatalError("libqemu-arm.dylib lacks \(name)") }
         return unsafeBitCast(p, to: T.self)
@@ -104,7 +145,9 @@ final class Qemu: @unchecked Sendable {
     }
     private func optionalSym<T>(_ name: String, _: T.Type) -> T? {
         #if os(Windows)
-        nil
+        name.withCString({
+            GetProcAddress(unsafeBitCast(handle, to: HMODULE.self), $0)
+        }).map { unsafeBitCast($0, to: T.self) }
         #else
         dlsym(handle, name).map { unsafeBitCast($0, to: T.self) }
         #endif
