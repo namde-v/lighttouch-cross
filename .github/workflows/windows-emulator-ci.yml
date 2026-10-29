@@ -36,7 +36,7 @@ jobs:
   build:
     name: Build qemu-system-arm (Windows x86-64)
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     defaults:
       run:
         shell: msys2 {0}
@@ -740,6 +740,43 @@ jobs:
           # binary initializes past machine listing without firmware images.
           ./qemu-system-arm.exe -device ? > devices.txt
           grep -ciE 'ipod|iphone|ipad' devices.txt
+
+      - name: Build Windows QEMU DLL + smoke (Phase 1 proof)
+        env:
+          DLL_PIN: ca0b83e51049033acef832e00d77ccb361d3fde6
+        run: |
+          # Phase 1 proof for the Windows QEMU DLL (Option A): link qemu-arm.dll
+          # from the qemu-system-arm objects and smoke it (LoadLibrary +
+          # device_info_at + build_id + api_version, no VM boot). Proof-only:
+          # the DLL is NOT bundled into the artifact and NOT staged anywhere;
+          # staging is Phase 2/3 + packaging work, not this step.
+          # Requires the emulator branch pushed first: this SHA must resolve
+          # on origin (namde-v/lighttouch-emulator branch qemu-dll-phase1).
+          git clone --quiet https://github.com/namde-v/lighttouch-emulator.git emu-dll
+          cd emu-dll
+          git fetch --depth 1 origin "$DLL_PIN" || {
+            echo "DLL_PIN $DLL_PIN not found on origin -- push qemu-dll-phase1 first" >&2
+            exit 1
+          }
+          git checkout --quiet "$DLL_PIN"
+          cd ..
+          # The extras patch must be applied before the DLL step compiles
+          # qemu-macos-extras.c (the exe build never compiles it, so patching
+          # here -- after the exe build -- is safe and sufficient; the next
+          # run's pinned-commit reset reverts it before its own build).
+          cd qemu-src
+          git apply --check ../emu-dll/windows-dll/qemu-windows-extras.patch
+          git apply ../emu-dll/windows-dll/qemu-windows-extras.patch
+          # Same treatment for the ui.c resource patch (run 40751776861 step 14):
+          # the exe build never compiles qemu-ios-ui.c either, so patching here
+          # is safe and sufficient for the same reason as the extras patch.
+          git apply --check ../emu-dll/windows-dll/qemu-windows-ui-resource.patch
+          git apply ../emu-dll/windows-dll/qemu-windows-ui-resource.patch
+          cd ..
+          bash emu-dll/windows-dll/make-dll-windows.sh qemu-src qemu-src/build emu-dll/windows-dll/qemu-arm.def
+          cc emu-dll/windows-dll/qemu-dll-smoke.c -o qemu-src/build/qemu-dll-smoke.exe
+          cd qemu-src/build
+          ./qemu-dll-smoke.exe ./qemu-arm.dll
 
       - name: Bundle binary and MinGW DLLs
         run: |
