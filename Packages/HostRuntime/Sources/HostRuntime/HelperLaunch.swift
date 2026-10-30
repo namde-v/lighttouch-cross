@@ -13,6 +13,8 @@ public struct HelperLaunch: Codable, Sendable, Equatable {
         case oneshot(config: String)
         /// Load the dylib, print the dylib's path and every machine's DeviceInfo.
         case machines
+        /// Proof-only (no VM, no dylib load): schedule main-queue work, then park, proving park DRAIN on Windows.
+        case parkprobe
     }
 
     public var mode: Mode
