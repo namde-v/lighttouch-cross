@@ -10,6 +10,9 @@ import IOSurface
 #if canImport(os)
 import os
 #endif
+#if os(Windows)
+import WinSDK
+#endif
 
 // LightTouchDevice: one emulated device per process. Its one argument is its launch (HostRuntime HelperLaunch) as JSON:
 // connect (spawned by the app, DeviceLink), headless, oneshot (firmwarekit's boots) or machines.
@@ -158,28 +161,48 @@ case .machines:
 // MARK: - Linked (spawned by the app)
 
 @MainActor func runLinked(service: String, token: String) -> Never {
+    // The link socket: fd 3 on POSIX (DeviceLink passes it via dup2), the
+    // inherited connected socket on Windows (ltm_spawn + LTM_LINK_SOCKET;
+    // Winsock has no socketpair, so DeviceLink builds a loopback pair).
+    // Windows follows the RendezvousTestPeer pattern: WSAStartup in this
+    // process (the C layer does not do it), LTM_LINK_SOCKET decimal HANDLE.
     #if os(Windows)
-    // The Windows app does not pass a link on fd 3 (DeviceLink on Windows
-    // uses loopback TCP, not fd passing); connect mode is not functional on
-    // Windows until the helper link is reworked (downstream task). Fail
-    // honestly instead of opening a LinkChannel on a nonexistent fd.
-    helperLog("connect mode: fd-3 link not available on Windows")
-    exit(64)
-    #endif
-    #if !os(Windows)
+    var wsadata = WSADATA()
+    guard WSAStartup(0x0202, &wsadata) == 0 else {
+        helperLog("connect mode: WSAStartup failed")
+        exit(64)
+    }
+    guard let linkValue = ProcessInfo.processInfo.environment["LTM_LINK_SOCKET"],
+          let linkHandle = UInt64(linkValue)
+    else {
+        helperLog("connect mode: no LTM_LINK_SOCKET (not spawned by DeviceLink)")
+        exit(64)
+    }
+    // SOCKET values truncate to the API's Int32 (the C layer's documented
+    // convention; test-process socket values are small).
+    let linkSocket = Int32(truncatingIfNeeded: linkHandle)
+    #else
     guard fcntl(3, F_GETFD) != -1 else {
         helperLog("no link on fd 3: not spawned by DeviceLink")
         exit(64)
     }
+    let linkSocket: Int32 = 3
     #endif
     let qemu = loadQemu()
+    #if os(Windows)
+    // Windows: the C layer re-opens segments by NAME, so the status segment
+    // must carry the C-contract hello name (same as RendezvousTestPeer).
+    let status = StatusBlock.create(mappingName: ShmSurface.helloMappingName(token: token, index: 0))
+    #else
     let status = StatusBlock.create()
+    #endif
     let host = qemu.map { DeviceHost(qemu: $0, status: status) }
     if let host { installBootStorageAuthority(host) }
 
-    // The link socket is fd 3 (see LinkChannel below); the transport redesign
-    // replaced the service-name hello with a socket hello (TRANSPORT_REDESIGN).
-    let kr = DeviceRendezvous.sendHello(socket: 3, token: token, generation: 0, segments: [status.surface])
+    // The link socket is linkSocket above (fd 3 on POSIX, the inherited
+    // socket on Windows); the transport redesign replaced the service-name
+    // hello with a socket hello (TRANSPORT_REDESIGN).
+    let kr = DeviceRendezvous.sendHello(socket: linkSocket, token: token, generation: 0, segments: [status.surface])
     guard kr == 0 else {
         helperLog("rendezvous with \(service) failed: \(kr)")
         exit(72)
@@ -193,7 +216,7 @@ case .machines:
         host.halt(reason: reason)
     }
     channel = LinkChannel<AppMessage, HelperMessage>(
-        fd: 3,
+        fd: linkSocket,
         queue: linkQueue,
         onMessage: { message in
             switch message {
@@ -233,7 +256,7 @@ case .machines:
 
     host?.onRingChanged = { ring in
         let kr = DeviceRendezvous.sendHello(
-            socket: 3,
+            socket: linkSocket,
             token: token,
             generation: ring.generation,
             segments: [status.surface] + ring.surfaces
@@ -250,8 +273,8 @@ case .machines:
 
     // Parent death: a process-exit source on the parent, plus EOF on the link.
     // makeProcessSource is Darwin-only: Linux polls getppid (firmwarekit's
-    // CommandLifetime pattern), Windows skips (runLinked exits early above,
-    // and link-close covers parent death there).
+    // CommandLifetime pattern), Windows uses link-close (onClose above) plus
+    // the signal handlers in the #else branch below.
     #if os(macOS)
     let parent = getppid()
     let parentWatch = DispatchSource.makeProcessSource(identifier: parent, eventMask: .exit, queue: .main)
