@@ -589,6 +589,51 @@ jobs:
           if ($testExit -ne 0) { Write-Error "connect test failed (exit $testExit)"; exit $testExit }
           Write-Host "CONNECT PROOF PASS: Tier-1 (start + hello reply via real helper) green; Tier-2 exit-on-close outcome is in the test output above (recorded, non-failing)"
 
+      - name: QEMU parkprobe-mode proof
+        if: matrix.package == 'LightTouchDevice'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $runId = gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/windows-emulator-ci.yml/runs?branch=$env:GITHUB_REF_NAME&status=completed&per_page=10" --jq '.workflow_runs[] | select(.conclusion=="success") | .id' | Select-Object -First 1
+          if (-not $runId) { Write-Error "No successful windows-emulator-ci run on branch $env:GITHUB_REF_NAME yet — dispatch it first"; exit 1 }
+          Write-Host "Using emulator run $runId"
+          # Fresh dir: re-extracting into a shared dir fails on existing files
+          # (oneshot attempt-3 collision).
+          gh run download $runId --name qemu-system-arm-windows-x86_64 --dir parkprobe-emu-artifact
+          if ($LASTEXITCODE -ne 0) { Write-Error "emulator artifact download failed for run $runId"; exit 1 }
+          $dll = Get-ChildItem parkprobe-emu-artifact -Recurse -Filter qemu-arm.dll | Select-Object -First 1
+          if (-not $dll) { Write-Error "Emulator artifact from run $runId lacks qemu-arm.dll"; exit 1 }
+          $helperExe = Join-Path $env:GITHUB_WORKSPACE "Packages/LightTouchDevice/.build/release/LightTouchDevice.exe"
+          if (-not (Test-Path $helperExe)) { Write-Error "Release helper exe missing: $helperExe (the Build step must run first)"; exit 1 }
+          Copy-Item $dll.FullName (Split-Path $helperExe) -Force
+          # NOTE: the probe never loads the DLL — the download + copy above are
+          # uniformity with the prior proof steps, not a probe requirement.
+          $env:PATH = "$($dll.DirectoryName);$env:PATH"
+          $launch = '{"mode":{"parkprobe":{}}}'
+          $launchArg = $launch.Replace([string]'"', [string]'\"')
+          $proc = Start-Process -FilePath $helperExe -ArgumentList $launchArg -RedirectStandardOutput parkprobe-stdout.log -RedirectStandardError parkprobe-stderr.log -PassThru -NoNewWindow
+          if (-not $proc.WaitForExit(180000)) {
+            Write-Host "PARKPROBE DIAGNOSTICS (watchdog): helper did not exit within 180 s — parked main queue never drained"
+            Get-Content parkprobe-stdout.log
+            Get-Content parkprobe-stderr.log
+            Write-Host "Launch JSON: $launch"
+            Get-ChildItem (Split-Path $helperExe) -Filter *.dll | ForEach-Object { Write-Host "$($_.Name) $($_.Length)" }
+            $proc.Kill()
+            Write-Error "parkprobe watchdog: no exit within 180 s (park hang signature)"; exit 1
+          }
+          # Diagnostics BEFORE Write-Error in every branch (oneshot v1 lesson):
+          # Get-Content/Write-Host never terminate; Write-Error does.
+          $stdout = Get-Content parkprobe-stdout.log -Raw
+          $stderr = Get-Content parkprobe-stderr.log -Raw
+          Write-Host "PARKPROBE DIAGNOSTICS: exit $($proc.ExitCode)"
+          Write-Host $stdout
+          Write-Host $stderr
+          Write-Host "Launch JSON: $launch"
+          Get-ChildItem (Split-Path $helperExe) -Filter *.dll | ForEach-Object { Write-Host "$($_.Name) $($_.Length)" }
+          if ($proc.ExitCode -ne 0) { Write-Error "parkprobe failed: exit $($proc.ExitCode) (expected 0)"; exit $proc.ExitCode }
+          if ($stdout -notmatch '"drained":true') { Write-Error "parkprobe failed: marker line missing from stdout — queued work never ran (emit path or drain broken)"; exit 1 }
+          Write-Host "PARKPROBE PASS: scheduled main-queue work ran (marker present) and the process exited 0 through park — park DRAIN proven"
+
       # if: always() — binaries AND logs upload on every run, pass or fail.
       # if-no-files-found: warn (not error): a failed build legitimately has
       # no binaries, and a build-step failure means there is no test.log yet.

@@ -15,7 +15,7 @@ import WinSDK
 #endif
 
 // LightTouchDevice: one emulated device per process. Its one argument is its launch (HostRuntime HelperLaunch) as JSON:
-// connect (spawned by the app, DeviceLink), headless, oneshot (firmwarekit's boots) or machines.
+// connect (spawned by the app, DeviceLink), headless, oneshot (firmwarekit's boots), machines, or parkprobe (Windows park-drain proof, no VM).
 //
 // Emulator library: libqemu-arm.dylib ($LTM_QEMU_DYLIB, else ../Frameworks, else the build rpath) on macOS/Linux;
 // qemu-arm.dll ($LTM_QEMU_DLL in DEBUG, else exe-dir) on Windows.
@@ -52,11 +52,12 @@ func parkMainThread() -> Never {
     #else
     // Linux loads no dylib (Qemu.init throws), so the RCU-TLS reason to avoid
     // dispatchMain() does not apply there. Windows DOES load the DLL since
-    // Phase 2, so whether dispatchMain() exits the main thread (and trips
-    // the RCU-TLS hazard above) is UNVERIFIED on Windows — resolve before
-    // headless/oneshot/connect land (they park here); machines exits without
-    // parking, so this does not block machines mode. dispatchMain() pumps
-    // the main queue (signal sources, @MainActor work) while parking.
+    // Phase 2. Park ENTRY on Windows is proven (headless Tier-2: the lit-watch
+    // thread ran while parked); park DRAIN — the parked main queue delivering
+    // work and the process exiting through it — is proven by the parkprobe
+    // mode, not by any Tier-1 pass. Machines exits without parking, so this
+    // does not block machines mode. dispatchMain() pumps the main queue
+    // (signal sources, @MainActor work) while parking.
     dispatchMain()
     #endif
 }
@@ -140,6 +141,8 @@ case .headless(let path):
     runHeadless(configPath: path)
 case .oneshot(let path):
     runOneShot(configPath: path)
+case .parkprobe:
+    runParkProbe()
 case .machines:
     // Every machine the emulator library runs, with its facts (HostRuntime DeviceInfo.list).
     guard let qemu = loadQemu() else { exit(70) }
@@ -156,6 +159,29 @@ case .machines:
         exit(1)
     }
     exit(0)
+}
+
+// MARK: - Park probe (Windows park-DRAIN proof, no VM, no dylib load)
+
+/// Proof-only mode: schedule main-queue work that marks itself ran and exits,
+/// then park. Pass = the marker line on stdout AND exit 0: the parked main
+/// queue drained through parkMainThread. Watchdog kill (proof step) = the
+/// queue never drained; crash at park entry = park itself broken. No dylib
+/// is loaded here, so this tests drain, not the RCU-TLS hazard (which needs
+/// a loaded dylib's constructor to have registered the main thread).
+/// Windows-only: on any other platform this mode exits 64, so no existing
+/// POSIX path changes behavior.
+@MainActor func runParkProbe() -> Never {
+    #if os(Windows)
+    DispatchQueue.main.async {
+        emit(["event": "parkprobe", "drained": true])
+        exit(0)
+    }
+    parkMainThread()
+    #else
+    writeStandardError("LightTouchDevice: parkprobe is a Windows-only proof mode\n")
+    exit(64)
+    #endif
 }
 
 // MARK: - Linked (spawned by the app)
