@@ -70,6 +70,17 @@
 # heap-diagnosis — further smokes are replications or confirmatory
 # (like this one), not new diagnostic dispatches.
 #
+# Real-display screenshots: after the offscreen launches, the app is
+# launched AGAIN under QT_QPA_PLATFORM=windows (NOT offscreen, mock
+# bridge) and the desktop is captured at 5s / 20s / 40s via PowerShell
+# + .NET Graphics.CopyFromScreen, uploaded as standalone-smoke-shots.
+# Basis (research 2026-10-28, parent-verified): GitHub-hosted runners
+# DO have a real desktop, so a windows-platform launch paints a real
+# window and CopyFromScreen sees it. The step is NON-GATING — a black
+# capture is evidence to read, not a failure; if captures come back
+# black, try quser + tscon <id> /dest:console, then ffmpeg gdigrab /
+# Python mss, before concluding screenshots are impossible.
+#
 # Dispatch-only: gh workflow run windows-standalone-smoke.yml
 #   --ref win/w-app-smoke [-f package_run_id=<id>|latest]
 
@@ -337,6 +348,64 @@ jobs:
             }
           }
 
+      - name: Screenshot (real display, windows platform) — NON-GATING, recorded
+        id: shots
+        run: |
+          # Real-display proof: launch under QT_QPA_PLATFORM=windows (NOT
+          # offscreen) and capture the actual desktop at 5s / 20s / 40s.
+          # Basis (research 2026-10-28, parent-verified): GitHub-hosted
+          # windows-latest runners DO have a real desktop; the Action step
+          # runs in the interactive session, so .NET Graphics.CopyFromScreen
+          # captures the real composited desktop — no RDP/VM needed.
+          # Mock bridge is used on purpose: it is the proven-alive path, so
+          # this step isolates the DISPLAY question (does the window paint
+          # on a real desktop?) from the core question. NON-GATING: a black
+          # capture or a capture error is recorded, never a failure — the
+          # verdict comes from reading the PNGs, not from the exit code.
+          # If the captures come back black (Session 0), the follow-ups are
+          # quser + tscon <id> /dest:console, then ffmpeg gdigrab / mss —
+          # do NOT conclude screenshots are impossible before tscon.
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type -AssemblyName System.Drawing
+          function Capture-Screen([string]$Path) {
+            $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bmp = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+            $bmp.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
+            $g.Dispose(); $bmp.Dispose()
+            Write-Host "screenshot saved: $Path ($($bounds.Width)x$($bounds.Height))"
+          }
+          # Session diagnostics first: which session is this step in, and
+          # what does the primary screen report? A 0x0 bounds or a
+          # CopyFromScreen throw here is itself the diagnosis.
+          try { quser 2>&1 | Write-Host } catch { Write-Host "quser unavailable: $_" }
+          try {
+            $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            Write-Host "primary screen: $($b.Width)x$($b.Height) at ($($b.X),$($b.Y)); screens: $([System.Windows.Forms.Screen]::AllScreens.Count)"
+          } catch { Write-Host "screen query failed: $_" }
+          New-Item -ItemType Directory -Force smoke-shots | Out-Null
+          $env:QT_QPA_PLATFORM = 'windows'
+          $env:LTM_BRIDGE_MOCK = '1'
+          $p = Start-Process -FilePath extracted/LightTouch/LightTouch.exe -WorkingDirectory extracted/LightTouch -PassThru -NoNewWindow -RedirectStandardOutput smoke-shot-stdout.txt -RedirectStandardError smoke-shot-stderr.txt
+          Write-Host "real-display launch: PID $($p.Id)"
+          $shotTimes = @(5, 20, 40)
+          $elapsed = 0
+          foreach ($t in $shotTimes) {
+            Start-Sleep -Seconds ($t - $elapsed)
+            $elapsed = $t
+            $aliveNow = -not $p.HasExited
+            Write-Host "t+${t}s: process alive=$aliveNow"
+            try { Capture-Screen "smoke-shots/shot-$($t.ToString('00'))s.png" } catch { Write-Host "capture at ${t}s FAILED: $_" }
+          }
+          if (-not $p.HasExited) {
+            Write-Host "SCREENSHOT LAUNCH: process $($p.Id) ALIVE after 40s (real-display path)"
+            Stop-Process -Id $p.Id -Force
+          } else {
+            Write-Host "SCREENSHOT LAUNCH: process EXITED early, exit code $($p.ExitCode) — recorded, not gating"
+          }
+          Get-ChildItem smoke-shots -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "shot file: $($_.Name) ($($_.Length) bytes)" }
+
       - name: Upload crash dumps
         if: always()
         uses: actions/upload-artifact@v4
@@ -351,4 +420,12 @@ jobs:
         with:
           name: standalone-smoke-logs
           path: smoke-*.txt
+          if-no-files-found: warn
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: standalone-smoke-shots
+          path: smoke-shots/*.png
           if-no-files-found: warn
